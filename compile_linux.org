@@ -1,6 +1,42 @@
 * 编译linux内核
 ** ARM
+   #+begin_src sh
+   sudo apt install gcc-aarch64-linux-gnu
+   export ARCH=arm64
+   export CROSS_COMPILE=aarch64-linux-gnu-
+   #+end_src
    
+   安装qemu
+   #+begin_src sh
+   sudo apt insall qemu-system-aarch64 -y
+   #+end_src
+
+   编译busybox
+   #+begin_src sh
+      wget https://www.busybox.net/downloads/busybox-1.32.0.tar.bz2
+      tar -xvf busybox-1.32.0.tar.bz2
+      cd busybox-1.32.0
+      make menuconfig
+   #+end_src
+   它会生成_install文件夹，里面有相关的内核运行环境
+
+   编译内核
+   #+begin_src sh
+   make defconfig
+   make menuconfig
+   // 启用General setup 
+   //     -> Inital RAM filesystem and RAM disk (initramfs/initrd) support
+   //         -> () Initramfs source file(s)
+   make -j 4
+   #+end_src
+
+   运行qemu
+   #+begin_src sh
+   qemu-system-aarch64 -machine virt -cpu cortex-a57 \
+      -m 1024 -machine type=virt -nographic  -smp 2  \
+      -kernel linux-5.9.1/arch/arm64/boot/Image      \
+      --append "rdinit=/linuxrc console=ttyAMA0"
+   #+end_src
    
 ** RISCV
    #+begin_src sh
@@ -18,7 +54,6 @@
    tar -xvf 
    ./configure --target-list=riscv64--softmmu
    make 
-   
    #+end_src
 
    编译linux内核
