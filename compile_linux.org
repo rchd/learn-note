@@ -24,9 +24,9 @@
    #+begin_src sh
    make defconfig
    make menuconfig
-   // 启用General setup 
-   //     -> Inital RAM filesystem and RAM disk (initramfs/initrd) support
-   //         -> () Initramfs source file(s)
+   # 启用General setup 
+   #     -> Inital RAM filesystem and RAM disk (initramfs/initrd) support
+   #         -> () Initramfs source file(s)
    make -j 4
    #+end_src
 
@@ -120,7 +120,9 @@
 *** 开启调试
     开启qemu虚拟机
     #+BEGIN_SRC sh
-      qemu-system-x86_64 -kernel arch/x86_64/boot/bzImage -nographic   -initrd rootfs.img -gdb tcp::1234 -S -append "console=ttyS0 root=/dev/ram rdinit=sbin/init noapic"
+      qemu-system-x86_64 -kernel arch/x86_64/boot/bzImage -nographic  \
+	-initrd rootfs.img -gdb tcp::1234 -S
+	-append "console=ttyS0 root=/dev/ram rdinit=sbin/init noapic"
     #+END_SRC
     接着切换到源码目录
     #+BEGIN_SRC sh
