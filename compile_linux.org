@@ -1,6 +1,7 @@
 * 编译linux内核
 ** ARM
    
+   
 ** RISCV
    #+begin_src sh
    sudo apt install gcc-riscv64-linux-gnu -y
@@ -33,3 +34,72 @@
      -drive file=busybox,format=raw,id=hd0 \
      -device virtio-blk-device,drive=hd0
    #+end_src
+
+** x86
+   :PROPERTIES:
+   :ID:       o2b:cd10153a-02a5-4705-9f0c-d8e0506f47c8
+   :POST_DATE: [2021-01-01 Fri 00:37]
+   :BLOG:     myblog
+   :POSTID:   52
+   :END:
+*** 编译bzImage
+    首先是安装
+    输入make menuconfig
+    开启内核调试选项
+    关闭内核地址随机化
+    开启debug选项
+    进行编译
+    make -j 4 bzImage
+*** 构建initrd
+    下载busybox
+    #+BEGIN_SRC sh
+      wget https://www.busybox.net/downloads/busybox-1.32.0.tar.bz2
+      tar -xvf busybox-1.32.0.tar.bz2
+      cd busybox-1.32.0
+      make menuconfig
+    #+END_SRC
+   
+    不使用库文件
+    [[/home/ren/.emacs.img/nqE9NL.png]]
+    编译并安装，生成rootfs.img
+    #+BEGIN_SRC sh
+      make -j 4 && make install
+
+      cp $busybox_folder/_install/*  $rootfs/ -rf
+      cd $rootfs
+      if [ ! -d proc ] && [ ! -d sys ] && [ ! -d dev ] && [ ! -d etc/init.d ]; then
+	  mkdir proc sys dev etc etc/init.d
+      fi
+
+      if [ -f etc/init.d/rcS ]; then
+	  rm etc/init.d/rcS
+      fi
+      echo "#!/bin/sh" > etc/init.d/rcS
+      echo "mount -t proc none /proc" >> etc/init.d/rcS
+      echo "mount -t sysfs none /sys" >> etc/init.d/rcS
+      echo "/sbin/mdev -s" >> etc/init.d/rcS
+      chmod +x etc/init.d/rcS
+      find . | cpio -o --format=newc > rootfs.img
+    #+END_SRC
+
+*** 开启调试
+    开启qemu虚拟机
+    #+BEGIN_SRC sh
+      qemu-system-x86_64 -kernel arch/x86_64/boot/bzImage -nographic   -initrd rootfs.img -gdb tcp::1234 -S -append "console=ttyS0 root=/dev/ram rdinit=sbin/init noapic"
+    #+END_SRC
+    接着切换到源码目录
+    #+BEGIN_SRC sh
+      gdb vmlinux
+    #+END_SRC
+    设置远程机器地址target remote : 1234
+    设置断点  b start_kernel 
+    开启程序 cont
+    开启TUI  tui enable
+
+*** DDD调试 
+    安装DDD，直接安装即可，它是gdb的一个前端，它可以以图形来表示数据结构，更加直观
+    需要使用宿主机的/proc/kcore文件，以及vmlinux符号表，
+    最后执行命令ddd vmlinux /proc/kcore即可
+    这种方法只能查看数据结构，无法进行断点调试
+
+
