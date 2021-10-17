@@ -1,0 +1,55 @@
+* Xorg 设计思路
+  The X Window System (also known as X11, or simply X) is a client/server windowing system for
+  bitmap displays. It is implemented on most UNIX-like operating systems and has been ported
+  to many other systems. The X server is the program or dedicated terminal that displays the
+  windows and handles input devices such as keyboards, mice, and touchscreens. The clients are 
+  applications.
+* Xorg相关配置
+
+  
+** 相关文件说明
+   
+*** /etc/X11/
+    | 文件         | 保存相关信息                  |
+    |--------------+-------------------------------|
+    | Xreset       |                               |
+    | Xreset.d     |                               |
+    | Xsession     |                               |
+    | Xsession.d   |                               |
+    | xinit        |                               |
+    | Xresources   |                               |
+    | app-defaults | X应用的相关设置               |
+    | xorg.conf    | X Window System显示系统的设置 |
+    |              |                               |
+  
+*** 相关命令行 
+    | 命令     | 作用                                                      |
+    |----------+-----------------------------------------------------------|
+    | startx   | 是一个shell脚本，主要设置X系统的相关配置文件以及启动xinit |
+    | X/xorg   |                                                           |
+    | Xsession | 管理桌面环境的会话                                        |
+    | xrandr   | 显示器管理                                                |
+    | xinit    | 负责处理xserver和xclient的启动                            |
+    |          |                                                           |
+
+** xorg.conf文件说明
+   | 标记         | 作用                      |
+   |--------------+---------------------------|
+   | Files        |                           |
+   | InputDevice  | 输入设备                  |
+   | Monitor      | 显示器的设置              |
+   | Devicec      | 显卡信息                  |
+   | Screen       | 由Monitor和Device组成     |
+   | ServerLayout | 由Screen和InputDevice组成 |
+   |              |                           |
+
+* Xorg分析
+
+** 启动流程  
+   从startx命令开始启动
+   startx调用将系统文件/etc/X11/xinit/xinitrc和/etc/X11/xinit/xserverrc作为参数传给xinit
+   xinit首先执行系统文件/etc/X11/xinit/xserverrc启动X Server
+   然后执行/etc/X11/xinit/xinitrc，而xinitrc则会执行脚本/etc/X11/Xsession
+   而Xsession则会按顺序调用执行/etc/X11/Xsession.d下的文件，根据数字从小到大执行
+   最终启动DE
+

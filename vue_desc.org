@@ -1,0 +1,381 @@
+#+ORG2BLOG:
+#+DATE: [2020-09-15 Tue 19:01]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: Vue,JavaScript
+#+TAGS:
+#+DESCRIPTION:
+#+TITLE: vue相关技术
+* 手动创建vue项目
+  :PROPERTIES:
+  :ID:       o2b:200e73f6-cd9d-4b8d-b6bb-f1d701d2f4c8
+  :POST_DATE: [2020-09-16 Wed 20:19]
+  :BLOG:     myblog
+  :POSTID:   30
+  :END:
+  使用yarn进行，不使用npm命令  
+  初始化一个项目
+  #+BEGIN_SRC sh
+    yarn init  
+  #+END_SRC
+  进入命令行交互，输入相关信息回车即可
+  其实它就只是创建一个package.json文件
+
+  初始化git
+  #+BEGIN_SRC sh
+    git init  
+  #+END_SRC
+  使用ls -al，当前目录下有.git目录即可
+  
+  创建一个.gitignore文件
+  #+BEGIN_SRC sh
+    touch .gitignore
+    echo 'node_modules' >> .gitignore
+  #+END_SRC
+
+  添加webpack以及webpack-cli,与vue相关的插件vue-loader
+  相关的babel-loader，css-loader，vue-style-loader
+  #+BEGIN_SRC sh
+    yarn add webpack webpack-cli vue-loader
+  #+END_SRC
+
+  设置webpack相关的参数,引入vue-loader
+  #+BEGIN_SRC javascript
+    const path=require('path')
+    module.exports = {
+	mode: 'development',
+	entry:'./src/main.js',
+	output:{
+	    path:path.resolve(__dirname,'./dist'),
+	    publicPath:'/dist/',
+	    filename:'build.js'
+	},
+	module:{
+	    rules:[
+		{
+		    test: /\.vue$/,
+		    loader: 'vue-loader'
+		},
+
+	    ]
+	}
+    }
+  #+END_SRC
+
+  接着在package.json中写相关的命令
+  #+BEGIN_SRC javascript
+    "scripts":{
+	"build":"webpack",
+    }
+  #+END_SRC
+
+  上述命令在package.json文件添加了关于webpack的包信息
+  添加vue相关的包，模板解析器，
+  #+BEGIN_SRC sh
+    yarn add vue vue-template-compiler
+  #+END_SRC
+
+  在webpack.config.js文件中加入相关
+  新增es6相关的语法支持以及jsx语法的支持，需要babel，babel-loader，babel-preset-env
+  #+BEGIN_SRC sh
+    yarn add babel-core babel-loader babel-preset-env
+  #+END_SRC
+
+  新增关于babel配置信息
+  #+BEGIN_SRC javascript
+    module:{
+	rules:[{
+	    test:/\.js$/,
+	    loader:'babel-loader'
+	}]有
+    }
+  #+END_SRC
+
+  安装开发服务器，使用webpack-dev-server
+  设置webpack.config.js文件
+  #+BEGIN_SRC javascript
+    devServer:{
+	historyApiFallback:true,
+	overlay:true,
+    },
+  #+END_SRC
+  
+  在package.json中加入项目命令
+  #+BEGIN_SRC javascript
+    "scripts":{
+	"dev":"webpack-dev-server --open --hot",
+	"build":"webpack"
+    }
+  #+END_SRC
+
+  #+BEGIN_SRC quote
+
+  该服务器是vue-cli的内置服务器，
+    #+BEGIN_SRC sh
+    yarn add @vue/cli-service
+    #+END_SRC
+
+  在package.json文件中添加如下代码
+     #+BEGIN_SRC javascript
+       "scripts":{
+	   "serve": "vue-cli-service serve"
+       }
+     #+END_SRC
+
+  #+END_SRC  
+
+  创建示例文件
+  在项目目录上创建index.html文件
+  #+BEGIN_SRC html
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta http-equiv="X-UA-Compatible" content="ie=edge">
+      <title>Document</title>
+    </head>
+    <body>
+      <div id="app">
+      </div>
+      <script src="/dist/build.js"></script>
+    </body>
+    </html>
+  #+END_SRC
+  
+  创建src目录，创建App.vue，main.js文件
+  #+BEGIN_SRC javascript
+    import Vue from 'vue';
+    import App from './App.vue';
+    new Vue({
+	el:'#app',
+	render:h => h(App)
+    })
+
+  #+END_SRC
+
+  #+BEGIN_SRC html
+      <template>
+	<div>Hello Vue </div>
+    </template>
+  #+END_SRC
+
+  最后执行yarn dev命令，它会自动打开浏览器
+
+* SSR服务器端渲染
+** 相关技术
+   首先是vue框架以及相关的路由插件vue-router
+   服务器渲染的相关的技术实现vue-server-render
+   服务器端使用的技术，使用express开放服务
+** 创建项目
+   创建一个nodejs项目，yarn创建项目，会进入相关的命令行交互，完成之后会创建一个package.json
+   文件，然后进行git初始化，设置ignore文件
+   #+BEGIN_SRC sh
+     mkdir ssr-example
+     cd ssr-example
+     yarn init
+     git init
+     touch .gitignore
+     echo 'node_modules' >> .gitignore
+   #+END_SRC
+
+   安装相关包，它会自动到服务器中去下载
+   #+BEGIN_SRC sh
+     yarn add vue
+     yarn add vue-router
+     yarn add express
+     yarn add vue-server-render
+   #+END_SRC
+
+   安装完成之后，会在package.json添加如下代码
+   #+BEGIN_SRC js
+     "dependencies": {
+	 "express": "^4.17.1",
+	 "vue": "^2.6.12",
+	 "vue-router": "^3.4.3",
+	 "vue-server-renderer": "^2.6.12"
+     }
+   #+END_SRC
+
+   创建server.js文件，该文件中包含服务器端渲染的主要代码，首先是导入相关的库
+   创建路由，当服务器获取到请求时，执行函数中的动作，创建一个vue对象，设置
+   相关的响应信息，最后使用vue-server-render中的renderToString函数，渲染vue对象
+   该函数返回一个Promise对象，如果成功则调用then函数，否则调用catch函数
+   #+BEGIN_SRC js
+     const express= require("express")
+     const app = express();
+
+     const Vue = require("vue");
+     const vueServerRender = require("vue-server-renderer").createRenderer();
+
+     app.get('*',(request,response)=> {
+	 const vueApp = new Vue({
+	     data:{
+		 message:"hello,ssr"
+	     },
+	     template:` <h1> {{message}} </h1>  `
+	 });
+	 response.status(200);
+	 response.setHeader("Content-type","text/html;charset-utf-8");
+
+	 vueServerRender.renderToString(vueApp).then((html)=> {
+	     response.end(html);
+	 }).catch(err=>console.log(err))
+     });
+
+     app.listen(3001,()=>{
+	 console.log('server starting');
+     } );
+
+   #+END_SRC
+
+   挂载vue实例到html模板,需要注意的是vue-ssr-outlet不能少
+   #+BEGIN_SRC html
+     <!DOCTYPE html>
+     <html>
+     <head>
+       <meta charset="utf-8">
+       <meta name="viewport" content="width=device-width">
+       <title>hello,ssr</title>
+     </head>
+     <body>
+       <!--vue-ssr-outlet-->
+     </body>
+     </html>
+   #+END_SRC
+
+   在server.js中加入以下代码，首先是导入path模块，调用createRenderer()函数，指定模板文件
+   #+BEGIN_SRC js
+     let path = require("path");
+     const vueServerRender = require("vue-server-renderer").createRenderer({
+	 template:require("fs").readFileSync(path.join(__dirname,"./index.html"),"utf-8")
+     })
+   #+END_SRC
+   引入vue-router组件，创建router/index.js文件
+   #+BEGIN_SRC js
+     const vueRouter = require("vue-router");
+     const Vue = require("vue");
+
+     Vue.use(vueRouter);
+
+     module.exports= ()=> {
+       return new vueRouter({
+	 mode:"history",
+	 routes:[
+	   {
+	     path:"/",
+	     component:{
+	       template:` < h1 > this is home page </ h1 > `,
+	     },
+	     name:"home"
+	   },
+	   {
+	     path:"/about",
+	     component:{
+	       template:` < h1 > this is about page </ h1 > `,
+	     },
+	     name:"about"
+	   },
+	 ]
+       })
+     }
+   #+END_SRC
+   此时，需要app.js，导入相关的路由信息，最后导出router与app对象，供server.js调用
+   #+BEGIN_SRC js
+     const Vue = require("vue");
+     const createRouter = require("./router");
+
+     module.exports= (context)=> {
+	 const router = createRouter();
+	 return new Vue({
+	     router,
+	     data:{
+		 message:"Hello,Vue SSR",
+	     },
+	     template:`
+	 <div>
+	 <h1>{{message}}</h1>
+	 <ul>
+	 <li>
+	 <router-link to = "/">home</router-link>
+	 </li>
+	 <li>
+	 <router-link to = "/about">about</router-link>
+	 </li>
+	 </ul>
+	 </div>`
+	 });
+     }
+
+   #+END_SRC
+
+   修改server.js文件，
+   #+BEGIN_SRC js
+     const express= require("express")
+     const app = express();
+     const vueApp = require("./src/app.js");
+
+     let path = require("path");
+     const vueServerRender = require("vue-server-renderer").createRenderer({
+       template:require("fs").readFileSync(path.join(__dirname,"./index.html"),"utf-8")
+     });
+
+     app.get('*',async(request,response)=> {
+
+	let vm = vueApp({});
+
+       response.status(200);
+       response.setHeader("Content-type","text/html;charset-utf-8");
+    
+       vueServerRender.renderToString(vm).then((html)=> {
+	 response.end(html);
+       }).catch(err=>console.log(err))
+
+     })
+
+     app.listen(3001,()=>{
+       console.log('server starting');
+     } )
+
+   #+END_SRC
+* 异步组件  
+  
+* vue源码分析
+** vue目录结构
+   | 目录                    | 说明                                                |
+   |-------------------------+-----------------------------------------------------|
+   | examples                | 相关示例                                            |
+   | node_modules            | 相关node包                                          |
+   | src                     | 源代码                                              |
+   | src/compiler            |                                                     |
+   | src/core                |                                                     |
+   | src/core/index          | Vue对象的定义，以及全局api的初始化                  |
+   | src/core/global-api     | 全局api主要包含use,mixin,extend,assets              |
+   | src/core/instance       | vue实例的初始化，主要是state,event,lifecycle,render |
+   | src/core/vdom           | 虚拟DOM的相关操作                                   |
+   | src/core/components     | vue封装的公共组件keep-alive                         |
+   | src/platforms           | 为不同平台构建入口文件                              |
+   | src/server              | 服务器端渲染代码                                    |
+   | src/sfc                 | 包含单文件组件，与vue-template-compiler协同工作     |
+   | src/shared              | 保存公共变量方法                                    |
+   | src/shared/constants.js | 保存公共变量，生命周期信息，SSR标记                 |
+   | src/shared/util.js      | 公共方法，判断相关变量                              |
+   | scripts                 | 相关命令的配置                                      |
+   | package                 | vue-compile-template，vue-server-render             |
+   | package.json            | 保存相关包信息以及相关命令                          |
+   | test                    | 测试文件                                            |
+   | types                   |                                                     |
+   | flow                    | vue所使用的类型，进行类型检查需要                   |
+   |                         |                                                     |
+** 重要技术
+*** 数据代理
+    通过一个对象代理另一个对象中属性的操作
+    在vue中通过vm对象来代理data对象中所有的属性操作
+    1. 通过Object-defineProperty()给vm添加与data对象属性对应的属性描述符
+    2. 所有添加的属性都包含getter/setter
+    3. getter/setter内部操作data中对应的属性数据
+*** 数据绑定
+    
+*** 模板解析
+*** 类型检查
+    flow
+

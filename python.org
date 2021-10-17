@@ -1,0 +1,51 @@
+#+ORG2BLOG:
+#+DATE: [2020-04-14 Tue 19:45]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: Uncategorized, Hello
+#+TAGS:
+
+#+DESCRIPTION:
+#+LATEX_CMD: xelatex
+#+LATEX_CLASS: article
+#+LATEX_CLASS_OPTIONS: [a4paper]
+#+LATEX_HEADER: \usepackage{ctex}
+#+TITLE: python
+
+* python语言
+  
+** 语法
+   
+*** if语句
+    #+BEGIN_SRC python
+      a=1
+      b=2
+      if a == b:
+	  return a
+      else:
+	  return b
+    #+END_SRC
+
+    #+RESULTS:
+    : 2
+
+** python标准库
+   
+*** distutils
+
+*** venv
+    
+* python项目
+** ranger
+   该项目使用curses库进行终端界面设计
+   github地址：https://github.com/ranger/ranger.git
+** flask
+** django-channels
+* python相关库
+**   curses
+  
+** numpy
+
+** pandas
+
+** matplotlib
+

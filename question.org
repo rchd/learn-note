@@ -1,0 +1,50 @@
+#+ORG2BLOG:
+#+DATE: [2020-05-12 Tue 15:27]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: Uncategorized, Hello
+#+TAGS:
+#+DESCRIPTION:
+#+TITLE: Question
+* wps输入中文
+  在/usr/bin目录下有wps的启动相关的配置目录
+  wps代表wps writer
+  wpp借助wps ppt
+  et代表wps  spreadsheet
+  #+BEGIN_SRC sh
+  export XMODIFIERS="@im=fcitx"                                                                  
+  export QT_IM_MODULE="fcitx"
+  #+END_SRC
+* Gentoo
+  2 config files in /etc/portage need to updating 
+  执行etc-update进行更新
+* ssh
+  root进行过程登录
+  在/etc/ssh/sshd_config
+  新增PermitRootLogin yes即可
+  重启sshd服务
+* 静态ip设置
+** debian
+   修改/etc/network/interaces
+   写入如下配置
+   #+BEGIN_SRC quote
+   auto ens18
+   iface ens18 inet static
+   address 192.168.0.2
+   netmask 255.255.255.0
+   gateway 192.168.0.1
+   dns-nameservers 89.207.128.252 89.207.130.252
+   #+END_SRC
+* 修改源
+** nodejs源
+   
+** apt源
+   修改/etc/apt/source.list文件，设置软件源
+** docker镜像加速
+   在阿里云上购买docker镜像加速服务
+   然后在/etc/docker/daemon.json设置加速地址
+   最后重启docker服务
+** pypy源
+   在当前目录下创建.pip目录，然后创建pip.conf文件，填写相关地址
+* tmux: invalid LC_ALL, LC_CTYPE or LANG
+  apt-get install locales
+  dpkg-reconfigure locales

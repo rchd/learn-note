@@ -1,0 +1,1155 @@
+#+BLOG: myblog
+#+POSTID: 9
+#+ORG2BLOG:
+#+DATE: [2020-04-13 Mon 08:02]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: Uncategorized, Hello
+#+TAGS: Javascript,Emacs,Vim,TypeScript
+#+DESCRIPTION:
+#+LATEX_CMD: xelatex
+#+LATEX_CLASS: article
+#+LATEX_CLASS_OPTIONS: [a4paper]
+#+LATEX_HEADER: \usepackage{ctex}
+#+TITLE: software
+* 编辑器                                                              :quote:
+  #+BEGIN_SRC quote  
+  vim与emacs它们定义的是操作方法，而IDE与GUI编辑器则提供的是功能
+  #+END_SRC
+** a-vim                                                          :详情见vim_command.org:
+   :PROPERTIES:
+   :ID:       o2b:6afcf18e-90c9-4702-a063-fbb15f9cb03f
+   :POST_DATE: [2020-06-25 Thu 14:06]
+   :BLOG:     myblog
+   :POSTID:   14
+   :END:
+   一个特殊的编辑器,当下流行的编辑器主要是图形编辑器，它的一大好处是不用学习就用
+   使用，但vim则不同，它有许多特定的概念需要学习，如果不了解这些，就无法使用，同
+   时还要记忆大量键盘功能，且需要理解模式概念，这就导致上手很慢，但是如果能够熟练
+   使用，它会影响你的习惯，同时也会引导你去思考效率的问题
+
+   vim第一个重要的是模式，有插入模式，在这种情况下，可以输入文本，同时它提供了
+   强大的补全功能，它是被动的触发，与当下的IDE不同，当前的IDE都是主动触发，使用
+   ctrl+x,ctrl+l可以进行行补全，它会搜索当前文件行下的行，作为补全，ctrl+x,ctrl+k
+   则字典补全，这是真正的字典，不是数据类型，不过需要设置当前的字典，ubuntu可以
+
+   
+   当前vim也已经支持插件，不过它的插件管理倒不走不寻常路，当前的vim的插件管理器有
+   许多，neobunld，vim-plug等等，我使用的是vim-plug，它可以进行异步处理，可以一边
+   进写代码，一边安装插件，最新的版本已经包括了插件管理器，一个叫pacdage的插件管理
+   器，同时也增加了termdebug插件。
+*** 我的vim                                                      :screenshot:
+    [[/home/ren/.emacs.img/largdN.png]]
+** emacs
+   另一种编辑器，与vim的设计思路有些不同，在于第一，它没有像vim之类的有模式的概念
+   同时它使用elisp作为扩展语言，这是lisp的一种变体，它与vim一样，可以在没有图形界
+   面的情况下使用，文本的编辑功能，它是疯狂使用ctrl,alt与26个字母的任意组合键，相
+   关的组合非常多，与vim的键位相比，它快捷键最多只能进行分类，不像vim，它有语法规
+   则，我觉得，当下许多编辑器都受到emacs的影响，
+
+   再有就是它有统一的包管理器，但是，在对包进行操作期间，不能进行其他操作，尤其是
+   在网速非常慢的情况下，这会发狂
+
+   我喜欢使用emacs来写文档，orgmode与emacs结合，无须键盘，解放鼠标，解放思维，主要
+   是因为中文，在vim中文使用不大方便，但是在emacs则没有这种问题，同时emacs安装中文
+
+*** gnus设置qq邮箱                                                     
+    设置qq邮箱
+    设置mail-sources变量即
+    #+BEGIN_SRC elisp
+      (setq mail-sources '((imap :server "imap.qq.com" :user "1228340520@qq.com" :password "密码")
+    #+END_SRC
+    接着运行gnus即可
+*** use-package
+    加载foo包，只有系统中存在foo包的情况下可用，如果没有，它会在Messages中显示警告信息
+    使用init关键字，在包被加载之前会执行init中的代码，它接受一个或多个语句，如下所示
+    #+BEGIN_SRC elisp
+      (use-package foo
+	:init 
+	(setq foo-varibale t))
+    #+END_SRC
+    类似的，config关键字代码是包被加载之后执行，在懒加载时，该代码会延迟到autoload发生之后
+    #+BEGIN_SRC elisp
+      (use-package foo
+	:init 
+	(setq foo-variable t)
+	:config
+	(foo-mode 1))
+    #+END_SRC
+    就像你所想到的，可以将init和config组合使用
+    #+BEGIN_SRC elisp
+      (use-package color-moccur
+	:commands (isearch-moccur isearch-all)
+	:bind (("M-s O" . moccur)
+	       :map isearch-mode-map
+	       ("M-o" . isearch-moccur)
+	       ("M-O" . isearch-moccur-all))
+	:init
+	(setq isearch-lazy-highlight t)
+	:config
+	(use-package moccur-edit))
+
+    #+END_SRC
+    在这个示例中，我想自动加载isearch-moccur和isearch-all从color-moccur.el，接着在isearch-mode-map中
+    对它们进行全局绑定。当该包被加载moccur-edit也会被加载，且允许编辑moccur缓冲区
+
+    当包被加载时，另一个必要的操作，就是绑定相关包中的相关命令，代码如下
+    #+BEGIN_SRC elisp
+      (use-package ace-jump-mode
+	:bind ("C-." . ace-jump-mode))
+    #+END_SRC
+    上述代码做了两件事，它首先自动加载了ace-jump-mode命令，以及ace-jump-mode则是进行懒加载，直到使用该
+    命令，才会真正加载。第二，它绑定了C-.快捷键，加载完之后，可以使用M-x describe-personal-keybindings
+    函数查看当前的所有在.emacs文件中自定义的快捷键
+    #+BEGIN_SRC elisp
+      (use-package ace-jump-mode
+	:commands ace-jump-mode
+	:init
+	(bind-key "C-." 'ace-jump-mode))
+    #+END_SRC
+    使用commands关键字时，它会先创建一个autoloads，它进行懒加载，直到使用该命令时，它才会加载,init关键字
+    可以运行，即使是没有安装ace-jump-mode
+    #+BEGIN_SRC elisp
+      (use-package li-lock
+	:bind (("M-o l" . highlight-lines-matching-regexp)
+	       ("M-o r" . highlight-regexp)
+	       ("M-o w" . highlight-phrase)))
+    #+END_SRC
+    :command关键字是做了一个指向cons的列表
+    #+BEGIN_SRC elisp
+      (use-package helm
+	:bind (("M-x" . helm-M-x)
+	       ("M-<f5>" . helm-find-files)
+	       ([f10] . helm-buffers-list)
+	       ([S-f10] . helm-recentf)))
+    #+END_SRC
+    重设绑定命令使用bind和bind-key完成，因为它
+    
+    #+BEGIN_SRC elisp
+      (use-package unfill
+	:bind ([remap fill-paragraph] . unfill-toggle))
+    #+END_SRC
+    bind关键字绑定的函数，将会从包中自动加载，然而，如果其中一个命令中快捷键，快捷键不是函数，不能
+    通过emacs自动加载
+    要处理这种情况，use-package提供了一个特殊的bind，名为bind-keymap。这是
+    #+BEGIN_SRC elisp
+      (use-package projectile
+	:bind-keymap
+	("C-c p" . projectile-command-map))
+    #+END_SRC
+    局部快捷键绑定
+    与绑定快捷键有些不同，当包被加载之后，它才会绑定到快捷键，支持这个功能是map关键字
+    示例如下
+    #+BEGIN_SRC elisp
+      (use-package helm
+	:bind(:map helm-command-map 
+		   ("C-c h" . helm-execute-persistent-action)))
+    #+END_SRC
+
+    #+RESULTS:
+    : helm-execute-persistent-action
+    上述代码的作用就直到helm被加载，才绑定C-c h到helm-execute-persistent-action函数
+    到helm的helm-mode-map
+    #+BEGIN_SRC elisp
+      (use-package term
+	:bind (("C-c t" . term)
+	       :map term-mode-map
+	       ("M-p" . term-send-up)
+	       ("M-n" . term-send-down)
+	       :map term-raw-map
+	       ("M-o" . other-window)
+	       ("M-p" . term-send-up)
+	       ("M-n" . term-send-down)))
+    #+END_SRC
+    模式和解释器
+    类似于bind，可以使用mode和interpreter创建延迟绑定到auto-mode-alist和interpreter-mdoe-alist变量设置，
+    keyword可以作为cons单元，一个cons列表，正则表达式
+    #+BEGIN_SRC elisp
+      (use-package ruby-mode
+	:mode "\\.rb\\'"
+	:interpreter "ruby")
+      ;; The package is "python" but the mode is "python-mode":
+      (use-package python
+	:mode ("\\.py\\'" . python-mode)
+	:interpreter ("python" . python-mode))
+    #+END_SRC
+    如果不使用commands bin bind* bind-keymap bind-keymap* mode iterpreter或是hook，依然能通过使用defer关键
+    延迟加载
+    #+BEGIN_SRC elisp
+      (use-package ace-jump-mode
+	:defer t
+	:init
+	(autoload 'ace-jump-mode "ace-jump-mode" nil t)
+	(bind-key "C-." 'ace-jump-mode))
+    #+END_SRC
+    下列代码实现相同的功能
+    #+BEGIN_SRC elisp
+      (use-package pdf-tools
+	:load-path "site-lisp/pdf-tools/lisp"
+	:magic ("%PDF" . pdf-view-mode)
+	:config
+	(pdf-tools-install :no-query))
+    #+END_SRC
+    该插件为在pdf-view-mode模式下自动加载，pdf-tools进行延迟加载，打开pdf缓冲区时，会自动运行pdf-view-mode
+    :hook关键字允许添加功能包的hook，示例如下
+    #+BEGIN_SRC elisp
+      (use-package ace-jump-mode
+	      :hook prog-mode)
+
+      (use-package ace-jump-mode
+	:hook (prog-mode . ace-jump-mode))
+
+      (use-package ace-jump-mode
+	:commands ace-jump-mode
+	:init
+	(add-hook 'prog-mode-hook #'ace-jump-mode))
+    #+END_SRC
+    
+    #+BEGIN_SRC elisp
+      (use-package ace-jump-mode
+	:hook (prog-mode text-mode))
+
+      (use-package ace-jump-mode
+	:hook ((prog-mode text-mode) . ace-jump-mode))
+
+      (use-package ace-jump-mode
+	:hook ((prog-mode . ace-jump-mode)
+	       (text-mode . ace-jump-mode)))
+
+      (use-package ace-jump-mode
+	:commands ace-jump-mode
+	:init
+	(add-hook 'prog-mode-hook #'ace-jump-mode)
+	(add-hook 'text-mode-hook #'ace-jump-mode))
+
+    #+END_SRC
+    使用:hook关键字
+    #+BEGIN_SRC elisp
+      ;; DOES NOT WORK
+      (use-package ace-jump-mode
+	:hook (prog-mode-hook . ace-jump-mode))
+    #+END_SRC
+    如果不喜欢这是个的设置，请将use-package-hook-name-suffix设置为nil，它是会使用默认的-hook
+    :hook的使用方法，类似于:bind，:mode:interpreter，
+
+    #+BEGIN_SRC elisp
+      (use-package comint
+	:custom
+	(comint-buffer-maximum-size 20000 "Increase comint buffer size.")
+	(comint-prompt-read-only t "Make the prompt read only."))
+    #+END_SRC
+    
+    自定义face变量
+    :custom-face关键用来设置package自定义的face变量
+    #+BEGIN_SRC elisp
+      (use-package eruby-mode
+	:custom-face
+	(eruby-standard-face ((t (:slant italic)))))
+    #+END_SRC
+    关于懒加载的注意事项
+    在大多数情况下，不需要设置特意设置:defer t，在:bind，:mode，:interpreter中已经有使用，通常，如果知道一些包加载会造成
+    在一些时间延长，因此想要延迟加载，即使没有创建autoloads
+    可以使用关键字:demand忽略包，因此，即使使用:bind，demand会强制加载，并不会立即为autoload创建绑定
+    关于包的加载
+    当一个包被加载时，如果设置了use-pacage-verbose为t，或如果包加载的时间超过0.1秒，会看到Messages显示加载活动信息，
+    这是同样也会发生在配置中，:config代码块超过0.1秒的执行。通常来说，应当保持:init代码块尽可能的简单，把代码尽
+    可能多的放到config块中，这种情况下，延迟加载会尽可能快的启动emacs
+    此外，在初始化或配置包的时候，一个错误发生了，这不会停止emasc的加载，这个错误会被use-package捕获，然后报告
+    给特殊的缓冲区Warnings，这就可以调试。
+    条件加载
+    可以使用:if关键字断言模块的加载与初始化
+    比如，想要把edit-server作为主要的，图形界面
+    #+BEGIN_SRC elisp
+      (use-package edit-server
+	:if whindow-system
+	:init
+	(add-hook 'after-init-hook 'server-start t)
+	(add-hook 'after-init-hook 'edit-server-start t))
+    #+END_SRC
+    在另一个示例中，可以通过根据不同的操作系统进行加载
+    #+BEGIN_SRC elisp
+      (use-package exec-path-from-shell
+	:if (memq window-system '(macs ns))
+	:ensure t
+	:config
+	(exec-path-from-shell-initialize))
+    #+END_SRC
+    使用disabled关键字可以在遇到问题，关键出现问题的模块，或停止正在运行的代码
+    
+    #+BEGIN_SRC elisp
+      (use-package ess-site
+      :disabled
+      :commands R)
+    #+END_SRC
+    当把.emacs编译成位时，该选项会忽略输出，加速启动
+    
+    #+BEGIN_SRC elisp
+      (when (memq window-system '(mac ns))
+	(use-package exec-path-from-shell
+	  :ensure t
+	  :config
+	  (exec-path-from-shell-initialize)))
+    #+END_SRC
+    
+*** auctex设置
+    首先是安装latex
+    接着通过package或git安装acutex
+    #+BEGIN_SRC elisp
+      (load "auctex.el" nil t t)
+      (load "preview-latex.el" nil t t)
+      (add-hook 'LaTeX-mode-hook #'LaTeX-install-toolbar)
+      (add-hook 'LaTeX-mode-hook 'turn-on-reftex) ;; with AUCTeX LaTeX mode
+      (add-hook 'latex-mode-hook 'turn-on-reftex) ;;with Emacs latex mode
+      (setq TeX-auto-save t)
+      (setq TeX-parse-self t)
+      (setq TeX-command-force "LaTex")
+      (setq TeX-view-program-list '(("Okular" "okular %o")))
+      (setq TeX-view-program-selection '((output-pdf "Okular")))
+      (setq TeX-command-default "xelatex")
+      (setq TeX-save-query nil)
+      (setq TeX-global-PDF-mode t TeX-engine 'xelatex)
+    #+END_SRC
+*** orgmode
+**** org-bullets
+     设置图标
+**** org-pomdoro 
+     在状态栏中显示计时
+****  绘图
+     在emacs中的artist mode下，使用鼠标进行绘图，同时使用ditaa进行渲染，可以画流程图
+*** org2blog
+    在emacs中写org博客，然后在发送到远程wordpress服务器
+*** 基本设置
+    #+BEGIN_SRC elisp
+      (menu-bar-mode 0)  ;;隐藏菜单栏
+      (tool-bar-mode 0)  ;;隐藏工具栏
+      (global-linum-mode t)   
+      (scroll-bar-mode 0);;隐藏滚动条
+      (hl-line-mode t);;高亮当前行
+      (show-paren-mode t)
+      (desktop-save-mode 1);;保存当前会话
+      (global-hl-line-mode 1)
+      (setq buffer-file-coding-system 'utf-8) ;;设置缓冲区编码
+      (prefer-coding-system 'utf-8)
+      (setq x-select-enable-clipboard t)
+      (setq make-backup-files nil)
+      (setq backup-directory-alist (quote (("." . "~/.emacs-backups"))))
+    #+END_SRC
+*** 我的emacs
+
+** vscode
+   vscode，微软的大作，它沿袭了微软的特点，所有工作都在vscode中完成，除写代码之间，可以还
+   能写文档，还可以进行过程控制，且它是使用javascript开发，基于nodejs，这就大大扩展了vscode
+   的可用性，它的调试功能就更加强大了，我喜欢使用qemu开启linux内核调试，然后，在vsocde中进
+   追踪
+   开发插件
+   安装npm包yo generator-code
+
+*** 我的vscode
+    [[/home/ren/.emacs.img/7uXpze.png]]
+** sed,awk
+   | 动作 | 说明               |
+   | a    | 新增内容到下一行   |
+   | c    | 以行为单位进行修改 |
+   | d    | 删除某行           |
+   |      |                  
+* php项目
+** laravel
+** wordpress
+*** 设置缓存
+*** rss订阅源
+*** 设置smtp
+*** sitemap设置
+    #+BEGIN_SRC php
+      <?php
+      require('./wp-blog-header.php');
+      header("Content-type: text/xml");
+      header('HTTP/1.1 200 OK');
+      $posts_to_show = 1000;
+      echo '<?xml version="1.0" encoding="UTF-8"?>';
+      echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:mobile="http://www.baidu.com/schemas/sitemap-mobile/1/">'
+	  ?>
+      <url>
+      <loc><?php echo get_home_url(); ?></loc>
+      <lastmod><?php $ltime = get_lastpostmodified(GMT);$ltime = gmdate('Y-m-d\TH:i:s+00:00', strtotime($ltime)); echo $ltime; ?></lastmod>
+      <changefreq>daily</changefreq>
+      <priority>1.0</priority>
+      </url>
+      <?php
+      /* 文章页面 */
+      $myposts = get_posts( "numberposts=" . $posts_to_show );
+      foreach( $myposts as $post ) { ?>
+	  <url>
+	  <loc><?php the_permalink(); ?></loc>
+	  <lastmod><?php the_time('c') ?></lastmod>
+	  <changefreq>monthly</changefreq>
+	  <priority>0.6</priority>
+	  </url>
+      <?php } /* 文章循环结束 */ ?>
+      <?php
+      /* 单页面 */
+      $mypages = get_pages();
+      if(count($mypages)国 > 0) {
+	  foreach($mypages as $page) { ?>
+	      <url>
+	      <loc><?php echo get_page_link($page->ID); ?></loc>
+	      <lastmod><?php echo str_replace(" ","T",get_page($page->ID)->post_modified); ?>+00:00</lastmod>
+	      <changefreq>weekly</changefreq>
+	      <priority>0.6</priority>
+	      </url>
+      <?php }} /* 单页面循环结束 */ ?>
+      <?php
+      /* 博客分类 */
+      $terms = get_terms('category', 'orderby=name&hide_empty=0' );
+      $count = count($terms);
+      if($count > 0){
+	  foreach ($terms as $term) { ?>
+	      <url>
+	      <loc><?php echo get_term_link($term, $term->slug); ?></loc>
+	      <changefreq>weekly</changefreq>
+	      <priority>0.8</priority>
+	      </url>
+      <?php }} /* 分类循环结束 */?>
+      <?php
+      /* 标签(可选) */
+      $tags = get_terms("post_tag");
+      foreach ( $tags as $key => $tag ) {
+	  $link = get_term_link( intval($tag->term_id), "post_tag" );
+	  if ( is_wp_error( $link ) )
+	      return false;
+	  $tags[ $key ]->link = $link;
+	  ?>
+	  <url>
+	  <loc><?php echo $link ?></loc>
+	  <changefreq>monthly</changefreq>
+	  <priority>0.4</priority>
+	  </url>
+      <?php } /* 标签循环结束 */ ?>
+      </urlset>
+
+    #+END_SRC
+** nextCloud
+** OpenSource Social Network(OSSN)
+* C++/C项目
+** awesome wm
+   它定义的是一组操作方法，不是一个完整的桌面环境，不像kde，它有登录管理器，桌面管理，
+   以及完整相关库和各类应用软件，也正是因此gtk和qt软件在与awesome协同工作时相关的样式
+   图标可能会发生问题
+   #+BEGIN_SRC quote
+   解决qt程序相关图标不能正常显示
+   使用qt5-style-plugins解决
+   #+END_SRC
+
+   相关扩展
+   foggy，一个管理屏幕的扩展，可以方便设置屏幕分辩率和多屏设置
+   collision，该插件实现了使用键盘移动窗口及设置窗口大小
+
+** kde/gnome
+   KDE防误触
+   syndaemon该程序监控键盘活动，当键盘活动时禁用触控板
+   #+BEGIN_SRC sh
+     syndaemon -t -k -i 2 -d &
+   #+END_SRC
+   -i 2参数
+    设定一个等待时间，它决定了在最后一个键盘按键按下后过多少秒以后重新启用触摸板。
+    -t参数
+    仅仅在打字时禁用触击和滚动而不禁用鼠标移动。
+    -k
+    tells the daemon to ignore modifier keys when monitoring keyboard activity (e.g.: allows Ctrl+Left Click).
+    -d
+    starts as a daemon, in the background.
+** qt/gtk
+** khtml
+   渲染引擎，与Blink不同，它没有使用一大堆的相关的优化技术，使用KJS，
+* Python项目   :详情见python.org:
+  :PROPERTIES:
+  :ID:       o2b:401a7b76-05ea-4f70-9cea-5676219717be
+  :POST_DATE: [2020-04-27 Mon 16:44]
+  :BLOG:     myblog
+  :POSTID:   46
+  :END:
+** django
+   它是一个完整的MVC框架，它针对网站开发进行的封装主要有以下，请求，响应
+   路由，模板，视图，以及中间件，日志和缓存
+   同时提供一个强大的命令行管理工具，以工程方式进行组织相关的代码文件，使用
+   startproject命令开始一个工程主要以下相关文件，工程目录下主要保存settings.py
+   ,urls.py,asgi.py,wsgi.py，接着使用startapp命令开始一个新的应用，它会生成以下
+   文件models.py,views.py,test.py等文件，models.py文件中保存相关的数据模型，views.py
+   则保存相关方法，执行请求的相关动作，而路由与方法则是由于urls.py文件中进行关联
+   
+   安装比较简单
+   直接使用
+   #+BEGIN_SRC sh
+     pip3 install django
+   #+END_SRC
+   创建一个工程
+   #+BEGIN_SRC sh
+     django-admin startproject orgmodeblog
+     cd orgmodeblog
+     django-admin startapp blog
+     python manage.py runserver
+   #+END_SRC
+   目录结构
+   | 文件        | 作用             |
+   |-------------+------------------|
+   | settings.py | 工程相关设置文件 |
+   | urls.py     | 匹配路由与方法   |
+   | wsgi.py     | 提供开发服务器   |
+   | asgi.py     |                  |
+
+   生成数据库，默认使用sqlite3
+   #+BEGIN_SRC sh
+     python manage.py migrate
+     pyhton manage.py createsuperuser
+   #+END_SRC
+** flask
+   django框架非常完善，而flask则是走向另一个极端，它非常的简练，它没有集成ORM，这是
+   它依赖的库非常少，这就是它的一大优势，它没有集成太多功能，所有功能可以自由选择，
+   它只提供一组命令行功能，路由功能，模板，内置一个测试服务器，可以说它是非常简练了
+** tornado
+
+** scrapy
+   爬虫框架，提供一组命令行接口，可以快速写出爬虫脚本
+   创建命令scrapy startproject project-name
+   创建蜘蛛scrapy genspider name  domain
+   运行蜘蛛scrapy crawl name
+
+*** scrapy-redis
+    分布式爬虫解决方案，使用redis作为数据库
+** ranger
+   一个强大的命令行文件管理器，使用vi键位操作方法，可以有快速对文件进行操作
+   同时可以预览相关的文本文件
+
+** virtualenv
+   python虚拟环境，python相关库通过pip管理，问题在于如果安装了太多的包，那么很容易
+   发生版本冲突问题，因为各个包之间的依赖各不相同，且随着安装包越来越大，使得import
+   操作也会越来越慢，而virtualenv则是很好的解决了这个问题，它隔离了不同库，它们之间
+   不受影响
+
+** shadowsocks
+   代理服务，在国内通常被用来翻墙，它是一项服务，它的另一个作用就是进行转发，使用
+   一个远程服务器，进行转发，这样就可以隐藏ip地址
+** tensorflow
+   一组深度学习的工具，它的功能非常强大
+** jupyter notebook
+   使用ipython作为内核，采用django开发的开发环境，机器学习及深度学习的专属工作
+   环境，它同时支持markdown和latex公式，不过我更喜欢在vscode中使用jupyter notebook
+   使用vscode进行优雅的工作
+*** 快捷键
+     1. Jupyter Notebook有两种mode
+        Enter：进入edit模式
+        Esc：进入command模式
+     2. Command命令快捷键：
+        A：在上方增加一个cell
+        B：在下方增加一个cell
+        X：剪切该cell
+        C：复制该cell
+        V：在该cell下方粘贴复制的cell
+        Shift-V：在该cell上方粘贴复制的cell
+        L：隐藏、显示当前cell的代码行号
+        shift-L：隐藏/显示所有cell的代码行号
+        O：隐藏该cell的output
+        DD：删除这个cell
+        Z：撤销删除操作
+        Y：转为code模式
+        M：转为markdown模式
+        R：转为raw模式
+        H：展示快捷键帮助
+        Shift-Enter：运行本单元，选中下个单元 新单元默认为command模式
+        Ctrl-Enter 运行本单元
+        Alt-Enter 运行本单元，在其下插入新单元 新单元默认为edit模式
+        OO：重启当前kernal
+        II：打断当前kernal的运行
+        shift+上/下：向上/下选中多个代码块
+        上/下：向上/下选中代码块
+        F：查找替换
+
+     3. Edit命令快捷键：
+        Tab：代码补全
+        ctrl]或Tab：缩进（向右）
+        ctrl[或shift-Tab：反缩进（向左）
+        ctrl A：全选
+        ctrl D：删除整行
+        ctrl Z：撤销
+** pytest
+   
+* javascript项目
+  #+BEGIN_SRC quote
+  nodejs
+  Run `sudo apt-get install -y nodejs` to install Node.js 12.x and npm
+  You may also need development tools to build native addons:
+     sudo apt-get install gcc g++ make
+  To install the Yarn package manager, run:
+     curl -sL https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+     echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+     sudo apt-get update && sudo apt-get install yarn  
+  #+END_SRC
+** javascript  
+   javascript语言与其他编程语言有些不同，由于历史原因，使得它有许多代码规范，比如CommonJS风格的代码
+   主要是在服务器端，而AMD与CMD风格的代码主要是在浏览器端
+   最开始它是出现在浏览上，用来实现一些简单的代码交互工作，由于浏览器日益复杂，且html代码都是大量重
+   复代码
+   
+** react
+   它使用程序设计的思想，且，它是用来开发单页应用，每一个页都是一个class对象，其次使
+   用jsx的语法编写界面与后端的程序设计方法有些类似，同时所有的react页都继承自同一个
+   对象，react.compoent，对于
+   它的
+*** react-router
+    提供路由功能，react本身是只能写单页应用，没有提供路由功能，加入路由功能，以及数据
+    访问接口，它就变成了一个完整的框架
+*** react-redux
+    
+*** 生命周期
+    1. getDefaultProps
+       组件被创建之前加载，会先调用getDefaultProps()，并使用getInitialState()初始
+       化组件状态
+    2. componentWillMount
+       加载组件会调用此函数
+    3. componentDidMount
+       在组件第一次绘制之后，会调用该函数，通知组件已经加载完成
+    4. componentWillReceiveProps
+       如果已加载的组件收到新参数属性，调用该函数
+    5. shouldComponentUpdate
+       当组件接收到新的属性和状态改变时，调用该函数
+    6. componentWillUpdate
+       如果组件或者属性改变，且shoudCompoentUpdate()返回true，开始更新组件，并且调用该函数
+    7. componentDidUpdate()
+       调用render()更新完成界面之后，调用该函数
+    8. componentWillUnmount()
+       当组件被移除时，调用该函数
+***  useState与useEffect
+    :PROPERTIES:
+    :ID:       o2b:c1db9fe3-0485-44dc-9bad-e5ff08d15286
+    :TAGS: react javascript
+    :CATEGORY: javascript
+    :POST_DATE: [2020-07-19 Sun 20:13]
+    :BLOG:     myblog
+    :POSTID:   22
+    :END:
+    该功能主要是为了简化代码，在class风格的react项目中，相关的state变量以及state函数，以及
+    生命周期函数，比较烦琐，使用useState来负责创建state变量以及相关的state函数，同时使用useEffect
+    控制生命周期，不需要再使用componentDidMount，componentDidUnMount等
+    useState
+    使用useState函数创建state变量count，同时生成一个state函数，操作count
+    且useState在class内部不起作用，所以只有在函数组件的情况下可以使用
+    这是因为因为组件中没有this，所以函数组件也称无状态组件，而useState则
+    扩展了函数组件的功能
+    #+BEGIN_SRC js
+      import React,{useState} from 'react';
+
+      function Example(){
+	  const [count,setCount]=useState(0);
+
+	  return (
+		  <div>
+		  <p>You clciked {count} times</p>
+		  <button onclick={()=>setCount(count+1)}>
+		  Click me
+	          </button>
+		  </div>
+	  );
+      }
+    #+END_SRC
+    useEffect
+    useEffect对应三个函数componentDidMount,componentDidUpdate,componentWillUnmount三个函数组件
+    #+BEGIN_SRC js
+      import React,{useState,useEffect} from 'react';
+
+      function Example(){
+	  const [count,setCount]=useState(0);
+
+	  useEffect(()=>{
+	      document.title=`You clicked ${count} times`;
+	  }，[count]);//添加第二个参数，只有当count发生变化，才会执行effect
+	  return (
+		  <div>
+		  <p>You clicked {count} times </p>
+		  <button onclick={()=>setCount(count+1)}>
+		  Click me
+	          </button>
+		  </div>
+	  );
+      }
+    #+END_SRC
+
+    返回一个函数是effect的可清除机制，每个effect都可以返回一个清除函数
+    react返回一个函数，在组件卸载时执行清除操作时调用它，effect在每次
+    渲染时都会执行
+    #+BEGIN_SRC js
+      import React,{useState,useEffect} from 'react';
+
+      function FriendStatus(props){
+	  const [isOnline,setIsOnline]=useState(null);
+
+	  useEffect(()=> {
+	      function handleStatusChange(status){
+		  setIsOnline(status.isOnline);
+	      }
+	      ChatAPI.subscribeToFriendStatus(props.firend.id,handleStatusChange);
+
+	      return function cleanup(){
+		  ChatAPI.unsubscribeFromFriendStatus(props.friend.id,handleStatusChange);
+	      };
+	  });
+	  if(isOnline===null){
+	      return 'Loading...';
+	  }
+	  return isOnline ? 'Online':'Offline';
+      }
+    #+END_SRC
+** vue
+   vue与react完全不同，二者可说除了设计思想是一样的之外，没有任何相同的地方，react使用程序的方法，而
+   vue则是使用html标签结合json格式的javascript，每一个页采取的结构都是<template>，<script>，<style>
+   三段式的，此外它还有自带的指令，以v-打头的指令，又引入了槽的机制，可以说它的相关概念比react要多，
+   且react使用scss，而vue则是less
+** 开源ui
+*** antd
+*** boostrap
+** nodejs
+   安装react
+   输入以下命令npm install create-react-app
+   创建工程create-react-app project-name
+   它会生成相关的工程文件以及git初始化
+   打包项目，使用npm run build
+
+* linux项目
+** gentoo
+   该发行版与其他发行版不同，它的软件包管理，管理的是源代码，不使用二进制，这是一大
+   特点，如果对于计算机
+*** 静态ip设置
+    在/etc/dhcpcd.conf文件中
+    设置static ip_address＝92.168.100.1
+    设置static routers＝255.255.255.0
+
+** lfs
+   从源码构建操作系统，首先是构建编译环境，然后是编译内核及相关软件，最后是安装重启
+
+* 虚拟化技术
+** virtuaplbox
+*** 相关命令
+     该虚拟机软件除了好用的gui前端之外，还有非常强大的命令行，
+     vboxmanage该命令负责管理虚拟机
+     vboxsdl启动虚拟机，与虚
+     vboxheadless 在后台启动虚拟机
+
+     virtualbox开机自启动虚拟机
+     修改配置文件
+     vi /etc/default/virtualbox
+
+     VBOXAUTOSTART_DB=/etc/vbox
+     VBOXAUTOSTART_CONFIG=/etc/vbox/autostartvm.cfg
+
+     创建cfg文件
+
+     default_policy=deny
+     root={
+     allow=true
+     startup_delay=10
+     }
+
+     设置自启动目录
+     vboxmanage setproperty autostartdbpath /etc/vbox
+
+     添加启动虚拟机到目录中
+     vboxmanage modifyvm Gentoo --autostart-enabled on
+*** vagrant
+    使用Ruby写成的基于virtualbox一组命令行，
+    相关配置
+    
+** qemu
+   虚拟机仿真软件，它与其他虚拟机不同，它是用来模拟CPU架构的，比如桌面PC
+   采用X86_64,手机处理器则是使用ARM架构的处理，我更喜欢用它进行linux内核
+   调试
+** docker
+   容器虚拟化技术，与virtualbox之流的全虚拟化技术不同，它依赖于linux内核
+   在资源使用上，比起全虚拟化技术要节约的多，同时它以进程的形式运行，这就
+   方便了开发，可以把编译环境放到docker中，加快启动速度
+*** docker-machine
+*** dockerfile
+    1. ADD        添加文件到镜像中
+    2. COPY       
+    3. ENV
+    4. EXPOSE
+    5. FROM       该指令设置一个基准镜像构建一个新的镜像，一个Dockerfile文件必须以该指令开头
+    6. LABEL
+    7. STOPSIGNAL
+    8. USER
+    9. VOLUME
+    10. WORKDIR
+    11. ONBUILD
+    12. RUN     该指令在当前镜像的最顶执行命令，然后提交结果
+
+
+*** docker-compose
+    该软件是对docker的管理工具,使用yaml格式的数据设置容器参数
+
+*** docker技术内幕
+    
+**** Namespace
+
+**** Cgroup
+
+**** Aufs
+*** minikube
+    kurbernetes则是docker的分布式管理工具，只能使用docker，像openstack则不同，底层的虚拟化
+    技术可以更改，可以使用docker，virtualbox或者是vmware workstation之类
+****  k9s 
+     这些管理工具都是没有gui，所以出现了一个tui工具就是
+* linux实用软件
+** chezmoi
+** 翻墙软件
+   Shadowsocks
+** 全局代理
+   privoxy
+   与Shadowsocks协同工作
+   同时将以下设置注释
+   取消过滤控制
+   取消所有actions设置
+   #+BEGIN_SRC json
+     #filterfile default.filter
+     #filterfile user.filter      # User customizations
+     ...
+     #actionsfile match-all.action # Actions that are applied to all sites and maybe overruled later on.
+     #actionsfile default.action   # Main actions file
+     #actionsfile user.action      # User customizations
+   #+END_SRC
+   在/etc/privoxy/config新以下设置
+   #+BEGIN_SRC json
+   forward-socks5 / 127.0.0.1:1080 .
+   listen-address 127.0.0.1:8118
+   #+END_SRC
+   最后重新启动privoxy
+** ncdu
+   查看文件占用大小
+* 浏览器
+** firefox
+   安装
+   #+BEGIN_SRC sh
+   sudo apt install firefox   
+   #+END_SRC
+
+** chromium
+   安装
+   #+BEGIN_SRC sh
+   sudo snap install chromium   
+   #+END_SRC
+   
+   特殊地址
+   | 变量名              | 作用                   |
+   |---------------------+------------------------|
+   | chrome://about      | 显示所有相关的变量     |
+   | chrome://version    | 显示相关的版本信息     |
+   | chrome://gpu        | 显示gpu相关信息        |
+   | chrome://apps       | 显示app                |
+   | chrome://extensions | 显示chromium相关的扩展 |
+   |                     |                        |
+** qutebrowser
+   :PROPERTIES:
+   :ID:       o2b:afadd93e-ba69-4c80-9c1c-92e79c493f7c
+   :POST_DATE: [2020-10-06 Tue 21:02]
+   :BLOG:     myblog
+   :POSTID:   33
+   :END:
+   使用python写成的关于vim风格的浏览器软件，使用chromium一样的内核
+   安装很简单
+   #+BEGIN_SRC sh
+   sudo apt install qutebrowser   
+   #+END_SRC
+   快捷键示意图
+   [[/home/ren/.emacs.img/n0eRnC.png]]
+* 版本控制软件
+** git
+*** 恢复未提交的代码，恢复文件
+    执行git reflog命令，它会显示HEAD历史q
+    接着执行git reset 需要恢复的分支
+*** 提交文件
+    将修改提交到暂存区
+    git add 文件名
+    然后提交文件
+    git commit -m 提交信息
+    查看提交信息
+    git log
+*** 同步到服务器
+    设置服务器地址
+    git remote add 远程地址
+    git remote set-url 远程地址
+    设置用户名
+    git config --global user.name “用户名”
+    git config --global user.email “邮件地址”
+    同步服务器
+    git push origin master
+*** 管理分支
+    git branch 分支名       创建分支，但不切换当前分支
+    git branch -d 分布名    删除分支
+    git checkout -b 分支名  创建分支，并切换当前分支
+** 乐谱创作软件
+   MuseScore是一款免费，开源且易于使用，强大的音乐创作，播放，乐谱输出。
+   且它支持MIDI键盘输入，也支持导出为其他MusicXML,MIDI的格式
+   官网 https://musescore.org/en
+* linux守护进程管理
+  :PROPERTIES:
+  :ID:       o2b:af19c4b8-f8b8-4e06-bd92-75d1e38721f3
+  :POST_DATE: [2020-06-25 Thu 14:02]
+  :BLOG:     myblog
+  :POSTID:   12
+  :END:
+** systemd
+*** 功能
+     1. systemd 程序以 1 号进程（PID 1）运行，并提供使尽可能多服务并行启动的系统启动能力，它额外加快了总体启动时间。它还管理关机顺序。
+     2. systemctl 程序提供了服务管理的用户接口。
+     3. 支持 SystemV 和 LSB 启动脚本，以便向后兼容。
+     4. 服务管理和报告提供了比 SystemV 更多的服务状态数据。
+     5. 提供基本的系统配置工具，例如主机名、日期、语言环境、已登录用户的列表，正在运行的容器和虚拟机、系统帐户、运行时目录及设置，用于简易网络配置、网络时间同步、日志转发和名称解析的守护进程。
+     6. 提供套接字管理。
+     7. systemd 定时器提供类似 cron 的高级功能，包括在相对于系统启动、systemd 启动时间、定时器上次启动时间的某个时间点运行脚本。
+     8. 它提供了一个工具来分析定时器规范中使用的日期和时间。
+     9. 能感知分层的文件系统挂载和卸载功能可以更安全地级联挂载的文件系统。
+     10. 允许主动的创建和管理临时文件，包括删除。
+     11. D-Bus 的接口提供了在插入或移除设备时运行脚本的能力。这允许将所有设备（无论是否可插拔）都被视为即插即用，从而大大简化了设备的处理。
+     12. 分析启动环节的工具可用于查找耗时最多的服务。
+     13. 它包括用于存储系统消息的日志以及管理日志的工具。
+     
+*** 相关信息
+      systemd 挂载 /etc/fstab 所定义的文件系统，包括所有交换文件或分区。此时，它可以访问位于 /etc 中的配置文件，
+      包括它自己的配置文件。它使用其配置链接 /etc/systemd/system/default.target 来确定将主机引导至哪个状态或目标。
+      default.target 文件是指向真实目标文件的符号链接。对于桌面工作站，通常是 graphical.target，它相当于 SystemV 
+      中的运行级别 5。对于服务器，默认值更可能是 multi-user.target，相当于 SystemV 中的运行级别 3。emergency.target 
+      类似于单用户模式。目标和服务是 systemd 的单元
+
+** SystemV
+   使用 Bash 脚本来完成启动。内核启动 init 程序（这是一个编译后的二进制）后，init 
+   启动 rc.sysinit 脚本，该脚本执行许多系统初始化任务。rc.sysinit 执行完后，init 
+   启动 /etc/rc.d/rc 脚本，该脚本依次启动 /etc/rc.d/rcX.d 中由 SystemV 启动脚本定
+   义的各种服务。其中 X 是待启动的运行级别号。
+* 监控软件
+** conky
+   该软件是一种监控软件，同时也是美化桌面的软件，
+** bashtop
+   使用bash shell编写的监控软件，非常漂亮
+** termshark
+   在命令行终端下的wireshark，wireshark是一款非常强大的网络抓包软件
+* 终端软件
+** tmux
+   终端复用软件，可以在终端中操作多个窗口，这样即可同时做不同的事，尤其是在服务器上，
+   没有图形界面的情况下，需要使用开启多个开启多个程序，就不太方便，
+** konsole
+** alacritty
+   该终端使用GPU进行渲染，
+* SHELL
+** zsh
+   添加相关命令的补全参数
+   source <(命令名  completion zsh)
+   它会生成相关的补全函数 
+   然后导入这些函数，即可使用<TAB>进行补全
+*** on-my-zsh
+    zsh写成的一款增强工具，它提供了许多主题，以及相关的命令缩写
+** bash
+** sh
+   最古老且应用最广泛的shell，它是UNIX第七版的标准shell程序，包含了许多特性，
+   I/O重定向，数据管道，文件名，变量，环境
+* 效率工具
+**  xournalpp    
+   采用GTK写成的一款手写笔记软件，功能非常强大
+**  freeplane
+   使用java开发的一款思维软件，支持latex公式
+** festival
+   文字转语音工具
+* 加密工具
+** openssl
+   生成密钥
+   openssl genpkey -out privkey.pem -algorithm rsa 2048
+   提取公钥
+   openssl rsa -in privkey.pem -outform PEM -pubout -out pubkey.pem
+   进行签名
+   openssl dgst -sha256 -sign privkey.pem -out sign.sha256 client.c
+   获取可读信息－解码
+   openssl enc -base64 -in sign.sha256 -out sign.sha256.base64
+   核实签名
+   openssl dgst -sha256 -verify pubkey.pem -sgnatrue sign.sha256 client
+   数字证书包含哈希值，密钥对，数字签名和加密/解密
+   创建一个CSR文档
+   openssl req -out myserver.csr -new -newkey rsa:4096 -nodes -keyout myserverkey.pem
+   相关设置
+   openssl req -new \
+   -newkey rsa:2048 -nodes -keyout privkeyDC.pem \
+   -out myserver.csr \
+   -subj "/C=US/ST=Illinois/L=Chicago/O=Faulty Consulting/OU=IT/CN=myserver.com"
+   验证
+   openssl req -text -in myserver.csr -noout -verify
+* 渗透测试
+** 查询相关信息
+   | 命令     | 作用                 |
+   |----------+----------------------|
+   | nslookup | 根据域名查询IP地址   |
+   | whois    | 输出ip地址的详细信息 |
+   | dig      | 查询ip               |
+   |          |                      |
+** Metasploit
+*** 相关概念
+    渗透攻击(Exploit)
+    是指由攻击者或渗透测试者利用一个系统、应用或服务中的安全漏洞，所进行的攻击行为。
+    攻击载荷(Payload)
+    是指我们期望目标系统在被渗透攻击之后去执行的代码
+    Shellcode
+    是指在渗透攻击时作为攻击载荷运行的一组机器指令
+    模块(Module)
+    监听器(Listener)
+* 树莓派工具
+**  rapi-imager
+   安装方法
+   #+BEGIN_SRC sh
+     wget https://downloads.raspberrypi.org/imager/imager_1.4_amd64.deb
+     sudo dpkg -i imager_1.4_amd64.deb
+     //或者p
+     sudo apt install rpi-imager
+   #+END_SRC
+** 安装树莓派系统
+   首先需要一张TF卡和读卡器
+   把读卡器插入到电脑
+   #+BEGIN_SRC sh
+     sudo rpi-imager   
+   #+END_SRC
+   选择合适的镜像，接着选择插入的TF卡
+   最后点击写入按钮
+   完成之后，它进行验证，验证完成即可
+** LCD屏幕安装
+   安装驱动程序
+   #+BEGIN_SRC sh
+     git clone https://github.com/goodtft/LCD-show.git
+     chmod -R 755 LCD-show
+     cd LCD-show/
+     sudo ./LCD35-show
+   #+END_SRC
+   
+   旋转方向
+   #+BEGIN_SRC sh
+     cd LCD-show/
+     sudo ./route.sh 90
+   #+END_SRC
+* 备份软件
+** rsync
+* 安全体系
+** 审计软件
+***  lynis
+    审计操作系统
+    安装
+    #+BEGIN_SRC sh
+      sudo apt install lynis
+    #+END_SRC
+    使用github
+    #+BEGIN_SRC sh
+      git clone https://github.com/CISOfy/lynis.git
+    #+END_SRC
+    使用帮助系统
+    lynis show commands
+    审计系统
+    lynis audit system
+***  auditd--日志审计
+    安装
+    #+begin_src sh
+      apt install auditd
+      systemctl start auditd
+    #+end_src
+*** arachni-代码审计
+    #+begin_src sh
+      sudo apt-get install build-essential curl libcurl3 libcurl4-openssl-dev ruby ruby-dev
+      gem install arachni
+    #+end_src
+    使用方法  https://github.com/Arachni/arachni/wiki/Command-line-user-interface
+** 安全软件
+*** clamav
+    :PROPERTIES:
+    :ID:       o2b:7d533587-ff91-40eb-8ec7-50c63cb6de78
+    :POST_DATE: [2020-11-18 Wed 14:53]
+    :BLOG:     myblog
+    :POSTID:   43
+    :END:
+    clamav一款开源的安全软件，与国内的安全软件不同，官方没有提供相关的图形界面，
+    它的物色
+    + 内置支持各种不同的文件格式，如zip,tar,gzip,bzip2等等
+    + 支持大多数的邮件格式
+    + 支持ELF和PE格式的可执行程序
+    + 同时对Office文件也提供了支持
+    + 内置对多种编程语言的支持
+**** 安装
+     在ubuntu下安装
+     #+begin_src sh
+       sudo apt install clamav -y
+     #+end_src
+    更新数据库
+    首先需要停止clamav的守护进程
+    #+begin_src sh
+      systemctl stop clamav-freshclam && freshclam
+    #+end_src
+    接下来它会自动下载相关的cvd格式的数据库
+    使用也比较简单
+    #+begin_src sh
+      clamscan folderName
+    #+end_src
+    它会自动扫描该文件夹下所有文件
+
+   
+   
+
+ # /home/ren/.emacs.img/2LVLuI.png https://www.rchd.xyz/wp-content/uploads/2020/11/2LVLuI.png
+*** selinux
+    管理工具semanage
+    | 对象       | 解释 |
+    |------------+------|
+    | login      |      |
+    | user       |      |
+    | port       |      |
+    | interface  |      |
+    | module     |      |
+    | node       |      |
+    | fcontext   |      |
+    | boolean    |      |
+    | permissive |      |
+    | dontaudit  |      |
+*** iptables   
+    对于网络输入输出定制规则
+* 调试器
+** gdb
+   * 设置断点
+   * 查看相关信息
+     | 命令      | 相关信息               |
+     |-----------+------------------------|
+     | frame     | 打印调用堆栈信息       |
+     | register  | 输出寄存器信息         |
+     | stack     | 函数调用栈信息         |
+     | locals    | 查看当前作用域下的变量 |
+     | variables | 查看全局变量           |
+     | var       | 查看静态变量           |
+     | functions | 显示所有函数           |
+     | threads   | 打印线程信息           |
+     |           |                        |
+* 私有仓库
+** nexus for linux
+   构建私有服务器，在内部网络进行构建，降低风险，同时也可以统一管理软件包
+   同时支持多种服务构建，可以是debian的deb软件仓库，同样也可以是python的包服务器，或者是java的maven仓库
+   它还支持构建镜像服务器
+*** 安装方法   
+    首先需要下载二进制文件
+    #+begin_src sh
+    touch /etc/systemd/system/nexus.service ＃systemd启动文件
+    echo "
+    [Unit]
+    Description=nexus service
+    After=network.target
+  
+    [Service]
+    Type=forking
+    LimitNOFILE=65536
+    ExecStart=/opt/nexus-3.15.2-01/bin/nexus start
+    ExecStop=/opt/nexus-3.15.2-01/bin/nexus stop
+    User=nexus
+    Restart=on-abort
+    TimeoutSec=600
+  
+    [Install]
+    WantedBy=multi-user.target
+    " >> /etc/systemd/system/nexus.service
+
+    sudo systemctl daemon-reload #重新读取systemd相关的配置文件
+    sudo systemctl enable nexus.service
+    sudo systemctl start nexus.service
+    #+end_src

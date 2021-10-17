@@ -1,0 +1,331 @@
+* Top Level Source Directory
+** boehm-gc
+   The Boehm coservative garbage collector, optionally used as part of the ObjC runtime library 
+   when configured with `--enable-objc-gc`.
+
+** config
+   Autoconf macros and Makefile fragments used throughout the tree.
+
+** contrib
+   Contributed scripts that may be found useful in conjunction with GCC. One of these, 'contrib/
+   texi2pod.pl', is used to generate man pages from Texinfo manuals as part of the GCC build
+   process.
+
+** fixincludes
+   The support for fixing system headers to work with GCC. See 'fixincludes/README' for more 
+   information. The headers fixed by this mechanism are installed in 'libsubdir/include-fixed/
+   README'.
+
+** gcc
+   The main sources of GCC itself (except for runtime libraries), including optimizer, support
+   for different target architecutres, language front ends, and testsuites.
+*** Subdirectories of gcc
+    1. language
+       Subdirectories for various languages. Directories containing a file 'config-lang.in' are
+       language subdirectories. The contents of the subdirectories 'c'
+    2. common
+       Source files shared between the compiler drivers (such as gcc) and the compilers proper(
+       such as 'cc1'). If an architecture defines target hooks shared between those place, it 
+       also has a subdirectory in 'common/config'. 
+    3. config
+       Configuration files for supported architectures and operating system.
+    4. doc
+       Texinfo documention for GCC,together with automatically generated man page and support for 
+       converting the installation manual to HTML.
+    5. ginclude
+       System headers installed by GCC, mainly those required by the C standard of freestanding
+       implementations.
+    6. po
+       Message catalogs with translations of messages produced by GCC into various language,
+       'language.po'. This directory also-contains 'gcc.pot', the template for these message
+       catalogues, 'exgettext', a wrapper around gettext to extract the messages from the GCC
+       sources and create 'gcc.pot', which is run by 'make gcc.pot', and 'EXCLUDES', a list of 
+       files from which messages should not be extracted.
+    7. testsuite
+** gnattools
+   Support tools for GNAT.
+
+** include
+   Headers for the libiberty library
+
+** intl
+   GNU libintl, from GNU gettext, for systems which do not include in libc.
+
+** libada
+   The Ada runtime library
+
+** libatomic
+   The runtime support library for atomic operations.(__sync and __atomic)
+
+** libcpp
+   The C preprocessor library.
+
+** libdecnumber
+   The Decimal Float support library.
+
+** libffi
+   The libffi library, used as part of the go runtime library.
+
+** libgcc
+   The GCC runtime library.
+
+** libfortran
+   The Fortran runtime library
+
+** libgo
+   The Go runtime library. The bulk of this library is mirrored from the master Go repository
+** libgomp
+   The libiberty library, used for portablility and for some generally useful data strcutures and
+   algorithms.
+
+** libitm
+   The runtime support library for transactional memory.
+
+** libobjc
+   The Objective-C and Objective-C++ runtime library.
+** libquadmath
+   The D standard and runtime library. The bulk of this library is mirrored from  the master D 
+   repository.
+
+** libssp
+   The Stack protector runtime library.
+
+** libstdc++-v3
+   The C++ runtime library.
+
+** lto-plugin
+   Plugin used by the linker if link-time optimizations are enabled.
+
+** mantainer-scripts
+   Scripts used by the gccadmin account on gcc.gnu.org
+
+** zlib
+   The zlib compression library, used for compressing and uncompressing GCC's intermediate 
+   language in LTO object files.
+
+* Install gcc from source code 
+  Install neccessary package 
+  #+begin_src sh
+    sudo apt install libmpfr-dev libmpc-dev lib
+  #+end_src
+  
+  Download source code from internet
+  #+begin_src sh
+    ./configure && make -j 4 && make install
+  #+end_src
+
+  Debug gcc  
+  #+begin_src sh
+    mkdir build && cd build
+    CFLAGS="-g" ../configure  --prefix=/usr/local --disable-multilib --enable-languages=c \
+    --program-prefix=debug-
+    make -j4 && make install
+    gdb -tui  /usr/local/bin/gcc
+  #+end_src
+
+* option
+  
+** syntax validator
+   #+begin_src sh
+   gcc -fsyntax-only filename.c
+   #+end_src
+
+* gcc设计
+  首先是树节点的设计，gcc中对AST节点使用共用体数据结构进行表示，即union tree_node，tree_node是一
+  一个庞大的，复杂的数据结构，是各种各样表示树节点结构体的一个抽象描述
+  不同树点的基本描述信息，主要包括树节点的标识，名称，类型及操作数个数等，相关定义在gcc/tree.def
+  中，查询相关信息可用
+  #+begin_src sh
+  grep ^DEFTREECODE gcc/tree.def
+  #+end_src
+  
+  tree.c/tree_code_class定义了树节点类型，主要有常量节点，类型节点，声明节点，比较表达式节点，
+  单目运算表达式节点，双目运算表达式节点，表示树节点类型的枚举值
+  #+begin_src c
+    enum tree_code_class {
+      tcc_exceptional, /* An exceptional code (fits no category).  */
+      tcc_constant,    /* A constant.  */
+      /* Order of tcc_type and tcc_declaration is important.  */
+      tcc_type,        /* A type object code.  */
+      tcc_declaration, /* A declaration (also serving as variable refs).  */
+      tcc_reference,   /* A reference to storage.  */
+      tcc_comparison,  /* A comparison expression.  */
+      tcc_unary,       /* A unary arithmetic expression.  */
+      tcc_binary,      /* A binary arithmetic expression.  */
+      tcc_statement,   /* A statement expression, which have side effects
+			  but usually no interesting value.  */
+      tcc_vl_exp,      /* A function call or other expression with a
+			  variable-length operand vector.  */
+      tcc_expression   /* Any other expression.  */
+    };
+  #+end_src
+
+  tree.c/tree_code_type[]则是给出以TREE_CODE为索引的所有树节点的类型，以TREE_CODE为索引的树节点
+  类型数组，经定义如下
+  #+begin_src c
+    const enum tree_code_class tree_code_type[] = {
+    #include "all-tree.def"
+    };
+  #+end_src
+
+  相关的类型名称则是定义的tree_code_class_strings数组中，主要有常量，类型，声明，引用，比较等
+  树节点类型名称的字符串数组
+  #+begin_src c
+    const char *const tree_code_class_strings[] =
+      {
+	"exceptional",
+	"constant",
+	"type",
+	"declaration",
+	"reference",
+	"comparison",
+	"unary",
+	"binary",
+	"statement",
+	"vl_exp",
+	"expression"
+      };
+
+  #+end_src
+  
+  最后是操作数个数，在tree_code_length数组中定义，以及TREE_CODE为索引的所有树节点操作数个数，表
+  示树节点操作数的数目
+  #+begin_src c
+    const unsigned char tree_code_length[] = {
+    #include "all-tree.def"
+    };
+  #+end_src
+  
+  树节点的结构则是tree.h/tree_node的一个共用体
+  |-----------------------------------------------+------------------------+--------------------|
+  | 共用体中的结构体字段                          | 意义                   | 备注               |
+  |-----------------------------------------------+------------------------+--------------------|
+  | struct tree_base base                         | 树节点的基类           | 只作为构成其他具体 |
+  | struct tree_common common                     | 树节点的共用基本信息   | 树节点的一部分出现 |
+  |-----------------------------------------------+------------------------+--------------------|
+  | struct tree_int_cst int_cst                   | 整型常量节点           |                    |
+  | struct tree_real_cst real_cst                 | 实数常量节点           |                    |
+  | struct tree_fixed_cst fixed_cst               | 定点数常量节点         | 各种常量节点       |
+  | struct tree_string string                     | 字符串常量节点         |                    |
+  | struct tree_complex complex                   | 复数常量节点           |                    |
+  | strcut tree_vector vector                     | 向量常量节点           |                    |
+  |-----------------------------------------------+------------------------+--------------------|
+  | struct tree_identifier identifier             | 标识符节点             |                    |
+  |-----------------------------------------------+------------------------+--------------------|
+  | struct tree_decl_minimal decl_minimal         | 声明的基类             |                    |
+  | struct tree_decl_common decl_common           | 声明的基类             |                    |
+  | struct tree_decl_with_rtl decl_with_rtl       | 具有rtl属性的声明      |                    |
+  | struct tree_decl_non_common decl_non_common   | 非一般声明的基类       |                    |
+  | struct tree_parm_decl parm_decl               | 参数声明节点           |                    |
+  | struct tree_decl_with_vis decl_with_vis       | 具有可见性声明基类     | 各种声明节点       |
+  | struct tree_var_decl var_decl                 | 变量声明               |                    |
+  | struct tree_field_decl field_decl             | 字段声明               |                    |
+  | struct tree_label_decl label_decl             | 标签声明节点           |                    |
+  | struct tree_result_decl result_decl           | 返回值声明节点         |                    |
+  | struct tree_const_decl const_decl             | 常量声明节点           |                    |
+  | struct tree_type_decl type_decl               | 类型声明节点           |                    |
+  | struct tree_function_decl function_decl       | 函数声明节点           |                    |
+  |-----------------------------------------------+------------------------+--------------------|
+  | struct tree_type type                         | 类型节点               |                    |
+  | struct tree_list list                         | 列表节点               |                    |
+  | struct tree_vec vec                           | 向量节点               |                    |
+  | struct tree_exp exp                           | 表达式节点             |                    |
+  | struct tree_ssa_name ssa_name                 | 静态单赋值SSA_NAME节点 |                    |
+  |-----------------------------------------------+------------------------+--------------------|
+  | struct tree_block block                       | 块信息节点             |                    |
+  | struct tree_binfo info                        |                        |                    |
+  |-----------------------------------------------+------------------------+--------------------|
+  | struct tree_statement_list stmt_list          | 语句列表节点           |                    |
+  |-----------------------------------------------+------------------------+--------------------|
+  | struct tree_constructor constructor           |                        |                    |
+  | struct tree_memory_tag mtag                   |                        |                    |
+  | struct tree_omp_clause opm_clause             | 其他                   |                    |
+  | struct tree_memory_partition_tag optimization |                        |                    |
+  | struct tree_target_option target_option       |                        |                    |
+  |-----------------------------------------------+------------------------+--------------------|
+
+
+* 词法分析
+  
+* 语法分析
+* GIMPLE中间表示
+  |----------------+------------------------------------------------------------------------------|
+  | GIMPLE语句类型 | 包含的GIMPLE语句（GIMPLE_CODE)                                               |
+  |----------------+------------------------------------------------------------------------------|
+  | 可以出现在高级 | GIMPLE_ASM                   GIMPLE_GOTO          GIMPLE_OMP_SECTIONS        |
+  | GIMPLE和低级   | GIMPLE_ASSIGN                GIMPLE_LABEL         GIMPLE_OMP_SECTIONS_SWITCH |
+  | GIMPLE中       | GIMPLE_CALL                  GIMPLE_NOP           GIMPLE_OMP_SINGLE          |
+  |                | GIMPLE_CHANGE_DYNAMIC_TYPE   GIMPLE_OMP_ROR       GIMPLE_OMP_ATOMIC_LOAD     |
+  |                | GIMPLE_SWITCH                GIMPLE_OMP_MASTER    GIMPLE_OMP_ATOMIC_STORE    |
+  |                | GIMPLE_RETURN                GIMPLE_OMP_ORDERED   GIMPLE_OMP_CONTINUE        |
+  |                | GIMPLE_PHI                   GIMPLE_OMP_PARALLEL  GIMPLE_OMP_CRITICAL        |
+  |                | GIMPLE_RES                   GIMPLE_OMP_RETURN                               |
+  |                | GIMPLE_COND                  GIMPLE_OMP_SECTION                              |
+  |----------------+------------------------------------------------------------------------------|
+  | 只出现在高级   | GIMPLE_EH_FILTER             GIMPLE_CATCH         GIMPLE_BIND                |
+  | GIMPLE中       | GIMPLE_TRY                                                                   |
+  |----------------+------------------------------------------------------------------------------|
+
+
+  GIMPLE数据结构
+  |------------------------------------------+-----------------------+------------------------------------------|
+  | GIMPLE CODE                              | GSS: Gimple Statement | 存储时使用的结构体                       |
+  |------------------------------------------+-----------------------+------------------------------------------|
+  | GIMPLE_ASSIGN GIMPLE_CALL GIMPLE_RETURN  | GSS_WITH_MEM_OPS      | struct gimple_statement_with_memory_ops  |
+  | GIMPLE_COND   GIMPLE_GOTO GIMPLE_LABEL   | GSS_WITH_OPS          | struct gimple_statement_with_ops         |
+  | GIMPLE_CHANGE_DYNAMIC_TYPE GIMPLE_SWITCH |                       |                                          |
+  | GIMPLE_ASM                               | GSS_ASM               | struct gimple_statement_asm              |
+  | GIMPLE_BIND                              | GSS_BIND              | struct gimple_statement_bind             |
+  | GIMPLE_CATCH                             | GSS_CATCH             | struct gimple_statement_catch            |
+  | GIMPLE_EH_FILTER                         | GSS_EH_FILTER         | struct gimple_statement_eh_filter        |
+  | GIMPLE_NOP                               | GSS_BASE              | struct gimple_statement_base             |
+  | GIMPLE_PHI                               | GSS_PHI               |                                          |
+  | GIMPLE_TRY                               | GSS_TRY               | struct gimple_statement_try              |
+  | GIMPLE_WITH_CLEANUP_EXPR                 | GSS_WCE               | struct gimple_statement_wce              |
+  | GIMPLE_OMP_CRITICAL                      | GSS_OMP_CRITICAL      | struct gimple_statement_omp_critical     |
+  | GIMPLE_OMP_FOR                           | GSS_OMP_FOR           | struct gimple_statement_omp_for          |
+  | GIMPLE_OMP_MASTER GIMPLE_OMP_ORDERED     | GSS_OMP               | struct gimple_statement_omp              |
+  | GIMPLE_OMP_SECTION                       |                       |                                          |
+  | GIMPLE_OMP_RETURN                        | GSS_BASE              | struct gimple_statement_base             |
+  | GIMPLE_OMP_SECTIONS_SWITCH               |                       |                                          |
+  | GIMPLE_OMP_CONTINUE                      | GSS_OMP_CONTINUE      | struct gimple_statement_omp_continue     |
+  | GIMPLE_OMP_PARALLEL                      | GSS_OMP_PARALLEL      | struct gimple_statement_omp_parallel     |
+  | GIMPLE_OMP_TASK                          | GSS_OMP_TASK          | struct gimple_statement_omp_task         |
+  | GIMPLE_OMP_SECTIONS                      | GSS_OMP_SECTIONS      | struct gimple_statement_omp_sections     |
+  | GIMPLE_OMP_SINGLE                        | GSS_OMP_SINGLE        | struct gimple_statement_omp_single       |
+  | GIMPLE_OMP_ATOMIC_LOAD                   | GSS_OMP_ATOMIC_LOAD   | struct gimple_statement_omp_atomic_load  |
+  | GIMPLE_OMP_ATOMIC_STORE                  | GSS_OMP_ATOMIC_STORE  | struct gimple_statement_omp_atomic_store |
+  | GIMPLE_PREDICT                           | GSS_BASE              | struct gimple_statement_base             |
+  |------------------------------------------+-----------------------+------------------------------------------|
+* PASS
+  #+begin_src c
+    //GCC中处理过程Pass基本描述
+    struct opt_pass
+    {
+      enum opt_pass_type { // Pass的类型
+	GIMPLE_PASS,
+	RTL_PASS,
+	SIMPLE_IPA_PASS,
+	IPA_PASS
+      } type;
+
+
+      const char *name;  //Pass的名称
+      bool (*gate) (void);  //Pass执行条件的函数指针，当gate函数返回true时才执行该Pass
+      unsigned int (*execute) (void);//Pass处理的函数指针，执行的条件为gate函数返回true
+
+      struct opt_pass *sub; //子Pass指针
+      struct opt_pass *next; //指向下一个Pass
+
+      int static_pass_number; //静态的Pass编号
+
+      unsigned int tv_id; //该Pass的统计时间
+      unsigned int properties_required; //执行该Pass所需要满足的属性
+      unsigned int properties_provided; //执行该Pass所提供的属性
+      unsigned int properties_destroyed; //执行该Pass所破坏的属性
+
+      unsigned int todo_flags_start; //执行该Pass之前需要执行动作的标识
+      unsigned int todo_flags_finish;//执行该Pass之后需要执行动作的标识
+    };
+
+  #+end_src

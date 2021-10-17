@@ -1,0 +1,286 @@
+*  What Blink does
+  Blink is a rendering engine of the web platform . Roughly speaking , Blink implements everything
+  that renders content inside a browser tab:
+
+  * Implement the specs of the web platform , including DOM , CSS and Web IDL
+  * Embed V8 and run JavaScript
+  * Request resources from the underlying network stack
+  * Build DOM trees
+  * Calculate style and layout
+  * Embed Chrome Compositor and draw graphics
+
+* Process/thread architecture
+** Processes
+   Chromium has a multi-process architecture . Chomium has one browser process and N sandboxed renderer
+   process . Blink run in a renderer process .
+   How many renderer processes are created ? For security reasons , it is important to isolate memory address
+   regions between cross-site documents . Conceptually each renderer process should be dedicated to at most
+   one site . Realistically , however , it's sometimes too heavy to limit each renderer process to a single
+   site when user open too many tabs or the device does not have enough RAM . Then a renderer process may be
+   shared by multiple iframes or tabs loaded from different sites . This means that iframes in one tab
+   may be hosted by different renderer processes and that iframes in different tabs may be hosted by the
+   same renderer process
+
+   Given that a renderer process runs in a sandbox , Blink needs to ask the browser process to dispath system
+   calls  and access user profile data . This browser-render process communication is realized by Mojo .
+   (Note: In the past we were using Chromium IPC and a bunch of places are still using it . However , it's
+   deprecated and users Mojo under the hook ) On the Chromium side , Servicification is ongoing and abstructing
+   the browser process as a set of "service"s . From the Blink perspective , Blink can just use Mojo to interact
+   with the services and the browser process .
+
+** Threads
+   How many threads are created in a renderer process ?
+   Blink has one main thread , N worker threads and couple of internal threads .
+   Almost all important things happen on the main thread . All JavaScript , DOM , CSS , style and layout
+   calculations run on the main thread . Blink is highly optimized to maximize the performance of the main
+   thread , assuming the mostly single-threaded architecure .
+   Blink may create multiple worker theads to run Web Workers , ServicesWorker and Worklets .
+   Blink and V8 may create a couple of internal threads to handle webaudio , database , GC etc.
+
+   For cross-thread communications , you have to use message passing using PostTask APIs . Shared memory
+   programming is discouraged except a couple of places that really need to use it for performance reasons .
+   This is why you don't see many MutexLocks in the Blink code base.
+
+** Initialization & finalization of Blink
+   Blink is initialized by BlinkInitializer::Initialize() . This method must be called before executing any
+   Blink code .
+   On the other hand , Blink is nerver finalized , the renderer process is forcibly exited without being
+   cleaned up . One reason is performance . The other reason is in general it's really hard to clean up
+   everything in the renderer process in a gracefully ordered manner .
+
+* Directory structure
+
+** Content public APIs and Blink public APIs
+   Content public APIs are the API layer that enables embedders to embed the rendering engine . Content public
+   APIs must be carefully maintained becuase they are exposed to embedders .
+   Blink public APIs are the API layer that exposes functionalities from //third_party/blink/ to Chromium . This
+   API layer is just a historical artifact inherited from WebKit . In the WebKit era , Chomium and Safari shared
+   the implementation of WebKit , so the API layer was needed to expose funcionalities from WebKit to Chromium
+   and Safari . Now that Chromium is the only embedder of //third_part/blink , the API layer does not make sense .
+   We're actively decreasing of Blink public APIs by moving web-platform code from Chromium to Blink .
+
+** Directory structure and dependencies
+   //third_party/blink/ has the following directories.
+   * platform/
+   * cord/ and modules/
+   * bindings/core/ and bindings/modules/
+   * controller/
+
+
+** WTF
+   WTF is a "Blink-specific base" library and located at platform/wtf/ . We are trying to unify coding primitives
+   between Chromium and Blink as much as possible , so WTF should be small . This library is needed because
+   there are a number of types , containers and macros that really need to be optimized for Blink's workload
+   and Oplpan (Blink GC). If types are defined in WTF, Blink has to use the WTF types instead of types
+   defined in //base or std libraries. The most popular ones are vectors, hashsets, hashmaps and strings.
+   Blink should use WTF::Vector , WTF::HashSET, WTF::HashMap,WTF::String and WTF::AtomicString instead of
+   std::vector , std::*set,std::*map and std:string .
+
+* Memory management
+  As far as Blink is concerned , you need to care about three memory allocators:
+  * PartitionAlloc
+
+  * Oilpan
+  * malloc/free or new/delete
+
+  You can allocate an object an PartitionAlloc's heap by using USING_FAST_MALLOC():
+    #+begin_src c++
+      class  SomeObject{
+	USING_FAST_MALLOC(SomeObject);
+	static std::unique_ptr<SomeObject> create(){
+	  return std::make_unique<SomeObject>();
+	  //Allocated on PartitionAlloc's heap.
+	}
+      };
+    #+end_src
+    The lifetime of objects allocated by PartitionAlloc should be managed by scoped_refptr<> or
+    std::uniqure_ptr<>. It is strongly discouraged to manage the lifetime manually. Manual delete is
+    banned in Blink
+
+    You can allocate an object on Oilpan's heap by using GarbageCollected:
+    #+begin_src c++
+      class SomeObject:public GarbageCollected<SomeObject>{
+	static SomeObject* Create(){
+	  return new SomeObject; //Allocated on Oilpan's heap.
+	}
+      };
+    #+end_src
+
+    The lifetime of objects allocated by Oilpan is automatically managed by garbage collection . You have
+    to use special pointers to hold objects on Oilpan's heap . The most important restriction is that you
+    are not allowed to touch any other Oilpan's object in a destructor of Oilpan's object.
+
+    If you use neigher USING_FAST_MALLOC() nor GarbageCollected, objects are allocated on system mallocs's
+    heap . This is strongly discouraged in Blink . All Blink objects should be allocated by PartitionAlloc
+    or Oilpan , as follows:
+    * Use Oilpan by default
+    * use PartitionAlloc only when 1) the lifetime of the object is very clear and std::unique_ptr<> or
+      scoped_refptr<> is enough, 2) allocating the object on Oilpan introduces a lot of complexity or 3)
+      allocating the object on Oilpan introduces a lot of unnecessary pressure to the garbaged collection
+      runtime.
+
+** Task scheduling
+   To improve responsiveness of the rendering engine , tasks in Blink should be executed
+   asynchronously whenever possible . Synchronous IPC / Mojo and any other operations that may
+   take several milliseconds are discouraged .
+   All tasks in a renderer process should be posted to Blink Scheduler with proper task types ,
+   like this:
+   #+begin_src c++
+	  // Post a task to frame's scheduler with a task type of kNetworking
+     frame->GetTaskRunner(TaskType::kNetworking)->PostTask(...,WTF::Bind(&Function))
+   #+end_src
+   Blink Scheduler maintains multiple task queues and smartly prioritizes takes to maximize
+   user-perceived performance . It is important to specify proper task types to let Blink
+   Scheduler schedule the task correctly and smartly
+
+* Page , Frame , Document , DOMWindow etc
+
+** Concepts
+   Page , Frame , Document , ExecutionContext and DOMWindow are the following concepts:
+   * A Page corresponds to concept of a tab (if OOPIF explained below is not enabled) .
+     Each renderer process may contain multiple tabs.
+   * A Frame corresponds to a concept of frame (the main frame or an iframe) . Each Page may
+     contain one or more Frames that are arranged in a tree hierarchy .
+   * A DOMWindow corresponds to a window object in JavaScript . Each Frame has one DOMWindow.
+   * A Document corresponds to a window.document object in JavaScript . Each Frame has one
+     Document
+   * An ExecutionContext is a concept that abstracts a Document and a WorkerGlobalScope
+   
+* Web IDL bindings
+  When JavaScript accesses node.firstChild, Node::firstChild() in node.h gets called. How does it work?
+  Let's take a look at how node.firstChild works.
+* V8 and Blink
+  
+** Isolate , Context ,World
+   When you write code that touches V8 APIs, it is important to understand the concept of Lsolate,
+   Context and World, They are represented by  v8::Loslate, v8::Context and DOMWrapperWorld in 
+   the code base respectively.
+
+   lsolate corrsponds to a physical thread, lsolate : physical thread in Blink = 1:1. The main 
+   thread has its own lsoate. A worker thread has its own lsolate.
+
+   Context corresponds to a global object (In case of a Frame , it's a window object of the Frame).
+   Since each frame has its own window object, there are multiple Contexts in a renderer process.
+   When you call V8 APIs, you have to make sure that you're in the correct context. Otherwis, 
+   v8::lsolate::GetCurrentContext() will return a wrong context and in the worst case it will
+   end up leaking objects and causing security issues.
+
+   World is a concept to support content scripts of Chrome extensions. Worlds do not correspond 
+   to anything in web standards. Content scripts want to share DOM with the web page, but for 
+   security reason JavaScript objects of content scripts must be isolated from the JavaScript
+   heap of the page. (Also a JavaScript heap of one content script must be isolate from a 
+   JavaScript heap of another content script.) To relize the isolation, the main thread creates
+   one main world for the web page and isolate world for each content script. The main world and 
+   the isolated worlds can access the same C++ DOM objects but their JavaScript objects are
+   isolated. This isolation is realized by creating multiple V8 wrappers for one C++ DOM object,
+   One V8 wrapper per world.
+
+   [[/home/ren/.emacs.img/j3oqkf.png]]
+
+   Imagine that there are N Worlds on the main thread (one main world + (N-1) isolated worlds).
+   Then one Frame should have N window objects, each of which is used for one world. Context is
+   a concept that corresponds to a window object. This means that when we have M Frames and N
+   Worlds, we have M*N Contexts (but the Contexts are created lazily).
+   
+   In case of a worker, there is only one World and one global object. Thus there is only one 
+   Context.
+
+   Again, when you use V8 APIs, you should be really careful about using the correct context.
+   Otherwise you'll end up leaking JavaScript objects between isolated worlds and causing security
+   disasters (e.g., an extension from A.com can manipulate an extension from B.com)
+   
+** V8 APIs
+   There are a lot of V8 APIs defined in /v8/include/v8.h. Since V8 APIs are low-level and hard to use 
+   correctly, platform/bindings/ provides a bunch of helper classes that wrap V8 APIs. You should consider
+   using the helper class as much as possible. If you code has to use V8 APIs heavily, the file should be 
+   put in bindings/{core,modules}.
+
+   V8 uses handles to point to V8 objects. The most common handle is v8::Local<>, which is used to point to 
+   V8 objects from a machine stack. v8::Local<> must be used after allocating v8::HandleScope on the 
+   machine stack. v8::Local<> should not be used outside the machine stack:
+   
+   #+begin_src c++
+     void function(){
+       v8::HandleScope scope;
+       v8::Local<v8::Object> object= ... ;
+     }
+
+     class SomeObject : public GarbageCollected<SomeObject>{
+       v8::Local<v8::Object> object_;
+     };
+   #+end_src
+
+   If you want to point to V8 objects from outside the machine stack, you need to use wrapper tracing. 
+   However, you have to be really careful not to create a reference cycle with it. In general V8 APIs are
+   hard to use.
+** V8 wrappers
+   Each C++ DOM object has its corresponding V8 wrapper. Precisely speaking, each C++ DOM object has its 
+   corresponding V8 wrapper per world.
+   
+   V8 wrappers have strong references to their corresponding C++ DOM object. However, the C++ DOM object have
+   only weak references to the V8 wrappers. So if you want to keep V8 wrappers alive for a certain period of
+   time, you have to do that explicitly. Otherwise, V8 wrappers will be prematurely collected and JS properties
+   on the V8 wrappers will be lost
+   #+begin_src html
+     div=document.getElementbyId("div")
+     child=div.firstChild;
+     child.foo="bar"
+     child=null
+     gc()
+     assert(div.fistChild.foo === "bar");
+   #+end_src
+
+   If we don't do anything, child is collected by the GC and thus child.foo is lost. To keep the V8 wrapper
+   of div.firstChild alive, we have to add a mechanism that "keeps the V8 wrapper of div.firstChild alive as
+   long as the DOM tree which div belongs to is reachable from V8".
+* Rendering pipeline
+  There is a long journey from when an HTML file is delivered to Blink to when pixels are displayed on
+  the screen . The rendering pipline is architectured as follows.
+
+  +--------------------------------------------------------------------------------------------------------+
+  |			    		          		  	  	 	       	    	   |
+  |		   +------------+    +------------+  +------------+ +------------+ +--------------+   	   |
+  |   main thread  |  parse     +----+  DOM       +--+ style 	  +-+- layout	 | |  paint       |    	   |
+  |		   +------------+    +------------+  +------------+ +------------+ +-----|--------+  	   |
+  |                         		          		  	  	         |          	   |
+  |                         		          		  	  	 	 |     	    	   |
+  |                                            		  		  	         |     	    	   |
+  |                              |--------------------------------------------------------     	    	   |
+  |                              |                                	  	 	       	    	   |
+  |			  +------+------+   +-----------+  +------------+ +--------------+     	    	   |
+  |   compositer thread   | commit      +---+ tiling    +--+ raster     +-+ draw     	 |     	    	   |
+  |			  +-------------+   +-----------+  +------------+ +-----+--------+     	    	   |
+  |                                                                             |              	    	   |
+  |                                                                             |              	    	   |
+  |                                                                             |                   	   |
+  |                                                                     +-------+----------+        	   |
+  |                                                                     | GPU process      |               |
+  |                                                                     +------------------+               |
+  +--------------------------------------------------------------------------------------------------------+
+* Blink渲染基础
+** Node对象和DOM树
+   在Blink中，网页在内部是以Node对象的DOM树，每个页面中的HTML元素都关联到一个节点，最顶
+   层的节点总是Document节点
+** Node对象转换到RenderObjects
+   每个在DOM树中的Node节点，都会创建相应的RenderObject。RenderObject存储在一棵并行的树
+   结构，名为Render树。每个RenderObject都知道如果绘制Node节点的内容并显示。它是通过必要
+   的图形调用转换成GraphicsContext。每个GraphicsContext将写入的像素转换到位图，最终显示
+   在屏幕上。在Chrome中，它的GraphicsContext采用Skia。 
+** 从RenderObjects到RenderLayers的转换
+   每个RenderObject都关联到一个RenderLayers，直接或间接的经过祖先RenderObject
+
+   renderobjects共享坐标空间，通常属于同一个RenderLayer。RenderLayers为了页面元素在合成
+   时，正确的顺序，适当的显示重叠内容，半透明元素。许多情况下都会触发为一个特定的RenderObject
+   创建一个新的Renderlayer，它被定义为RenderBoxModelObject::requiresLayer()接着重定一些
+   相关类。RenderObject必须要创建RenderLayer
+   1. 页面的根对象
+   2. 必须显示CSS的位置属性(relative,absolute或transform)
+   3. 需要透明
+   4. 溢出，alpha掩码或反射
+   5. CSS过滤器
+   6. <canvas>元素对应3D上下文或加速2D上下文
+   7. 对应<video>元素
+** 从RenderLayers到GraphicsLayers
+** 从GraphicsLayers到WebLayers再到CC Layers
+* 合成器
+

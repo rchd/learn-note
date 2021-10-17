@@ -1,0 +1,140 @@
+#+ORG2BLOG:
+#+DATE: [2020-04-21 Tue 15:41]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: Uncategorized, Hello
+#+TAGS:
+#+DESCRIPTION:
+#+TITLE: 云计算管理方案
+* kubernetes
+  该软件使用golang开发，由谷歌管理的一个云计算管理方案
+  #+BEGIN_SRC quote
+  minikube是一个kuberentes的一个简化版，分布式应用的安装部署都
+  相当麻烦，所以为了方便入门，就有这个项目
+  #+END_SRC
+** 基本概念
+   1. etcd保存整个集群的状态
+   2. apiserver提供资源的操作，认证，授权，访问控制，API注册
+   3. controller manager维护集群的状态
+   4. kubelet维护容器的生命周期，以及Volume和网络的管理
+   5. Container runtime负责镜像管理以及Pod
+   6. kube-proxy为Sevicer提供集群的服务发现和负载均衡
+
+** 安装minikube
+   使用虚拟化技术
+   virtualbox作为底层的虚拟实现
+   安装virtualbox
+   apt install virtualbox
+   下载minikube，设置可执行权限以及将文件移动到/usr/local/bin/中
+   curl -Lo minikube https://github.com/kubernetes/minikube/releases/download/v1.7.3/minikube-linux-amd64 
+   && chmod +x minikube && sudo mv minikube /usr/local/bin/
+   下载kubectl
+   
+   
+* openstack
+  该软件由NASA开发，使用python，也是一个云计算管理方案
+  是有许多不同功能的软件组合在一起，形成的一个整体，与kubernetes完全不同
+** 相关环境
+*** openstack命令
+    #+begin_src sh
+      apt-get install software-properties-common
+      add-apt-repository cloud-archive:mitaka
+      apt-get update && apt-get dist-upgrade
+      apt-get install python-openstackclient
+    #+end_src
+*** 数据库
+    #+begin_src sh
+      apt-get install mariadb-server python-mysql
+      systemctl start mysqld
+      mysql_secure_installation
+    #+end_src
+*** 消息队列
+    #+begin_src sh
+      apt-get install rabbitmq-server
+      rabbitmqctl add_user openstack RABBIT_PASS
+      rabbitmqctl set_permissions openstack ".*" ".*" ".*"
+    #+end_src
+*** 缓存服务
+    #+begin_src sh
+      apt-get install memcached python-memcache
+      systemctl start memcached 
+    #+end_src
+** 相关组件
+*** keystone
+    必要组件
+    1. 服务器
+       一个中心化服务器使用RESTful接口提供认证和授权服务
+    2. 驱动
+       被整合到集中式服务器中，访问后端的基础服务
+    3. 模块
+       中间件模块拦截服务请求，取了用户凭据，并送入中央服务器进行授权
+   安装各项服务时，所有的服务都必须注册到keystone中，只有如此，才能追踪opentsack服务
+   并在网络中定位它们
+   安装命令
+   #+begin_src sh
+     mysql -u root -p
+
+     create database keystone;
+
+     grant all privileges on keystone.* to 'keystone'@'localhost' \
+	   identified by 'keystone_pass';
+     grant all privileges on keystone.* to 'keystone'@'%' \
+	   identified by 'keystone_pass';
+
+
+     echo "manual" > /etc/init/keystone.override
+
+     apt install keystone apache2 libapache2-mod-wsgi
+     su -s /bin/sh -c "keystone-manage db_sync" keystone
+     keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone
+   #+end_src
+
+   设置控制节点
+   #+begin_src sh
+     echo 'ServerName controller' > /etc/apache2/apache2.conf
+   #+end_src
+
+   在/etc/apache2/sites-avaliable/wsgi-keystone.conf中输入以下内容
+   #+begin_src xml
+     Listen 5000
+     Listen 35357
+
+     <VirtualHost *:5000>
+	 WSGIDaemonProcess keystone-public processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP}
+	 WSGIProcessGroup keystone-public
+	 WSGIScriptAlias / /usr/bin/keystone-wsgi-public
+	 WSGIApplicationGroup %{GLOBAL}
+	 WSGIPassAuthorization On
+	 ErrorLogFormat "%{cu}t %M"
+	 ErrorLog /var/log/apache2/keystone.log
+	 CustomLog /var/log/apache2/keystone_access.log combined
+
+	 <Directory /usr/bin>
+	     Require all granted
+	 </Directory>
+     </VirtualHost>
+
+     <VirtualHost *:35357>
+	 WSGIDaemonProcess keystone-admin processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP}
+	 WSGIProcessGroup keystone-admin
+	 WSGIScriptAlias / /usr/bin/keystone-wsgi-admin
+	 WSGIApplicationGroup %{GLOBAL}
+	 WSGIPassAuthorization On
+	 ErrorLogFormat "%{cu}t %M"
+	 ErrorLog /var/log/apache2/keystone.log
+	 CustomLog /var/log/apache2/keystone_access.log combined
+
+	 <Directory /usr/bin>
+	     Require all granted
+	 </Directory>
+     </VirtualHost>
+   #+end_src
+   
+   设置软链接
+   #+begin_src sh
+     ln -s /etc/apache2/sites-available/wsgi-keystone.conf /etc/apache2/sites-enabled
+   #+end_src
+   开始服务
+   #+begin_src sh
+     systemctl start apache2
+   #+end_src
+

@@ -1,0 +1,1533 @@
+#+STARTUP=showeverything
+#+BLOG: myblog
+#+POSTID: 35
+#+ORG2BLOG:
+
+#+DATE: [2020-04-12 Sun 20:04]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: Uncategorized, Hello
+#+TAGS:
+#+DESCRIPTION:
+#+TITLE: linux源码目录
+
+* linux系统目录
+  :PROPERTIES:
+  :ID:       o2b:536212e3-33cb-4d6a-8ebf-252d53e2ea66
+  :POST_DATE: [2020-08-16 Sun 12:33]
+  :BLOG:     myblog
+  :POSTID:   28
+  :END:
+  | 目录                 | 作用                                   |
+  |----------------------+----------------------------------------|
+  | /etc                 | 相关软件的启动设置文件                 |
+  | /etc/passwd          | 保存用户密码                           |
+  | /etc/shdaow          | 保存用户信息                           |
+  | /etc/group           | 保存组信息                             |
+  | /etc/login.defs      | 用户全局设置                           |
+  | /etc/default/useradd | 显示或更改默认的useradd配置文件        |
+  | /etc/X11             | X Window System的配置文件              |
+  | /dev                 | 该目录下保存相关硬件设置文件           |
+  | /dev/mapper          | lvm映射                                |
+  | /dev/mem             | 物理内存                               |
+  | /dev/kmem            | 内核虚拟地址空间                       |
+  | /dev/null            | 比特位桶                               |
+  | /dev/port            | 访问I/O端口                            |
+  | /dev/zero            | WULL字符源                             |
+  | /dev/random          | 非确定性随机数发生器                   |
+  | /usr                 | 保存所有程序的共享文件                 |
+  | /usr/lib             | 不同用户软件包的相关库                 |
+  | /usr/src             | 保存linux内核源代码                    |
+  | /usr/include         | 相关C库的头源文件                      |
+  | /usr/share           | 相关软件的配置文件y                    |
+  | /usr/bin/            | 用户自定义命令，以及其他软件安装的命令 |
+  | /proc                | 相关进程的运行数据                     |
+  | /proc/sysvipc        | 进程间通信                             |
+  | /proc/net            | 网络和套接字的状态信息                 |
+  | /proc/sys            | 内核启动参数设置                       |
+  | /porc/swaps          | 交换内存信息                           |
+  | /proc/sys/fs         | 文件系统相关设置                       |
+  | /proc/slabinfo       | slab分配信息                           |
+  | /proc/buddyinfo      | 伙伴系统信息                           |
+  | /proc/PID/cmdline    | 命令行参数                             |
+  | /proc/PID/cwd        | 工作目录的符号链接                     |
+  | /proc/PID/environ    | 环境变量列表                           |
+  | /proc/PID/exe        | 指向可执行程序的符号链接               |
+  | /proc/PID/fd         | 包含当前进程的相关文件符号链接         |
+  | /proc/PID/maps       | 相关内存映射信息                       |
+  | /proc/PID/mem        |                                        |
+  | /proc/PID/mounts     | 当前进程的相关挂载信息                 |
+  | /proc/PID/root       | root的符号链接                         |
+  | /proc/PID/status     | 相关信息                               |
+  | /proc/PID/task       | 包含当前进程的线程信息                 |
+  | /proc/kallsyms       | 内核函数的符号表                       |
+  | /proc/kcore          | 动态内核文件                           |
+  | /proc/kallsyms       | 内核符号表                             |
+  | /proc/filesystems    | 伪文件系统                             |
+  | /proc/iomem          | 与设备通信的内存地址                   |
+  | /proc/ioports        | 与设备通信的端口                       |
+  | /proc/interrupts     | 保存当前操作引发的中断说明             |
+  | /proc/partitions     | 系统的分区信息                         |
+  | /proc/pagetypeinfo   | 当前内存域分配信息                     |
+  | /proc/irq            | 中断信息                               |
+  | /proc/timer_list     | 时钟列表                               |
+  | /proc/cgroup         | cgroup相关信息                         |
+  | /var                 | 相关的变量数据                         |
+  | /var/cache           | 应用的缓存文件                         |
+  | /var/crash           | 相关应用的崩溃信息                     |
+  | /var/lib             | 变量状态信息                           |
+  | /var/lock            | 锁定该目录下的文件                     |
+  | /var/spool           | 保存下个进程的等待数据                 |
+  | /var/log/            | 该目录下保存各类日志                   |
+  | /opt                 | 自定义软件安装目录                     |
+  | /mnt                 | 磁盘挂载目录                           |
+  | /home                | 相关用户home目录                       |
+  | /boot                | 系统引导目录                           |
+  | /boot/config*        | 内核配置文件                           |
+  | /bin                 | 所有用户可用的命令                     |
+  | /sbin                | 系统管理员的程序存储目录               |
+  | /lib                 | 共享库以及相关的内核模块               |
+  | /lib/modules         | linux内核模块安装目录                  |
+  | /srv                 | 系统提供的服务数据                     |
+  | /opt                 | 额外软件安装目录                       |
+  | /root                | root用户的根目录                       |
+  | /tmp                 | 临时文件                               |
+  | /media               | 相关媒体挂载                           |
+  | /sys                 | 以结构化的数据                         |
+  | /sys/devices         | 内核对系统中所有设备的分层次表达模型   |
+  | /sys/dev             | 链接文件并且链接到真实的设备           |
+  | /sys/class           | 包含所有注册在kernel里面的设备类型     |
+  | /sys/class/net       | 包含网卡                               |
+  | /sys/block           | 包含当前系统中被发现的所有块设备       |
+  | /sys/bus             | 内核支持并已经注册了的总线类型         |
+  | /sys/fs              | 描述所有的文件系统                     |
+  | /sys/kernel          | 内核中所有可调整的参数                 |
+  | /sys/firmware        | 系统加载固件机制的用户空间的接口       |
+  | /sys/module          | 系统中所有的模块信息                   |
+  | /sys/power           | 对于电源描述                           |
+  |                      |                                        |
+
+* linux源码目录
+
+  | 目录           | 作用                           |
+  |----------------+--------------------------------|
+  | /kernel        | 该目录包含内核的核心组件代码   |
+  | /mm            | 该目录包含高层的内存代码       |
+  | /init          | 保存了初始化内核相关信息       |
+  | /ipc           | System V IPC                   |
+  | /sound         | 声卡驱动程序                   |
+  | /fs            | 保存所有文件系统实现代码       |
+  | /net           | 网络实现代码                   |
+  | /lib           | 包含通用库例程，公共函数       |
+  | /drivers       | 相关驱动的代码                 |
+  | /include       | 内核所有数据结构的定义         |
+  | /crypto        | 相关的加密算法                 |
+  | /security      | selinux子系统                  |
+  | /Documentation | 文档                           |
+  | /scripts       | 内核开发的一些工具             |
+  | /usr           | 与linux内核启动的initramfs相关 |
+  | /virt          | 内核虚拟机相关                 |
+  |                |                                |
+* ext2/3文件系统
+  块组是ext2文件系统的核心要素
+  | 组成部分  | 数量 |
+  |-----------+------|
+  | 超级块    | 1    |
+  | 组描述符  | k    |
+  | 数据位图  | 1    |
+  | inode位图 | 1    |
+  | inode表   | n    |
+  | 数据块    | m    |
+  
+
+  块组在硬盘上相继排布
+  +------------+--------------+-------------+--------+---------------+
+  | 启动块     |块组0         |块组1        |...     |块组n          |
+  +------------+--------------+-------------+--------+---------------+
+* linux相关管理
+** 逻辑卷管理lvm
+   :PROPERTIES:
+   :ID:       o2b:a625678f-dce7-41d4-8951-1b6c54aa1ea5
+   :POST_DATE: [2020-04-21 Tue 15:36]
+   :BLOG:     myblog
+   :POSTID:   42
+   :END:
+   物理卷常用命令
+   pvcreate创建物理卷
+   pvremove表示是把数据擦除
+   pvscan扫描源数据
+   pvdisplay显示物理卷创建的详细信息
+   pvmove迁移数据到其他物理pv上
+   resize2fs扩展物理卷
+   逻辑卷常用命令
+   lvcreate创建逻辑卷
+   lvremove表示擦除数据
+   lvextend扩展逻辑卷
+   lvreduce缩减逻辑卷数据
+   lvs显示创建逻辑卷信息
+   lvdisplay显示创建逻辑卷详细信息
+   卷组常用命令
+   vgcreate创建卷组
+   vgremove表示擦除数据
+   vgreduce缩减卷组数据
+   vgs显示创建卷组信息
+   vgdisplay显示创建卷组详细信息
+   vgscan扫描源数据
+
+   通过逻辑卷可以把多个分区或多个磁盘，在逻辑上整合成一个分区
+   使用方法
+   安装lvm2比较简单
+   #+BEGIN_SRC sh
+   apt install lvm2
+   #+END_SRC
+   首先创建物理卷
+   #+BEGIN_SRC sh
+   pvcreate /dev/sdb /dev/sdc
+   pvcreate /dev/sda2 /dev/sda3
+   #+END_SRC
+   创建卷组
+   #+BEGIN_SRC sh
+   vgcreate vg0 /dev/sd[bc]
+   #+END_SRC
+   创建逻辑卷
+   -L指定逻辑卷大小
+   -n设置逻辑卷名称
+   #+BEGIN_SRC sh
+   lvcreate -L 150M -n lv0
+   #+END_SRC
+   使用lsblk命令可即查看，
+   同时它也会在/dev/mapper目录下生成一个链接
+** 权限管理
+*** 权限设置命令
+    每一个文件都有类似以下设置
+    -rwxrwxrwx
+    第一列表示文件类型，-表示文件，c表示设备文件，d表示目录
+    第二列到第四列则表示所有者用户对该文件的可进行的操作，
+    rwx代表可读，可写，可执行，如果-该符号则表示不能进行操作
+    第二rwx则是针对当前用户所在的组
+    第三rwx则是针对其他的用户
+    修改该参数主要是使用chmod命令
+
+    更详细的权限控制
+    | 标志位 | 作用                          |
+    |--------+-------------------------------|
+    | a      | append only                   |
+    | c      | compressed                    |
+    | d      | no dump                       |
+    | e      | extent format                 |
+    | i      | immutable                     |
+    | j      | data journaling               |
+    | s      | secure deletion               |
+    | t      | no tail-merging               |
+    | u      | undeletable                   |
+    | A      | no atime updates              |
+    | D      | synchronous directory updates |
+    | S      | synchronous updates           |
+    | T      | top of directory hierarchy    |
+    修改标志位
+    #+begin_src sh
+      chattr +a fileName
+    #+end_src
+    列出标志位
+    #+begin_src sh
+      lsattr 
+    #+end_src
+
+    扩展属性
+    getfxattr
+    setfxattr
+*** selinux安全访问子系统
+    #+begin_src sh
+      sudo apt-get install selinux-basics selinux-policy-default
+      sudo selinux-activate
+      sudo reboot
+    #+end_src
+    启用之间ssh服务可能无法使用
+    需要开启ssh端口
+    #+begin_src sh
+      sudo semanage port -a -t ssh_port_t -p tcp 22
+    #+end_src
+    
+** 更换内核
+   apt-cache search linux-image
+   该命令返回当前linux可用的内核版本
+   apt install linux-image<version>
+   apt install linux-header<version>
+   安装内核以及linux-header
+** 守护进程管理
+*** systemd
+    查看某个守护进程状态
+    systemctl status emacs
+    开机自启动某个守护进程
+    systemctl enable emacs
+    禁用开机自启动
+    systemctl disable emacs
+    重新载入systemd的配置
+    systemctl daemon-reload
+    列出当前所有守护进程
+    systemctl list-units
+    查询日志
+    journalctl -xe
+    服务保存目录/etc/systemd/system
+    重载服务  systemctl daemon-reload
+    
+    查询关于图形界面启动的相关依赖
+    systemctl list-dependenices graphical.target 
+
+*** openrc简单的使用方法
+    #+begin_src quote
+    openrc的全局配置文件/etc/rc.conf
+    #+end_src
+****  日志
+     openrc默认不开启日志，如果需要开启日志，则需要使用如下设置
+     #+begin_src sh
+     rc_logger="YES"
+     #rc_log_path="/var/log/rc.log"
+     #+end_src
+
+**** 使用
+     openrc通过openrc，rc-update，rc-status三条命令进行管理守护进程，比如删除一条关于守护进程的记录
+     #+begin_src sh
+     rc-update delete <service> default
+     #+end_src
+     
+     显示所有守护进程的相关信息，使用如下命令，可以显示所有启用的守护进程信息
+     #+begin_src sh
+     rc-update show -v
+     #+end_src
+     上述命令只显示被添加到runlevel的init脚本，下述命令可以显示所有的守护进程信息
+     #+begin_src sh
+     rc-status --servicelist
+     #+end_src
+     
+     同时针对某个守护进程的操作，可以使用如下命令
+     #+begin_src sh
+     /etc/init.d/docker status #查看当前进程的状态
+     
+     /etc/init.d/docker start #开启守护进程
+
+     /etc/init.d/docker stop #停止守护进程
+     #+end_src
+
+     与sytemed一样是守护进程管理软件，当然它没有systemd那么多功能，只有最基本的守护进程开启，重启，停止，开
+     机自启动的相关功能。
+     #+begin_src sh
+     rc-service sshd start  #开启ssh服务
+     rc-update sshd add default #设置开机自启动
+     #+end_src
+
+** 软件包管理
+   :PROPERTIES:
+   :ID:       o2b:3e2d7017-c253-42b7-b5c8-a4d28bc6e701
+   :POST_DATE: [2021-05-23 日 10:41]
+   :BLOG:     myblog
+   :POSTID:   58
+   :END:
+   linux发行版一大独创性就是软件包管理，大大简化了软件安装，也不用满世界的找软件，有什么需要，直接
+   在软件包中搜索即可，debain的apt，以及gentoo的portage，两者都是软件包管理器，但是两者完全不同，
+   比如，apt管理的是二进制，使用C++编写，它也是可以下载源码进行自定义编译安装，且它使用自己控制的
+   deb包，可以很方便的安装，而portage则不同，它直接管理源代码，不提供二进制安装，这是它的一大特点，
+   它采用python开发的emerge命令，使用bash编写项目编译文件，同时，它的软件仓库，其实是rsync，一款
+   备份软件，它的设计非常有意思，同时它是还提供了git，svn的后端，也就是相关的软件可以直接来自github
+   它更接近unix的设计哲学，且它作了一层抽象，把不同项目管理软件之间的差异抹平，比如C/C++项目，有直接
+   使用Makefile，也有用cmake的，还有使用configure生成的，就是五花八门， 统一编译设置参数，通过简单的
+   设置环境变量，即可完成复杂的软件编译参数设置，给用户最大的控制权，而apt安装的则远程仓库的deb包，
+   简单来说，就是把二进制打包成deb，同样它PPA，额外的软件源可以使用，当然没有像portage，可以控制的
+   精细。
+*** debian--apt/dpkg
+    | command                    | description                                  |
+    |----------------------------+----------------------------------------------|
+    | apt install software       | install software from remote server          |
+    | apt remove software        | remove software in the local system          |
+    | apt search software        | show information about the software          |
+    | apt update                 | udpate local database                        |
+    | apt download software      | download deb file from remote server         |
+    | apt build-dep software     | install build library of software            |
+    | apt upgrade                | upgrade software that be upgraded            |
+    | apt source software        | get source code from remote code             |
+    | apt depends software       | show dependenices about software             |
+    | apt-cache search software  | search software in local system              |
+    | apt-cache show software    | show information about software              |
+    | apt-cache madison software | show repository about software               |
+    | dpkg -i software           | install deb package in local                 |
+    | dpkg -r software           | remove the installed files                   |
+    | dpkg -l                    | list all installed package                   |
+    | dpkg --print-architecture  | print architecture of packages dpkg instsall |
+    | dpkg -P software           | purge a package using dpkg                   |
+    | dpkg --contents software   | print package information                    |
+    | dpkg --unpack software     | unpack deb package                           |
+    
+    更新系统
+    #+begin_src sh
+    sed -i 's/example/test/g' /etc/apt/source.list
+    sudo apt update &&  sudo apt upgrade
+    sudo apt dist-upgrade
+    lsb_release -a
+    #+end_src
+    它使用的安装包，是后缀为deb的压缩文件，当然也可以自己创建，首先从远程仓库下载deb包
+    #+begin_src sh
+    apt download lighttpd && dpkg -c <filename.deb> 
+    #+end_src
+    即可查看deb包中的文件，同时也是安装文件，也就是说，本质上apt所谓的安装，就是将这些文件复制到相关的
+    目录中，如果需要提取安装文件，可以直接执行
+    #+begin_src sh
+    dpkg-deb --extract <filename.deb> <directory> 
+    #+end_src
+    当然deb包的相关信息则不会解压，如果需要deb信息则需要其他命令
+    #+begin_src sh
+    av -xv <filename.deb>
+    #+end_src
+    该命令会解压成三个文件data.tar.xz,control.tar.xz,debian-binary，安装文件则是保存在data.tar.xz中，使用tar
+    解压即可，而control.tar.xz则保存的是deb包信息，debian-binary则保存的是版本信息
+    
+    构建vim包文件
+    #+begin_src sh
+    git clone --depth https://github.com/vim/vim.git
+    cd vim && ./configure 
+    make && make install #从源码安装，到此为止
+    mkdir vim_8_2_amd64 && cd vim_8_2_amd64
+    mkdir /usr/local/bin
+    cp ../vim/src/vim ./usr/local/bin #复制可执行文件
+    mkdir -p DEBIAN/ && touch DEBIAN/control
+    echo "Package: hello\n \
+    Version: 1.0\n        \
+    Architecture: arm64\n  \
+    Maintainer: Internal Pointers <info@internalpointers.com>\n  \
+    Description: A program that greets you.\n                    \
+    You can add a longer description here. Mind the space at the beginning of this paragraph.\n  " \
+    >> DEBIAN/control
+    dpkg-deb --build vim_8_2_amd64 #当前目录即可生成deb文件
+    #+end_src
+    
+    当然只是简单的打包方法，更详细的打包方法需要查开发者手册
+    
+    dpkg命令则是针对本地包进行管理，apt命令则是与远程仓库进行通信，对软件包进行管理，而dpkg命令则是管理本地
+    的软件包，且提供更多的功能，当apt出现问题，且apt install -f无法解决时，可以考虑使用dpkg删除有问题的软件
+    包，或者也可以直接删除相关文件，所有通过deb安装的软件包，相关信息全部保存在/var/lib/dpkg/info目录中
+    
+    重新构建deb
+    先执行，安装构建环境
+    #+begin_src sh
+    sudo apt build-dep software -y
+    #+end_src
+    首先下载软件仓库的源码包，与官方的源码包比，软件仓库中的源码多了一个debian目录，control文件控制相关的依
+    赖信息，相关的编译控制则是保存在rules文件中
+    修改完成之后，再重新进行打包即可
+    #+begin_src sh
+    dpkg-buildpackage -B
+    #+end_src
+    最后进行安装
+    #+begin_src sh
+    dpkg -i <software>.deb
+    #+end_src
+    
+*** gentoo--portage
+    它分成两个部分一个是portage数据库，以及一组emerge命令，同时使用ebuild解析USE参数，最后由ebuild
+    文件控制编译，全局的设置文件保存在/etc/portage/make.conf文件中
+    | command                   | description                              |
+    |---------------------------+------------------------------------------|
+    | emerge --ask software     | install software from source             |
+    | emerge --search software  | search package from local databse        |
+    | emerge --update software  | update software version                  |
+    | emerge --clean software   | clean the system                         |
+    | emerge -pv software       | show the USE flags of software           |
+    | emerge --info             | show emerge variable                     |
+    | emerge --list-sets        | display a list of available package sets |
+    | emerge --unmerge software | remove software from system              |
+    | emaint all                | check all configuration file             |
+    | emerge -pv @world/@system | show reinstalled package                 |
+    | emerge --list-sets        | print available sets                     |
+    |                           |                                          |
+
+    qlist来自portage-utils包中，输入如下命令即可
+    #+begin_src sh
+    emerge --ask app-portage/portage-utils
+    #+end_src
+    | command     | description                                               |
+    |-------------+-----------------------------------------------------------|
+    | --installed | Just show installed package names                         |
+    | --binpkgs   | Use binpkgs instead of installed packages                 |
+    | --tree      | Use avalilable packages in the trree instaed of installed |
+    | --slots     | Display installed packages with slots                     |
+    | --repo      | Display installed packages with repository                |
+    | --umap      | Display installed packages with flags used                |
+
+   gentoo是所有Linux发行版中的一个另类，包括安装，分区，系统设置之后，就是需要编译内核，控制内核的编译参数，
+   而portage也是如此，它管理的是源代码，所以它的安装也比较麻烦，安装过程挺花时间的，所以机器的配置越高越好
+   它的设计也是个奇葩，使用python编写，且使用bash进行设置编译，使用USE变量控制，源码包需要ebuild文件
+*** ansible 
+    很有意思的软件，它是用来安装软件的软件，同时也能够对多台机器进行安装软件,使用python编写，它的设计思路很简单
+    相关的安装控制文件使用yaml格式的文本书写，同时使用ssh执行远程命令，这是只需要在控制服务器中安装即可，不需要
+    在其他服务器中安装客户端
+    
+
+** 性能监控命令
+*** vmstat
+    对虚拟内存进行分析
+*** ps
+    显示进程树
+    #+begin_src sh
+    ps fax
+    #+end_src
+    显示进程，以及相关的父进程
+    #+begin_src sh
+    ps -ef
+    #+end_src
+*** free
+    显示内存的使用信息
+    #+begin_src sh
+    free -h
+    #+end_src
+* linux二进制分析命令
+**   相关命令
+   
+   | 命令    | 说明                                                                                               |
+   |---------+----------------------------------------------------------------------------------------------------|
+   | readelf | -S显示section，-l显示程序header信息，-s显示符号表，-e显示ELF头信息，-r显示重定位信息，-d显示动态段 |
+   | objdump | -D显示所有ELF中的所有数据与代码，-d只显示代码，-tT显示所有符号                                     |
+   | hexdump | 查看文件的十六进制/ASCII码/八进制文件内容                                                          |
+   | nm      | 列出目标文件中的符号                                                                               |
+   | objcopy | 去掉测试后正在运行的目标文件中调度符号                                                             |
+   | ar      | 建立或修改备存文件                                                                                 |
+   | strace  | 显示系统调用相关的信息                                                                             |
+   | ltrace  | 显示共享库的相关链接信息                                                                           |
+** 环境变量
+***  LD_PRELOAD
+    
+***  LD_SHOW_AUXV
+    在运行的时显示其他的辅助信息
+    #+BEGIN_SRC sh
+      LD_SHOW_AUXV=1 whoami
+    #+END_SRC
+
+    #+RESULTS:
+
+** 相关命令
+   xxd 查看程序签名
+
+** ELF相关信息
+   #+begin_src sh
+   readelf -l fileName
+   #+end_src
+   ELF program headers
+   1. PT_LOAD
+      An executable will always have at least one PT__LOAD type segment. This type of program 
+      header is describing a loadable segment,which means that t segment is going to be 
+      loaded or mapped into memory.
+      For instance , an ELF executable with dynamic linking will generally contain the following
+      two loadable segments(of type PT_LOAD)
+      The text segment for program code
+      And the data segment for global variabel and dynamic linking information
+   2. PT_DYNAMIC
+      The dynamic segment is specific to executables that are dynamically linked and contains
+      information necessary for dynamic linker . This segment contains tagged values and 
+      pointers , including but not limited to the following:
+      List of shared libraries that are to be linked at runtime
+      The address/location of the Global offset table(GOT) discussed in the ELF Dynamic Linking section
+      Information about relocation entries
+   3. PT_NOTE
+      A segment of type PT_NOTE may contain auxiliary information that is pertinent to a 
+      specific vendor or system. Following is a definition of PT_NOTE from the formal ELF
+      sepcificatioin
+   4. PT_INTERP
+      This small segment contains only the location and size to a null terminated string 
+      describing where the program interpreter is ; for instance , /lib/linux-ld.so.2 is
+      generally the location of the dynamic linker , which is also the program interpreter.
+   5. PT_PHDR
+      This segment contains the location and size of the program header table itself . The Phdr
+      table contains all of the Phdr's describing the segments of the file(and in the memory image)
+     
+   ELF section headers
+   1. The .text section
+      The .text section is a code section that contains program code in instructions . In an 
+      executable program where there are also Phdr's , this section would be within the range of 
+      the text segment . Because it contains program code , it is of section type SHT_PROGBITS.
+   2. The .rodata section
+      The rodata section contains read-only data such as strings from a line of C code , such as 
+      the following command are stored in this section:
+      printf("Hello Word!\n");
+      This section is read-only and therefore must exist in a read-only segment of an executable.
+      So you will find .rodata within the range of the text segment (not the data segment).
+      Because this section is read-only , it is of type SHT_PROGBITS .
+   3. The .plt section
+      It contains code necessary for the dynamic linker to call functions that are imported from 
+      shared libraries . It resides in the text segment and contains code , so it is marked as type 
+      SHT_PROGDBITS .
+   4. The .data section
+      The data section , not to be confused with the data segment , will exist within the data
+      segment and contain data such as initialized global variables . It contains program variabel
+      data , so it is marked SHT_PROGBITS.
+   5. The .bss section 
+      The bss section contains uninitialized global data as part of the data segment and therefore
+      takes up no space on disk other than 4 bytes , which represents the section itself . The data 
+      is initalized to zero at program load time and the data can be assigned values during 
+      program execution . The bss section is marked SHT_NOBITS since it contains no actual data.
+   6. The .got.plt section
+      The Global offset table (GOT) section contains the global offset table . This works together 
+      with the PLT to provide access to imported share library function and is modified by the dynamic
+      linker at runtime . This section in particular is often abused by attackers who gain a poninter-sized
+      write primitive in heap or .bss exploits . This section has to do with program execution and 
+      therefore is marked SHT_PROGBITS .
+   7. The .dynsym section 
+      The dynsym section contains dynamic information imported from shared libraries . It is contained
+      within the text segment and is marked as type SHT_DYNSYM
+   8. The .dynstr section
+      The dynstr section contains the string table for dynamic symbols that has the name of each symbol
+      in a series of null terminated string
+   9. The .rel.* section
+      Relocation sections contain information about how parts of an ELF object or porcess image need to 
+      fixed up or modified at linking or runtime . Relocation sections are marked as type SHT_REL since 
+      they contain relocation data
+   10. The .hash section
+       The hash section , sometimes called .gnu.hash , contains a hash table for symbol lookup . 
+       The following hash algorithm is used for symbol name lookups in Linux ELF:
+       #+begin_src c
+	 uint32_t
+	 dl_new_hash(const char *s)
+	 {
+	   uint32_t h=5831;
+	   for(unsigned char c= *s ; c != '\0';c= *++s)
+	     h=h*33+c;
+	   return h;
+	 }
+       #+end_src
+   11. The .symtab section
+       The symtab section contains symbol information of type ElfN_Sym , The symtab section is 
+       marked as type SHT_SYMTAB as it contains symbol information
+   12. The .strtab section
+       The .strtab section contains the symbol string table that is referenced by the st_name 
+       entries within the Elf_Sym structs of .symtab and is marked as type SHT_STRTAB since it 
+       contains a string table .
+   13. The .shstrtab section
+       The shstrtab section contains the section header string table that is a set of null
+       terminated strings containing the names of each section , such as .text , .data , and 
+       so on . This section is pointed to by the ELF file header entry called e_shstrndx that 
+       holds the offset of .shstrtab . This section is marked SHT_STRTAB since it contains a 
+       string table .
+   14. The .ctors and .dtors sections
+       The .ctors (constructors) and .dtors(destructors) sections contain function pointers to
+       initialization and finalization code that is to be executed before and after the actual 
+       main() body of program code .
+
+
+   ELF symbols
+   1. st_name
+      The st_name contains an offset into the symbol table's string table (located in either 
+      .dynstr or .strtab) , where the name of the symbol is located , such as printf .
+   2. st_value
+      The st_value holds the value of the symbol (either an address or offset of its location)
+   3. st_size
+      The st_size contains the size of the symbol , such as the size of a global funcion ptr , 
+      which would be 4 bytes on a 32-bit system
+   4. st_other
+      Ths member defines the symbol visibility
+   5. st_shndx
+      Every symbol table entry is defined in relation to some section . This member holds the 
+      relevant section header table index .
+   6. st_info
+      The st_info specifies the symbol type and binding attributes . For a complete list of these
+      types and attributes . The symbol types start with STT whereas the symbol bindings start
+      with STB  . 
+      Symbol types
+      STT_NOTYPE:The symbols type is undefined
+      STT_FUNC: The symbols is associated with a function or other executable code 
+      STT_OBJECT: The symbols is associated with a data object
+      Symbol bindings
+      STB_LOCAL: Local symbols are not visible outside the object file containing their
+      definition , such as a function declared static
+      STB_GLOBAL: Globals symbols are visible to all object files being combined . One file's
+      definition of a global symbol will satisfy another file's undefined reference to the 
+      same symbol . 
+      STB_WEAK: Similar to global binding , but with less precedence , meaning that the binding
+      is weak and may be overridden by another symbol (with the same name) that is not marked 
+      as STB_WEAK
+
+* 创建文件系统
+  #+BEGIN_SRC sh
+  dd if=/dev/zero of=img.1440 bs=1k count=1440
+  mke2fs img.1440
+  mount -t ext2 -o loop=/dev/loop0 img.1440 /mnt
+  #+END_SRC
+* 内核调试
+  :PROPERTIES:
+  :ID:       o2b:cd10153a-02a5-4705-9f0c-d8e0506f47c8
+  :POST_DATE: [2021-01-01 Fri 00:37]
+  :BLOG:     myblog
+  :POSTID:   52
+  :END:
+** 编译bzImage
+   首先是安装
+   输入make menuconfig，弹出如下界面
+   [[/home/ren/.emacs.img/dOgsZi.png]]
+
+   开启内核调试选项
+   [[/home/ren/.emacs.img/1dWD20.png]]
+
+   关闭内核地址随机化
+   [[/home/ren/.emacs.img/9Sdt8c.png]]
+
+   开启debug选项
+   [[/home/ren/.emacs.img/xyJlLo.png]]
+
+   进行编译
+   make -j 4 bzImage
+** 构建initrd
+   下载busybox
+   #+BEGIN_SRC sh
+     wget https://www.busybox.net/downloads/busybox-1.32.0.tar.bz2
+     tar -xvf busybox-1.32.0.tar.bz2
+     cd busybox-1.32.0
+     make menuconfig
+   #+END_SRC
+   
+   不使用库文件
+   [[/home/ren/.emacs.img/nqE9NL.png]]
+   编译并安装，生成rootfs.img
+   #+BEGIN_SRC sh
+     make -j 4 && make install
+
+     cp $busybox_folder/_install/*  $rootfs/ -rf
+     cd $rootfs
+     if [ ! -d proc ] && [ ! -d sys ] && [ ! -d dev ] && [ ! -d etc/init.d ]; then
+	 mkdir proc sys dev etc etc/init.d
+     fi
+
+     if [ -f etc/init.d/rcS ]; then
+	 rm etc/init.d/rcS
+     fi
+     echo "#!/bin/sh" > etc/init.d/rcS
+     echo "mount -t proc none /proc" >> etc/init.d/rcS
+     echo "mount -t sysfs none /sys" >> etc/init.d/rcS
+     echo "/sbin/mdev -s" >> etc/init.d/rcS
+     chmod +x etc/init.d/rcS
+     find . | cpio -o --format=newc > rootfs.img
+   #+END_SRC
+
+** 开启调试
+   开启qemu虚拟机
+   #+BEGIN_SRC sh
+     qemu-system-x86_64 -kernel arch/x86_64/boot/bzImage -nographic   -initrd rootfs.img -gdb tcp::1234 -S -append "console=ttyS0 root=/dev/ram rdinit=sbin/init noapic"
+   #+END_SRC
+   接着切换到源码目录
+   #+BEGIN_SRC sh
+     gdb vmlinux
+   #+END_SRC
+   设置远程机器地址target remote : 1234
+   设置断点  b start_kernel 
+   开启程序 cont
+   开启TUI  tui enable
+
+** DDD调试 
+   安装DDD，直接安装即可，它是gdb的一个前端，它可以以图形来表示数据结构，更加直观
+   需要使用宿主机的/proc/kcore文件，以及vmlinux符号表，
+   最后执行命令ddd vmlinux /proc/kcore即可
+   这种方法只能查看数据结构，无法进行断点调试
+   [[/home/ren/.emacs.img/GSMB8v.png]]
+* 构建发行版
+** live-build
+   
+* bash命令   
+** xargs
+   将命令输出结果作为另一条命令的参数
+   一般使用管道符进行关联
+** htop/top
+   显示当前操作系统的所有进程
+   同时可以由相关进行发送信息
+** stat
+    * %a - 八进制的访问权限（注意 # 和 0 的 printf 标志）
+    * %A – 人类可读的访问权限
+    * %b – 分配的块数（见 %B）
+    * %B – %b 报告的每个块的字节数
+    * %C – SELinux 安全上下文字符串
+    * %d – 十进制的设备编号
+    * %D – 十六进制的设备编号
+    * %f – 十六进制的原始模式
+    * %F – 文件类型
+    * %g – 所有者的组 ID
+    * %G – 所有者的组名
+    * %h – 硬链接的数量
+    * %i – inode 编号
+    * %m – 挂载点
+    * %n – 文件名
+    * %N – 如果是符号链接，会解引用为指向的文件名
+    * %o – 最佳 I/O 传输大小提示
+    * %s – 以字节为单位的总大小
+    * %t – 十六进制的主要设备类型，用于字符/块设备特殊文件
+    * %T – 十六进制的次要设备类型，用于字符/块设备特殊文件
+    * %u – 所有者的用户 ID
+    * %U – 所有者的用户名
+    * %w – 文件创建时间，以人类可读形式； 如果未知，则为 -。
+    * %W – 文件创建时间，以 UNIX 纪元以来的秒数形式；如果未知，则为 0。
+    * %x – 上次访问时间，以人类可读形式
+    * %X – 上次访问时间，以 UNIX 纪元以来的秒数形式
+    * %y – 上次数据修改时间，以人类可读形式
+    * %Y – 上次数据修改时间，以 UNIX 纪元以来的秒数形式
+    * %z – 上次状态改变的时间，以人类可读形式
+    * %Z – 上次状态改变的时间，以 UNIX 纪元以来的秒数形式
+** id/who/whoami
+   返回当前用户的相关的信息
+** grep
+   搜索字符串，支持正则表达式
+   -v 反向选择，输出不包含某个字符的行
+** awk
+   以列的形式操作数据
+** df/lsblk
+   输出文件系统的使用比例
+   #+BEGIN_SRC sh 
+   df -h
+   #+END_SRC
+
+   列出所有的块设备
+   #+BEGIN_SRC sh
+     lsblk
+   #+END_SRC
+
+** lshw
+   :PROPERTIES:
+   :ID:       o2b:c3ebd29d-6cff-41d7-a8e6-e12e028dbcdc
+   :POST_DATE: [2020-10-13 Tue 19:16]
+   :BLOG:     myblog
+   :POSTID:   39
+   :END:
+   查看相关硬件信息，主要是memory，disk，network,display等等
+   #+BEGIN_SRC sh
+     lshw -C display
+   #+END_SRC
+
+
+
+   以简略信息显示相关设备
+   #+BEGIN_SRC sh :var PASSWORD=(read-passwd "Sudo Password: ")
+     echo ${PASSWORD} | sudo -S lshw -short
+   #+END_SRC
+
+
+   显示总线信息
+   #+BEGIN_SRC  sh :var PASSWORD=(read-passwd "Sudo password:")
+     echo ${PASSWORD} | lshw -businfo
+   #+END_SRC
+
+** udevadm
+   #+BEGIN_SRC quote
+   需要开启udev守护进程
+   #+END_SRC
+   查看相关udev守护进程的状态以及监听USB外设的信息
+   #+BEGIN_SRC sh
+     systemctl status udev &&
+     udevadm monitor
+   #+END_SRC
+   查看usb设备
+   #+BEGIN_SRC sh
+     lsusb
+   #+END_SRC
+
+   #+RESULTS:
+   | Bus | 2 | Device | 001: | ID | 1d6b:0003 | Linux   | Foundation    | 3.0    | root       | hub  |        |            |
+   | Bus | 1 | Device | 005: | ID | 0bda:0129 | Realtek | Semiconductor | Corp.  | RTS5129    | Card | Reader | Controller |
+   | Bus | 1 | Device | 004: | ID | 5986:0702 | Acer,   | Inc           | Lenovo | EasyCamera |      |        |            |
+   | Bus | 1 | Device | 003: | ID | 8087:0a2a | Intel   | Corp.         |        |            |      |        |            |
+   | Bus | 1 | Device | 010: | ID | 256c:006d | HUION   | Huion         | Tablet |            |      |        |            |
+   | Bus | 1 | Device | 001: | ID | 1d6b:0002 | Linux   | Foundation    | 2.0    | root       | hub  |        |            |
+
+   查看usb控制器信息
+   #+BEGIN_SRC sh
+     lspci | grep USB
+   #+END_SRC
+
+   #+RESULTS:
+   : 00:14.0 USB controller: Intel Corporation 100 Series/C230 Series Chipset Family USB 3.0 xHCI Controller (rev 31)
+
+** dd
+   创建img镜像文件
+   #+BEGIN_SRC sh
+     dd bs=512 count=2880 if=/dev/zero of=floppy.img
+     #dd if=/dev/zero of=img.1440 bs=1k count=1440   
+     mkfs.ext2 img.1440
+     file img.1440
+   #+END_SRC
+
+   #+RESULTS:
+   | Discarding | device      | blocks: | done |            |              |           |                                           |        |        |
+   | Creating   | filesystem  | with    | 360                | 4k         | blocks       | and       | 192                                       | inodes |        |
+   |            |             |         |                    |            |              |           |                                           |        |        |
+   | Allocating | group       | tables: | 0/1          | done |              |           |                                           |        |        |
+   | Writing    | inode       | tables: | 0/1          | done |              |           |                                           |        |        |
+   | Writing    | superblocks | and     | filesystem         | accounting | information: | 0/1 | done                                |        |        |
+   |            |             |         |                    |            |              |           |                                           |        |        |
+   | img.1440:  | Linux       | rev     | 1.0                | ext2       | filesystem   | data,     | UUID=24759fdf-15f7-4a2f-b579-9dabbc9ef54c | (large | files) |
+   
+**  wget/curl/telnet
+   wget可以下载文件
+   curl命令可以模拟请求
+   telnet进行简单的tcp请求模拟
+
+** iproute2
+   设置删除ip地址
+   #+BEGIN_SRC sh
+     ip addr add
+     ip addr show 
+     ip addr del
+   #+END_SRC
+
+   #+BEGIN_SRC sh
+     ip route show
+     ip route get 
+   #+END_SRC
+   更改默认路由
+   #+BEGIN_SRC sh
+     ip route add default 
+   #+END_SRC
+   显示网络统计数据
+   #+BEGIN_SRC sh
+     ip -s -s link ls wlp7s0
+   #+END_SRC
+   ARP条目
+   #+BEGIN_SRC sh
+   ip neighbour
+   #+END_SRC
+
+   #+RESULTS:
+   : 192.168.1.1 dev wlp7s0 lladdr bc:5f:f6:80:45:33 STALE
+
+   监控netlink消息
+   #+BEGIN_SRC sh
+     ip monitor all
+   #+END_SRC
+   激活停止网络接口
+  #+BEGIN_SRC sh
+     ip link set devname down
+     ip link set devname up
+   #+END_SRC
+
+** getconf
+   查询系统配置变量
+
+** ldconfig
+   查看当前操作系统安装的库
+** iptables相关使用方法
+*** 规则管理
+     添加规则
+     1. 拒绝接收来自192.168.1.146的数据包
+	#+begin_src sh
+	    #iptables -t 表名 -A 链名 匹配条件 -j 动作
+       iptables -t filter -A INPUT -s 192.168.1.146 -j DROP
+     #+end_src
+     2. 在指定表的指定链的首部添加一条规则
+	#+begin_src sh
+          #iptables -t 表名 -l 链名 匹配条件 -j 动作
+	  iptables -t filter -l INPUT -s 192.168.1.146
+	#+end_src
+     3. 在指定表的指定链的指定位置添加一条规则
+	#+begin_src sh
+		  #iptables -t 表名 -l 链名 规则序号 匹配条件 -j 动作
+	  iptables -t filter -l INPUT 5 -s 192.168.1.146 -j REJECT
+	#+end_src
+     4. 设置指定表的指定链的默认策略
+	#+begin_src sh
+	  #iptables -t 表名 -P 链名 动作
+	  iptables -t filter -P FORWARD ACCEPT
+	#+end_src
+     删除规则
+     1. 根据规则序号删除规则
+	#+begin_src sh
+	  # iptables -t 表名 -D 链名 规则序号
+	  iptables -t filter -D INPUT 3
+	#+end_src
+     2. 根据匹配条件与动作删除规则
+	#+begin_src sh
+	#iptables -t 表名 -D 链名 匹配条件 -j 动作
+	iptables -t filter -D INPUT -s 192.168.1.146 -j DROP
+	#+end_src
+     3. 删除指定表的指定链中的所有规则
+	#+begin_src sh
+	#iptables -t 表名  -F 链名
+	iptables -t filter -F INPUT
+	#+end_src
+     4. 删除指定表中的所有规则
+	#+begin_src sh
+	  #iptables -t 表名 -F 
+	  iptables -t filter -F
+	#+end_src
+     修改规则
+     1. 修改指定表中指定链的指定规则
+	#+begin_src sh
+	# iptables -t 表名 -R 链名 规则序号 规则原本的匹配条件 -j 动作
+	iptables -t filter -R INPUT 3 -s 192.168.1.146 -j ACCEPT
+	#+end_src
+     2. 修改指定表的指定链的默认策略
+	#+begin_src sh
+	#iptables -t 表名 -P 链名 动作
+	iptables -t filter -P FORWARD ACCEPT
+	#+end_src
+     保存规则
+     1. 使用相关命令即可
+	 #+begin_src sh
+           iptables-save > /etc/sysconfig/iptables
+	 #+end_src
+     2. 恢复规则
+	#+begin_src  sh
+	  iptables-restore < /etc/sysconfig/iptables
+	#+end_src
+     规则查询
+     1. 查看所有规则
+        #+begin_src 
+           iptables -t 表名 -L
+        #+end_src
+     2. 查看指定表的指定链中的规则
+       #+begin_src 
+          iptables -t 表名 -L 链名     
+       #+end_src
+     3. 查看指定表的所有规则，并且显示更详细的信息
+         #+begin_src 
+           iptables -t 表名 -v -L
+         #+end_src
+     4. 查看表的所有规则，并显示详细信息，不对规则中的IP或端口进行名称反解
+         #+begin_src sh
+           iptables -t 表名 -n -L
+        #+end_src
+     5. 查看表的所有规则且显示规则的序号
+        #+begin_src 
+         iptables --line-numbers -t 表名 -L
+       #+end_src
+     6. 查看表的所有规则且显示更详细的信息，显示计数信息
+         #+begin_src 
+           iptables -t 表名 -v -x -L
+         #+end_src
+*** 相关信息解释
+    | 表格项      | 作用                         |
+    |-------------+------------------------------|
+    | pkts        | 对应规则匹配到的报文个数     |
+    | bytes       | 对应匹配到的报文包的大小总合 |
+    | target      | 规则对应的target             |
+    | prot        | 规则对应的协议               |
+    | in          | 表示数据从哪个接口流入       |
+    | out         | 表示数据从哪个接口流出       |
+    | source      | 规则对应的源头地址           |
+    | destination | 规则对应的目标地址           |
+    |             |                              |
+*** 相关模块
+    -p选项控制使用tcp或udp协议
+    | 模块      | 使用方法                                                                          |
+    |-----------+-----------------------------------------------------------------------------------|
+    | tcp       | --sport用于匹配tcp协议报文的源端口                                                |
+    |           | --dport用于匹配tcp协议报文的目标端口                                              |
+    | multiport | --sports用于匹配报文的源端口，可以指定离散的多个商品，用逗号隔开                  |
+    |           | --dports用于匹配报文的目标端口，同上                                              |
+    | iprange   | --src-range指定连续的源地址范围                                                   |
+    |           | --dst-range指定连接的目标地址范围                                                 |
+    | string    | --algo指定对应的匹配算法，可以为bm,kmp，为必选项                                  |
+    |           | --string指定需要匹配的字符串                                                      |
+    | time      | --timestart用于指定时间范围的开始时间，不可取反                                   |
+    |           | --timestop用于指定时间范围的结束时间，不可取反                                    |
+    |           | --weekdays用于指定星期几，可以取反                                                |
+    |           | --monthdays用于指定几号，可取反                                                   |
+    |           | --datestart用于指定日期范围的开始日期，不可取反                                   |
+    |           | --datestop用于指定日期范围的结束时间，不可取反                                    |
+    | connlimit | --connlimit-above 单独使用此选项时，表示限制每个IP的连接数量                      |
+    |           | --connlimit-mask 此选期不能单独使用，与上一选项合用，针对某类IP段进行连接限制     |
+    | limit     | --limit-burst类比令牌桶算法，用于指定令牌桶中令牌的最大数量                       |
+    |           | --limit类比令牌桶算法，用于指定令牌桶中生成新令牌的频率                           |
+    | udp       | --sport匹配udp报文的源地址                                                        |
+    |           | --dport匹配udp报文的目标地址                                                      |
+    | icmp      | --icmp-type匹配icmp报文的具体类型                                                 |
+    | state     | --state 对连接而言，连接有以下五种状态，NEW,ESTABLISHED,RELATED,INVALID,UNTRACKED |
+    |           |                                                                                   |
+    
+    tcp模块
+    #+begin_src sh
+      # --src-range
+      iptables -t filter -l INPUT -m iprange --src-range 192.168.1.127-192.168.1.146 -j DROP
+      iptables -t filter -l OUTPUT -m iprange --dst-range 192.168.1.127-192.168.1.146 -j DROP
+      iptables -t filter -l INPUT -m iprange !--src-range 192.168.1.127-192.168.1.146 -j DROP
+
+      #--sport
+      iptables -t filter -l OUTPUT -d 192.168.1.146 -p tcp -m tcp --sport 22 -j REJECT
+      iptables -t filter -l OUTPUT -d 192.168.1.146 -p tcp -m tcp  --sport 25 -j REJECT
+      iptables -t filter -l OUTPUT -d 192.168.1.146 -p tcp -m tcp !--sport 22 -j ACCEPT
+
+      #--dport
+      iptables -t filter -l INPUT -s 192.168.1.146 -p tcp -m tcp --dport 22:25 -j REJECT
+      iptables -t filter -l INPUT -s 192.168.1.146 -p tcp -m tcp --dport :22 -j REJECT
+      iptables -t filter -l INPUT -s 192.168.1.146 -p tcp -m tcp --dport 80: -j REJECT
+
+      #--tcp-flags
+      iptables -t filter -l INPUT -p tcp -m tcp --dport 22 --tcp-flags SYN,ACK,FIN,RST,URG,PSH SYN -j REJECT
+      iptables -t filter -l OUTPUT -p tcp -m tcp --sport 22 --tcp-flags SYN,ACK,FIN,RST,URG,PSH SYN,ACK -j  REJECT
+      iptables -t filter -l INPUT -p tcp -m tcp --dport 22 --tcp-flags ALL SYN -j REJECT
+      iptables -t filter -l OUTPUT -p tcp -m tcp --sport 22 --tcp-falgs ALL SYN,ACK -j RERJECT
+ 
+      #--syn
+      iptables -t filter -l INPUT -p tcp -m tcp --dport 22 --syn -j REJECT
+    #+end_src
+
+    string模块
+    #+begin_src sh
+      iptables -t filter -l INPUT -p tcp --sport 80 -m string --algo bm --string "XXXX" -j REJECT
+      iptables -t filter -l INPUT -p tcp --sport 80 -m string --algo bm --string "XXXX" -j REJECT
+    #+end_src
+
+    time模块
+    #+begin_src sh
+      iptables -t filter -l OUTPUT -p tcp -dport 80 -m time --timestart 09:00:00 --timestop 19:00:00 -j REJECT
+      iptables -t filter -l OUTPUT -p tcp -dport 443 -m time --timestart 09:00:00 --timestop 19:00:00 -j REJECT
+      iptables -t filter -l OUTPUT -l -p tcp --dport 80 -m time --weekdays 6,7 -j REJECT
+      iptables -t filter -l OUTPUT -p tcp --dport 80 -m time --monthdays 22,23 -j REJECT
+      iptables -t filter -l OUTPUT -p tcp --dport 80 -m time ! --monthdays 22,23 -j REJECT
+      iptables -t filter -l OUTPUT -p tcp --dport 80 -m time --timestart 09:00:00 --timestop 18:00:00 --weekdays 6,7  -j REJECT
+      iptables -t filter -l OUTPUT -p tcp --dport 80 -m time --weekdays 5 --monthdays 22,23,24,25,26,27,28 -j REJECT
+      iptables -t filter -l OUTPUT -p tcp --dport 80 -m time --datestart 2017-12-24 --datestop 2017-12-27 -j REJECT
+    #+end_src
+    
+    connlimit模块
+    #+begin_src sh
+      iptables -l INPUT -p tcp --dport 22 -m connlimit --connlimit-above 2 -j REJECT
+      iptables -l INPUT -p tcp --dport 22 -m connlimit --connlimit-above 20 --connlimit-mask 24 -j REJECT
+      iptables -l INPUT -p tcp --dport 22 -m connlimit --connlimit-above 10 --connlimit-mask 27 -j REJECT
+    #+end_src
+
+    limit模块
+    #+begin_src sh
+      iptables -t filter -l INPUT -p icmp -m limit --limit-burst 3 --limit 10/minute -j ACCEPT
+      iptables -t filter -A INPUT -p icmp -j REJECT
+    #+end_src
+
+    state模块
+    #+begin_src sh
+      iptables -t filter -I INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+    #+end_src
+     
+    udp协议
+    #+begin_src sh
+       iptables -t filter -l INPUT -p udp -m udp --dport 137 -j ACCEPT
+       iptables -t filter -l INPUT -p udp -m udp --dport 137:157 -j ACCEPT
+    #+end_src
+    
+    icmp协议
+    #+begin_src sh
+      iptables -t filter -l INPUT -p icmp -m icmp --icmp-type 8/0 -j REJECT
+      iptables -t filter -l INPUT -p icmp -m icmp --icmp-type 8 -j REJECT
+      iptables -t filter -l OUTPUT -p icmp -m icmp --icmp-type 0/0 -j REJECT
+      iptables -t filter -l OUTPUT -p -icmp --icmp-type 0 -j REJECT
+      iptables -t filter -l INPUT -p icmp --icmp-type "echo-request" -j REJECT
+    #+end_src
+** agetty
+   该命令比较特殊，它在操作系统启动成功之后执行，会在屏幕上输出登录提示，相关的配置
+   文件保存在/etc/inittab文件中，如下
+   #+begin_src 
+   c1:12345:respawn:/sbin/agetty 38400 tty1 linux
+   c2:2345:respawn:/sbin/agetty 38400 tty2 linux
+   c3:2345:respawn:/sbin/agetty 38400 tty3 linux
+   c4:2345:respawn:/sbin/agetty 38400 tty4 linux
+   c5:2345:respawn:/sbin/agetty 38400 tty5 linux
+   c6:2345:respawn:/sbin/agetty 38400 tty6 linux
+   #+end_src
+   表示在启动时它会启动6个终端
+   接着登录成功之后会开启相关的shell，它会读取/etc/passwd文件，该文件如下
+   #+begin_src sh
+   root:x:0:0:root:/root:/bin/bash
+   #+end_src
+   它记录了相关的用户登录要执行的动作，比如用户默认shell，再比如取消用户登录密码，只需要删除第
+   二项的x即可。
+** logwatch
+   日志分析命令，安装比较简单
+   #+begin_src sh
+   sudo apt install logwatch
+   #+end_src
+   直接运行logwatch命令即可，它会输出相关的日志总结信息，不需要一条条查看
+* linux编程接口
+** 进程相关
+   一个进程就是一个可执行程序的实例，接下来详细说明程序与进程之间的区别
+   一个程序包含在运行时的进程相关信息，该信息主要包含
+   1. 二进制识别
+   2. 机器语言指令
+      编码程序的算法
+   3. 程序入口地址
+        在程序开始的起始位置
+   4. 数据
+   5. 符号表
+   6. 共享库以及动态链接信息
+   7. 其他信息
+  
+   一个程序可能构造了许多进程，也可能许多进程运行在同一个程序中
+*** 进程ID和父进程ID
+    每一个进程都有一个进程ID，在系统使用一个正数来标识每个进程，进程ID是由系统调用
+    验证并返回的。比如，kill()函数允许调用者发送一个信号到特定的进程中，如果需要构
+    建一个独一无二的进程，进程ID就很有用，
+* linux性能分析
+** sysstat
+** systemtap
+** perf
+** bcc-tools
+* 相关设置
+  #+BEGIN_SRC quote
+  需要修改内核相关的参数，修改/etc/sysctl.conf中的参数即可
+  #+END_SRC
+** 地址空间随机化
+   由/proc/sys/kernel/randomize_va_space控制
+   #+BEGIN_SRC sh
+     sysctl -w kernel.randomize_va_space=0
+   #+END_SRC
+** 禁用模块系统
+   由/proc/sys/kernel/modules_disable控制
+   #+BEGIN_SRC sh
+     sysctl -w kernel.modules_disable=1
+   #+END_SRC
+** sysrq打印调式信息
+   由/proc/sys/kernel/sysrq控制
+   #+BEGIN_SRC sh
+     sysctl -w kernel.sysrq=1
+   #+END_SRC
+   设置sysrq触发键
+   /proc/sysrq-trigger
+** modprobe默认值
+   由/proc/sys/kernel/modprobe控制
+   #+BEGIN_SRC sh
+     sysctl -w kernel.modprobe=/sbin/modprobe
+   #+END_SRC
+** 调度延迟
+   即保证每个可运行的进程都应该至少运行一次的某个时间间隔
+   由/proc/sys/kernel/sched_latency_ns控制
+   #+BEGIN_SRC sh
+     sysctl -w kernel.sched_latency_ns=NS
+   #+END_SRC
+   相关参数
+   sched_nr_latency控制在一个延迟周期中处理的最大活动进程数目
+   sched_min_granularity_ns控制延迟周期
+** 网络相关参数
+   net.ipv4.tcp_keepalive_time=1200
+   当keepalive起用的时候，TCP发送keepalive消息的频度
+   ip_local_port_range=1024 65535
+   表示用于向外连接的端口范围
+   net.ipv4.tcp_max_syn_backlog=8192
+   表示syn队列的长度，默认为1024,表示网络连接数
+   net_ipv4.tcp_max_tw_buckets=5000
+   表示系统同时保持TIME_WAIT的最大数量，如果超过，TIME_WAIT立即清除并打印警告
+   net.core.netdev_max_backlog=32768
+   每个网络接口接收数据包的速率比内核自理快时，允许送到队列的数据包的最大数目
+   net.core.somaxconn=32768
+   设置backlog限制为128
+
+   net.core.wmem_default=8388608
+   net.core.reme_default=8388608
+   net.core.rmem_max=16777216
+   net.core.wmem_max=16777216
+   net.ipv4.tcp_timestsmps=0
+   时间戳可以避免序列号的卷绕
+
+   net.ipv4.tcp_synback_retries=2
+   决定内核放弃连接之前发送SYN+ACK包的数量
+   net.ipv4.tcp_tw_reuse=1
+   开启重用，允许将TIME-WAITsockets重新用于新TCP连接
+   net.ipv4.tcp_wmem=8192 436600 873200
+   TCP读buffer
+   net.ipv4.tcp_mem=94500000 91500000
+   内存单位为页
+   net.ipv4.tcp_max_orphans=3276800
+   系统中最多有多少个TCP套接字不被关联到任何一个用户文件句柄上
+   net.ipv4.tcp_congestion_control=hybla
+   设置TCP拥塞算法
+   net.ipv4.conf.all.ip_forword
+   启用端口转发
+   net.core.netdev_budget
+   处理分组总数
+** 设置交换算法在换出页的积极程度
+   #+begin_src sh
+     echo "80" > /proc/sys/vm/swappiness
+   #+end_src
+* linux模块系统
+** 相关命令行
+   #+BEGIN_SRC 
+   模块是一种向Linux内核添加设备驱动程序，文件系统及其他组件的有效方法，无需连编新内核或重启
+   系统
+   #+END_SRC
+
+   | 命令名   | 详细描述                         |
+   |----------+----------------------------------|
+   | lsmod    | 列出当前模块                     |
+   | nm       | 输入当前模块中所有外部函数的列表 |
+   | insmod   | 插入模块                         |
+   | rmmod    | 删除模块                         |
+   | depmod   | 显示可用的模块                   |
+   | modprobe | 自动载入可处理的模块             |
+
+** 创建模块
+   示例代码
+   #+BEGIN_SRC c
+     #include <linux/init.h>
+     #include <linux/module.h>
+     #include <linux/kernel.h>
+
+     MODULE_LICENSE("GPL");
+     MODULE_AUTHOR("Rchd");
+     MODULE_DESCRIPTION("A simple linux driver for the");
+
+     static char * name = "world";
+
+     static int __init hello_init(void)
+     {
+	 printk(KERN_INFO "EBB:Hello %s from the BBB \n", name);
+	 return 0;
+     }
+
+     static void __exit hello_exit(void)
+     {
+	 printk(KERN_INFO "EBB:Goodbye %s from the BBB\n", name);
+     }
+
+     module_init(hello_init);
+     module_exit(hello_exit);
+
+   #+END_SRC
+   
+   创建makefile文件
+   #+BEGIN_SRC makefile
+     obj-m+=hello.o
+     all:
+	     make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) modules
+     clean:
+	     make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) clean
+   #+END_SRC
+   
+   加载模块，处理该模块的依赖
+   #+BEGIN_SRC sh
+     insmode hello.ko
+     modprobe hello.ko
+     tac /var/log/kern.log | head -n 10
+   #+END_SRC
+   
+   删除模块
+   #+BEGIN_SRC sh
+     rmmod hello.ko
+     tac /var/log/kern.log | head -n 10
+   #+END_SRC
+
+
+** 内核调试
+   #+begin_src sh
+     echo '#! /bin/sh' > /tmp/modprobe
+     echo 'echo "$@" >> /tmp/modprobe.log' >> /tmp/modprobe
+     echo 'exec /sbin/modprobe "$@"' >> /tmp/modprobe
+     chmod a+x /tmp/modprobe
+     echo /tmp/modprobe > /proc/sys/kernel/modprobe
+   #+end_src
+
+** 内核模块实现
+   #+begin_src c
+     #define __EXPORT_SYMBOL(sym, sec)				\
+       extern typeof(sym) sym;					\
+       __CRC_SYMBOL(sym, sec)					\
+	 static const char __kstrtab_##sym[]				\
+	 __attribute__((section("__ksymtab_strings"), aligned(1)))	\
+	 = MODULE_SYMBOL_PREFIX #sym;				\
+       static const struct kernel_symbol __ksymtab_##sym		\
+       __used							\
+       __attribute__((section("__ksymtab" sec), unused))		\
+	 = { (unsigned long)&sym, __kstrtab_##sym }
+
+     #define EXPORT_SYMBOL(sym)			\
+       __EXPORT_SYMBOL(sym, "")
+
+     #define EXPORT_SYMBOL_GPL(sym)			\
+       __EXPORT_SYMBOL(sym, "_gpl")
+
+     #define EXPORT_SYMBOL_GPL_FUTURE(sym)		\
+       __EXPORT_SYMBOL(sym, "_gpl_future")
+
+     struct kernel_symbol
+     {
+       unsigned long value;
+       const char *name;
+     };
+
+   #+end_src
+   这段宏代码，看起来不好理解，##表示连接两个字符串， \表示一行代码，该代码实际上只定义了两个变量，一个是名
+   为__kstrtab_##sym的char类型的指针，以及数据类型为kernel_symbol的__ksymtab##sym变量，而kernel_symbol拥有
+   两个变量，name代表符号名称，value保存地址，而__attribute_((section("__ksymtab" sec), unused))则是将，
+   __ksymtab段的地址抽取出来，把__kstrtab_##sym的地址保存到value中
+* linux启动
+  
+** 硬件启动引导
+   从按开机键开始，而代码则从arch/x86/boot/compressed/head_64.S开始
+   首先以32位模式启动，接着载入压缩的数据
+   为进入64模式作准备，使用32位模式的gdt
+   启用PAE模式
+   构建4GB的boot页表
+   启用boot页表
+   启用EFER模式
+   进入保护模式
+   最后解压内核，清除BSS，设置栈，初始化EFLAGS，执行/arch/x86/kernel/head.S中的代码
+   
+   
+** linux初始进程
+   idle进程
+   由进程系统自动创建，运行在内核态，其pid=0,前身是系统创建的第一个进程，也是唯一一个没有通过
+   fork或者kernel_thread产生的进程。完成加载后，演变为进程调度，交换。
+   kthreadd进程
+   由idle通过kernel_thread创建，并始终运行在内核空间，负责所有内核进程的调度和管理。它的任务是
+   管理和调度其他内核线程kernel_thread，会循环执行一个kethread的函数，该函数的作用是运行kthread
+   _create_list全局链表中维护的kthread，当krenel_thread调用，创建的内核线程会被加入到此链表中，
+   因此所有的内核线程都是直接或间接的以kthreadd为父进程。
+   init进程
+   由idle进程通过kernel_thread创建，在内核空间完成初始化后，加载init程序，由0进程创建，完成系统
+   的初始化，是系统中其他所有用户进程的祖先进程。Linux所有进程都是由init进程创建并运行的。首先
+   Linux内核妄动，然后在用户空间中启动init进程，再启动其他系统进程，系统启动完成后，init进程变
+   为守护进程监视系统其他进程
+
+** 内核线程
+   
+*** kworker
+    
+*** ksoftirq
+
+*** kauditd
+
+* Gentoo 发行版
+  :PROPERTIES:
+  :ID:       o2b:017493e5-2cdd-4504-abf6-a70f2e238c60
+  :POST_DATE: [2021-02-13 六 20:00]
+  :BLOG:     myblog
+  :POSTID:   55
+  :END:
+  它与其他发行版完全不同，首先从安装程序来说，它在安装时需要编译内核，在引导启动安装镜像之后
+  进行分区，然后下载stage镜像，把它解压到分区，然后挂载proc,sys文件系统到当前系统，然后使用chroot
+  切换运行环境，再导入环境变量，接着设置时区，键盘布局，网络等信息，接下来是编译内核，完成后，使用
+  make install 进行安装，内核安装完成之后，还需要安装引导程序，大多数发行版都使用grub，执行
+  emerge --ask sys-boot/grub，安装完成之后，执行grub-install /dev/sda，写入磁盘引导记录，最后生成
+  在/boot目录下写入grub相关的配置文件，即可完成系统安装。
+
+** portage  
+   软件包管理程序，该程序功能与apt类似，但是它的不同在于，软件仓库提供的是源代码，当计算机执行安装
+   命令时，计算机从服务器中下载源代码，接着就是读取编译相关参数，主要通过make.conf等配置文件或是读
+   取环境变量设置，同时它也会自动解决依赖
+   
+   它的设计是尽可能简单，本身是用python与bash开发成的，同时emerge --sync该命令其实调用的就是rsync
+   软件与远程服务器进行同步，同时所有软件的相关编译选项则是由ebuild进行控制，统一使用USE变量进行
+   设置
+   
+   相关参数主要通过USE变量进行设置，比如需要安装emacs，与之相关的还有一个emacs-gui，需要安装gtk库，
+   但由于系统只需运行在命令行，不需要图形界面，所以设置USE='-gnome'，它只会编译命令下emacs，而在
+   其他发行版，则会完装emacs在图形界面下的相关的库
+
+   在/etc/portage/package.use目录下可以设置针对特定软件的USE变量，比如不需要使用vim的cscope支持，
+   #+begin_src sh
+   echo "app-editors/vim -cscope" >> /etc/portage/package.use/vim
+   #+end_src
+   那么当emerge --ask app-editors/vim命令运行时它会读取该设置，根据设置的环境不同，它会引用不同的USE
+   环境，通过eselect profile 进行控制，需要注意的是每当profile被修改时，需要更新USE环境，需要运行
+   #+begin_src sh
+   emerge --ask --verbose --update --deep --newuse @world #更新软件命令
+   emerge --newuse @world #更改系统环境
+   #+end_src
+   
+   安装特定软件包版本，那么默认的软件安装配会被忽略，设置的软件包版本
+   #+begin_src sh
+   echo "dev-util/cmake-3.19.2 ~amd64" >> /etc/portage/package.accept_keywords
+   #+end_src
+   针对package.use package.mask等等的操作需要执行etc-update命令进行更新环境
+   
+   删除软件包，并清理环境
+   #+begin_src sh
+   emerge --deselect app-admin/ansible
+   emerge --depclean -vp
+   #+end_src
+** 相关的设置文件
+*** make.conf
+    该文件设置全局变量，关于编译的全局变量，主要是CFLAGS，CXXFLAGS，FEATURES等等变量
+    MAKEOPTS变量，设置编译时使用的核心数
+    INPUT_DEVICE变量，控制使用的输入设备驱动
+    VIDEO_CARD变量，设置显卡驱动,可以virtualbox，vmware,nvidia等等
+    USE全局变量，该变量对所有软件包编译都有效
+    PORTDIR="/var/db/repos/gentoo" 控制ebuild相关的配置文件
+    DISTDIR="/var/cache/distfiles" 控制相关软件源码
+    
+*** package.use
+    该目录用来控制特定软件的USE变量
+*** package.mask
+    该目录用来控制被屏敝的软件
+*** package.accept_keywords
+    该目录控制安装的软件为测试分支
+** gentoolkit
+   安装该软件包
+   #+begin_src sh
+   emerge --ask app-portage/gentookit
+   #+end_src
+*** equery
+    查询哪些包使用了nls变量
+    #+begin_src sh
+    equery hasuse nls
+    #+end_src
+    
+    查询命令属于哪个文件
+    #+begin_src sh
+    equery belongs vim
+    #+end_src
+    
+    查询该软件包相关依赖
+    #+begin_src sh
+    equery  depends vim
+    #+end_src
+
+    
+    #+begin_src sh
+    equery depgrahs vim
+    #+end_src
+* 静态IP设置
+** Gentoo
+   首先创建创建一个符号链接
+   #+begin_src sh
+   cd /etc/init.d
+   ln -s net.lo net.eth0
+   #+end_src
+   接着创建/etc/conf.d/net文件，设置如下内容
+   #+begin_src 
+   # For DHCP
+   config_eth0="dhcp"
+   #设置为自动获取IP地址
+
+   #静态IP设置
+   # For static IP using CIDR notation
+   config_eth0="192.168.0.7/24"
+   routes_eth0="default via 192.168.0.1"
+   dns_servers_eth0="192.168.0.1 8.8.8.8"
+  
+   # For static IP using netmask notation
+   config_eth0="192.168.0.7 netmask 255.255.255.0"
+   routes_eth0="default via 192.168.0.1"
+   dns_servers_eth0="192.168.0.1 8.8.8.8"
+   #+end_src
+
+   启动该服务，设置为开机自启动
+   #+begin_src sh
+   /etc/init.d/net.eth0 start
+   /etc/init.d/net.eth0 stop
+
+   rc-update add net.eth0 default
+   openrc
+   #+end_src
+* LinuxI/O模型
+** 阻塞I/O模型
+   当系统调用发现用户请求的I/O操作不能立刻完成时，则当前进程会进入睡眠，也就是进程被I/O读写
+   阻塞，但是当数据可以写了或有数据可供读入时，系统将会产生中断，唤醒在缓冲区上等待相应的事
+   件的进程继续执行
+** 非阻塞I/O模型
+   有时不希望进程在I/O操作不能完成的时候睡眠，而是希望系统调用立刻返回一个错误，以报告这一
+   情况，然后进程可以根据需要在适当的时候再重新请求这个I/O操作，即轮询。
+** I/O复用模型
+   I/O复用模型是在非阻塞I/O模型之上的改进，它的好处在于使得应用程序可以同时对多个I/O商品进
+   行监控以判断其上的操作是否可以顺利完成，达到时间复用的目的，进程阻塞在类似于select或
+   epoll之类的系统调用上，而不是真正在I/O系统调用上。select或epoll使得进程可以在多个I/O端口
+   上等待I/O事件的发生，程序再根据发生事件进行相应的I/O操作。
+** 信号驱动I/O模型
+   信号驱动I/O模型使得应用程序不需要阻塞在某一个或多个I/O端口上，先利用系统调用sigaction()
+   安装某个端口的事件信号处理函数，该系统调用执行成功后立即返回，进程继续往下工作而不被阻塞
+   当某I/O端口上可进行数据操作时，内核就为该进程产生一个SIGIO信号，进程收到该信号后相应地在
+   信号处理中进行I/O操作，因此，在I/O操作可以无阻塞地完成异步地通知应用程序。
+** 异步I/O模型
+   启用异步I/O告知内核启动某个I/O操作，并让内核在整个操作完成时通知。
+** 实现
+*** select
+    
+
+*** epoll
+    
+* libuv异步I/O库
+  

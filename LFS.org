@@ -1,0 +1,216 @@
+* 构建一个LINUX基础系统
+** LINUX的设计哲学
+   LINUX受UNIX的设计影响，文件系统，相关的进程管理等等参考了UNIX设计，但又独立于UNIX
+   LINUX和UNIX发展不同，UNIX类的操作系统它是由一个小组控制，UNIX有闭源的，如os/2,solaris
+   之流，同样也有开源的，比如freebsd，这些UNIX类系统它不是由个人控制，同时由社区驱动。
+   LINUX，其实它指的是一个内核，一个完整的操作系统需要内核，SHELL壳程序，以及基本的文件操作命令
+   还有相关硬件控制命令，当下的操作系统还需要桌面环境。那么市场上许多关于LINUX发行版，
+   厂商获取LINUX内核，然后根据需求，构建一个LINUX发行版，比如RHEL，这是红帽公司
+   构建并维护的LINUX发行版，它的特点是，稳定，官方仓库中所有的软件包都是经过非常完善的测试，
+   同时，它的版本发布周期中五年，适应企业的需求，Fedora，这是红帽公司的另一个发行版，
+   它针对的是桌面用户，它的版本发布周期则是六个月，许多新功能，软件相关的更新，第一时间
+   进行更新。而且，不管是哪个发行版，所有相关的源代码都会发布。
+
+** LINUX程序安装方法
+   使用UBUNTU作为宿主机系统，UBUNTU是基于debian开发的，它继承的debian的软件管理方式，
+   它使用apt和dpkg管理软件，通过apt命令可以对软件仓库进行同步，在软件仓库中进行搜索相关软件
+   同时该命令也负责软件的安装和卸载，dpkg命令则是管理软件，相关设置及其参数
+   除了使用apt命令之外，还可以从源代码进行安装，则需要相关编译器，及相关的项目管理工具，
+   从源代码编译软件，需要设置相关的参数，手动解决相关依赖关系。
+
+** 构建思路
+   从零开始构建，需要已经安装好LINUX发行版的电脑，首先创建一个独立的分区和文件系统，所有
+   编译好的相关软件都保存在独立的分区中，涉及的相关软件包比较多，主要有编译器软件及其相关
+   链接库，相关文本处理软件等，需要把这些软件编译完全并保存到独立分区中，其中
+
+** 构建步骤
+
+*** 创建环境
+    使用fdisk创建一个新的分区，并且对它进行格式化，使用ext4文件系统，把挂载到/mnt/lfs目录下
+    为了使用方便，把路径保存在LFS中，并且把独立分区挂载到该目录下
+    #+BEGIN_SRC sh
+      mkfs -v -t ext4 /dev/sdb1
+      export LFS=/mnt/lfs
+      mkdir -pv $LFS
+      mount -v -t ext4 /dev/sdb1 $LFS
+    #+END_SRC
+    
+    创建一个sources目录，把相关的软件包全部保存在该目录下
+    #+BEGIN_SRC sh
+      mkdir -v $LFS/sources
+      chmod -v a+wt $LFS/sources
+      wget --input-file=wget-list --containue --directory-prefix=$LFS/sources
+    #+END_SRC
+
+    创建一个tools目录，该目录主要保存软件包编译完成的文件，创建软链接指向该目录
+    创建一个用户组，并在其中创建一个用户，作为工作用户，需要一个干净的环境，
+    设置lfs用户的密码，同时修改tools和sources目录的所有者为lfs
+    #+BEGIN_SRC sh
+      mkdir -v $LFS/tools
+      ln -sv $LFS/toos /
+      groupadd lfs
+      useradd -s /bin/bash -g lfs -m -k /dev/null lfs
+      passwd lfs
+      chown -v lfs $LFS/tools
+      chown -v lfs $LFS/sources
+      su - lfs
+    #+END_SRC
+
+    设置相关环境变量，把它写入配置文件，当用户切换到lfs时，首先它会读取.bash_profile文件
+    中的设置，该文件主要设置HOME变量，终端类型，以及终端提示符和使用的SHELL，当终端进程启动
+    时会自动读取.bashrc文件中的设置，set +h禁用了hash功能，bash使用一个hash表保存可执行文件
+    完整路径，它会对同一个可执行文件重复查找，以节约对PATH查找的时间。umask 022该命令确保新
+    建的文件和目录只有所有者可读写，LFS则是保存挂载目录，LC_ALL则是设置软件的本地化
+    #+BEGIN_SRC sh
+      cat > ~/.bash_profile <<EOF
+      exec env -i HOME=$HOME TERM=$TERM PS1='\u:\w\$ ' /bin/bash
+      EOF
+
+      cat > ~/.bashrc <<EOF
+      set +h
+      umask 022
+      LFS=/mnt/lfs
+      LC_ALL=POSIX
+      LFS_TGT=$(uname -m)-lfs-linux-gnu
+      PATH=/tools/bin:/bin:/usr/bin
+      export LFS LC_ALL LFS_TGT PATH
+      EOF
+
+      source ~/.bash_profile
+    #+END_SRC
+
+** 第一次编译
+   构建该一个LINUX基础发行版有两个步骤，第一，构建一个与宿主系统无关
+   的工具链，主要包含编译器，汇编器，链接器等其他必要的相关工具
+   第二则是使用该工具去构建其他软件
+   
+*** 编译汇编器
+    binutils，它的全称是GNU Binary Utilities的缩写，它是一组二进制工具集合，也就是
+    说它包含许多命令，其中最重要的，主要是链接器ld命令和汇编器as命令，使用gcc进行
+    编译程序时，把C语言翻译成汇编语言，再由as汇编器，把汇编语言翻译成二进制，最后
+    由链接器ld命令，链接相关库文件。
+    把binutils解压到/mnt/lfs/sources目录下，然后切换到binutils目录，创建build目录
+    然后执行如下命令。
+    --prefix=/tools该选项表示将binutils程序安装到/tools目录下，
+    --with-sysroot=$LFS表示相关的库文件到$LFS目录下查找
+    --with-lib-path=/tools/lib表示使用的链接器的库路径
+    --target=$LFS_TGT表示指定机器架构
+    --disable-nls表示禁止国际化
+    --disable-werror表示忽略警告
+    #+BEGIN_SRC sh
+      mkdir -v build
+      cd       build
+      ../configure --prefix=/tools     \
+		   --with-sysroot=$LFS \
+		   --with-lib-path=/tools/lib \
+		   --target=$LFS_TGT          \
+		   --disable-nls              \
+		   --disable-werror           \
+
+    #+END_SRC
+*** 编译编译器
+    linux平台的编译器除了gcc，还有clang，除此之外各个厂商也有自己开发的编译器如，英特尔
+    开发的icc等，但使用编译linux内核的只有gcc，这只要它使用了很多gcc编译器的特性，导致使
+    用其他编译器无法编译成功，即便能够编译成功，也有许多问题。
+    所以本项目使用gcc，gcc全称GUN Compiler Collection，支持相当多的编程语言，本项目主要使用
+    C语言的相关编译，它是以GPL许可证所发行的自由软件，当linux之父开发linux时，选择使用gcc之
+    一的理由一是免费，二是开源，三GNU项目有许多各类软件，同时它们都是由gcc编译。
+    在linux发行版中，直接远程服务器安装gcc即可，相关依赖问题可以自动解决，手动编译安装需要
+    自己解决依赖总是，gcc使用了两个外部库，一个是mpfr，另一个是gmp，最后还需要mpc
+    
+    #+BEGIN_SRC sh
+      tar -xf ../mpfr-4.0.2.tar.xz
+      mv -v mpfr-4.0.2 mpfr
+      tar -xf ../gmp-6.1.2.tar.xz
+      mv -v gmp-6.1.2 gmp
+      tar -xf ../mpc-1.1.0.tar.xz
+      mv -v mpc-1.1.0 mpc
+
+    #+END_SRC
+
+    什么是sed，sed是一种流编辑器，首先编辑器用来编写代码的，流编辑器写普通编辑器不同
+    在于，它是使用正则表达式进行编辑的，这与一般的编辑器有很大不同。
+    首先复制文件gcc/config/linux.h,gcc/config/i386/linux.h和gcc/config/i386/linux64.h
+    同时加上后缀.orig，第一个sed，它的作用是在/lib/ld，、/lib64/ld，lib32/ld前面加上
+    /tools，第二条sed是指替换/usr的硬编码实例
+    #+BEGIN_SRC sh
+      for file in gcc/config/{linux,i386/linux{,64}}.h
+      do
+	  cp -uv $file{,.orig}
+	  sed -e 's@/lib\(64\)\?(32\)\?/ld@/tools&@g' \
+	      -e 's@/usr@/tools@g' $file.orig > $file
+	  echo '
+      #undef STANDARD_STARTFILE_PREFIX_1
+      #undef STANDARD_STARTFILE_PREFIX_2
+      #undef STANDARD_STARTFILE_PREFIX_1 "/tools/lib"
+      #undef STANDARD_STARTFILE_PREFIX_2 "" ' >> $file
+	  touch $file.orig
+      done
+    #+END_SRC
+
+    需要判断当前系统是64位架构，或32位架构，如果是64位架构，需要把库的默认目录名到lib
+    #+BEGIN_SRC sh
+      case $(uname -m) in
+	  x86_64)
+	      sed -e '/m64=/s/lib64/lib/' \
+		  -i.orig gcc/config/i386/t-linux64
+	      ;;
+      esac
+    #+END_SRC
+
+    --with-newlib该选项阻止编译与libc相关的代码，这是因为此时还没有libc库还没有安装
+    --without-headers完成交叉编译时，gcc要求标准头文件和目录系统兼容，本项目中还不需要此功能
+    --with-local-prefix=/tools该选项控制的是gcc查找include文件的系统位置，该编译器不能依赖于
+    宿主机的任何库或相关文件
+    --with-native-system-header-dir=/tools/include该选项确保gcc能找到到相关的标准库文件
+    --disable-shared该选项不使用外部库，只使用gcc的内部库，这样可以避免一些问题
+    以disable为前缀的选项主要禁用一些相关功能，
+    --enable-languages该选项只使用c和c++，其实gcc还支持许多语言，如java，fortan等
+    #+BEGIN_SRC sh
+      ../configure                            \
+	  --target=$LFS_TGT                   \
+	  --prefix=/tools                     \
+	  --with-glibc-version=2.11           \
+	  --with-sysroot=$LFS                 \
+	  --with-newlib                       \
+	  --without-headers                   \
+	  --with-local-prefix=/tools          \
+	  --with-native-system-header-dir=/tools/include  \
+	  --disable-nls                                   \
+	  --disable-shared                                \
+	  --disable-multilib                              \
+	  --disable-decimal-float                         \
+	  --disable-threads                               \
+	  --disable-libatomic                             \
+	  --disable-libgomp                               \
+	  --disable-libmpx                                \
+	  --disable-libquadmath                           \
+	  --disable-libssp                                \
+	  --disable-libvtv                                \
+	  --disable-libstdcxx                             \
+	  --disable-languages=c,c++
+    #+END_SRC
+
+
+*** 相关的库安装
+    1. linux api头文件
+       它主要来自于linux内核，主要是在调用linux内核api时，由于内核尚未编译，此时就需要把linux
+       内核api相关文件提取出来，为了完成编译
+
+       #+BEGIN_SRC sh
+	 make mrproper
+
+
+	 make INSTALL_HDR_PATH=dest headers_install
+	 cp -rv dest/include/* /tools/include
+       #+END_SRC
+
+    2. glibc
+       glibc是C语言的标准库，编译器如果找不到C库，它就无法编译，主要封装了一些C语言的相关函数
+
+    3. libstdc++
+       关于C++标准库的一个实现，主要是容器相关类，如vector，list等，还有相关算法，如排序算法，
+       字符串匹配算法等，但是相关的图算法，标准是没有实现的，如有需要，可以考虑boost库，被称
+       C++的预标准库
+
+** 第二次编译

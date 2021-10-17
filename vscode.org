@@ -1,0 +1,30 @@
+* vscode源码分析
+** 设计思想
+   1. 隔离内核(src)与插件(extensions)，内核分层模块化
+      /src/vs：分层和模块化的core
+      /src/vs/base：通过用的公共方法和公共视图组件
+      /src/vs/code：应用主入口
+      /src/vs/platform：可被依赖流入的各种纯服务
+      /src/vs/editor：文本编辑器
+      /src/vs/workbench：整体视图框架
+      /src/typings：公共基础类型
+      /extensions：内置插件
+   2. 每层按环境隔离
+      内核里面每一层代码都会遵守electron规范，按不同的环境细分
+      common公共的js方法，所有环境都能运行
+      browser只使用浏览器API的代码，可以调用common
+      node只使用NodeJS API的代码，可以调用common
+      electron-browser使用electron渲染线程的代码，可以调用common,browser,node
+      electron-main使用electron主线程和NodeJS API代码可以调用common,node
+      test测试代码
+   3. 内核代码本身也采用扩展机制:Contrib
+      Contrib目录下所有代码不允许依赖任务文件夹之外的文件
+      Contrib主要是使用Core暴露的一些扩展点来做事情
+      每一个Contrib如果要对外暴露，将API在一个出口文件里面导出
+      一个Contrib如果要和另一个Contrib发生调用，不允许使用除了出口API文件之外的其他文件
+      接上一条，即使Contrib事实上可以调用另一个Contrib的出口API，也要谨慎考虑并尽量避免两个Contrib互相依赖
+      #+BEGIN_SRC quote
+      extension每一个都是运行在归宿于自己的独立宿主进程，而contrib的功能基本是要运行在主进程的
+      extension只能依附于core开放的扩展点而活，但是contrib可以通过依赖注入拿到所有core内部实现的class
+      #+END_SRC
+

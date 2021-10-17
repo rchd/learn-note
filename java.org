@@ -1,0 +1,41 @@
+#+ORG2BLOG:
+#+DATE: [2020-09-22 Tue 22:05]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: Uncategorized, Hello
+#+TAGS:
+#+DESCRIPTION:
+#+TITLE: Java
+* 项目管理工具
+** maven
+   创建项目命令
+   #+BEGIN_SRC sh
+     mvn archetype:generate   \
+	 -DgroupId=com.mkyong.hashing                       \
+	 -DartifactId=java-project                          \
+	 -DarchetypeArtifactId=maven-archetype-quickstart   \
+	 -DinteractiveMode=false                            \
+   #+END_SRC
+
+   切换目录在pom.xml文件中加入
+   #+BEGIN_SRC xml
+     <build>
+	 <plugins>
+	     <plugin>
+		 <artifactId>maven-compiler-plugin</artifactId>
+		 <version>3.1</version>
+		 <configuration>
+		     <source>11</source>
+		     <target>11</target>
+		 </configuration>
+	     </plugin>
+	 </plugins>
+     </build>
+
+   #+END_SRC
+
+   最后执行
+   #+BEGIN_SRC sh
+     mvn compile
+     mvn package
+   #+END_SRC
+* spring框架

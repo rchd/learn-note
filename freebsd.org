@@ -1,0 +1,30 @@
+* pkg 命令
+  | 命令                | 说明             |
+  |---------------------+------------------|
+  | pkg info            | 显示已安装的软件 |
+  | pkg install package | 安装软件         |
+  | pkg search package  | 搜索软件包       |
+  |                     |                  |
+* 源代码分析
+  
+** 获取源代码
+   #+begin_src sh
+     cd /usr/src && \
+	 svnlite checkout https://svn.freebsd.org/base/head .
+   #+end_src
+   
+** 编译安装内核
+   构建环境
+   #+begin_src sh
+   cp sys/amd64/conf/GENERIC  ./MYKERNEL
+   make buildworld KERNCONF=MYKERNEL -DNO_CLEAN
+   #+end_src
+   编译内核
+   #+begin_src sh
+   make buildkernel KERNCONF=UFFIE -DNO_CLEAN
+   #+end_src
+   安装环境及内核
+   #+begin_src sh
+   sudo make installworld KERNCONF=MYKERNEL
+   sudo make installkernel KERNCONF=MYKERNEL
+   #+end_src

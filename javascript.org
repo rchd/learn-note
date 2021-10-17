@@ -1,0 +1,870 @@
+#+ORG2BLOG:
+#+DATE: [2020-07-06 Mon 13:11]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: JavaScript
+#+TAGS:JavaScipt,ES6,CommonJS,AMD,CMD
+#+DESCRIPTION:
+#+TITLE: JavaScript
+* 规范
+** CommonJS
+   主要是nodejs的相关api，类似于python，ruby的标准库，这样就可以使用CommonJS写成的应用
+   程序，在不同的javascript解释器和不同的环境中运行
+** ES6
+*** 特性
+    let,const,class,extends,super,arrow functions,template string,destructuring,default,
+    rest arguments
+** AMD
+   提前执行
+   它是“Asynchronous Module Definintion”的缩写，它的意思是异步模块定义，相关功能由RequireJS
+   定义，采用异步方式加载模块，模块的加载不影响它后面语句的运行，所有信赖该模块的语句，都定
+   义在一个回调函数中，加载完成，该函数才会运行
+** CMD
+   延迟执行
+   它是“Common Module Definition，即通用模块定义，是在国内发展出来的，有一个浏览器的实现SeaJS
+   在CMD中，一个模块就是一个文件
+   #+BEGIN_SRC quote
+   AMD是领事关系前置，在定义模块的时候就要声明其依赖的模块
+   CMD是按需加载依赖就近，只有在用到某个模块的时候再去require
+   #+END_SRC
+* 语法
+** JS语法
+*** Object
+    assign函数复制对象
+    #+BEGIN_SRC js
+      const target={a:1,b:2};
+      const source={b:4,c:5};
+
+      const returnedTarget=Object.assign(target,source);
+      target.a=5;
+      console.log(target);
+
+      console.log(returnedTarget);
+    #+END_SRC
+
+    #+RESULTS:
+    : { a: 5, b: 4, c: 5 }
+    : { a: 5, b: 4, c: 5 }
+    : undefined
+    
+    拷贝访问器
+    #+BEGIN_SRC js
+      const obj={
+	  foo:1,
+	  get bar(){
+	      return 2;
+	  }
+      };
+
+      let copy=Object.assign({},obj);
+      console.log(copy);
+
+      function completeAssign(target, ...sources){
+	  sources.forEach(source=>{
+	      let descriptors=Object.keys(source).reduce((descriptors,key)=>{
+		  descriptors[key]=Object.getOwnPropertyDescriptor(source,key);
+		  return descriptors;
+	      },{});
+
+	      Object.getOwnPropertySymbols(source).forEach(sym=>{
+		  let descriptors=Object.getOwnProertyDescriptor(source,sym);
+		  if(descriptors.enumerable){
+		      descriptors[sym]=descriptors;
+		  }
+	      });
+	      Object.defineProperties(target,descriptors);
+	  });
+	  return target;
+      }
+
+      copy=completeAssign({},obj);
+      console.log(copy);
+    #+END_SRC
+
+    #+RESULTS:
+    : { foo: 1, bar: 2 }
+    : { foo: 1, bar: [Getter] }
+    : undefined
+
+** es6相关变化
+*** let和const
+    let命名变量只在当前代码块使用，在全局范围内不可用，
+    var定义的变量则是全局可用
+    const定义的变量，一旦声明，常量的值不可改变
+*** 变量的解构赋值
+    数组解构
+    #+BEGIN_SRC javascript
+      let [a,b,c]=[1,2,3]
+    #+END_SRC
+    对象的解构赋值
+    #+BEGIN_SRC javascript
+      let {log,sin,cos}=Math;
+      const {log}=console;
+      log('hello')
+    #+END_SRC
+    字符串的解构赋值
+    用途
+    1. 交换变量的值
+       #+BEGIN_SRC js
+	 let x=1;
+	 let y=2;
+
+	 [x,y]=[y,x];
+       #+END_SRC
+
+       #+RESULTS:
+
+    2. 从函数返回多个值
+       #+BEGIN_SRC js
+	 function example(){
+	     return [1,2,3];
+	 }
+	 let [a,b,c]=example()
+
+	 function example(){
+	     return {
+		 foo:1,
+		 bar:2
+	     };
+	 }
+	 let {foo,bar}=example()
+
+       #+END_SRC
+
+       #+RESULTS:
+
+    3. 函数参数定义
+       #+BEGIN_SRC js
+	 function f([x,y,z]){ ... }
+	 f([1,2,3]);
+
+	 function f({x,y,z}){ ... }
+	 f({z:3,y:2,x:1});
+       #+END_SRC
+    4. 提取json数据
+       #+BEGIN_SRC js
+	 let jsonData={
+	     id:42,
+	     status:"OK",
+	     data:[867,5300]
+	 };
+	 let {id,status,data: number}=jsonData;
+
+	 console.log(id,status,number);
+       #+END_SRC
+    5. 函数参数的默认值
+       #+BEGIN_SRC js
+	 jQuery.ajax=function(url,{
+	     async=true,
+	     beforeSend=function(){},
+	     cache=true,
+	     complete=function(){},
+	     crossDomain=false,
+	     global=true,
+	 }={}){
+	     //...do stuff
+	 }
+       #+END_SRC
+    6. 遍历Map结构
+       #+BEGIN_SRC js
+	 const map=new Map();
+	 map.set('first','hello');
+	 map.set('second','world');
+
+	 for(let [key,value] of map){
+	     console.log(key+" is "+value);
+	 }
+       #+END_SRC
+
+       #+RESULTS:
+
+    7. 输入模块的指定方法
+       #+BEGIN_SRC js
+	 const { SourceapConsumer, SourceNone}=require("source-map")
+       #+END_SRC
+*** 字符串的扩展
+    模板字符串
+    #+BEGIN_SRC js
+      $('#result').append(`
+      There are <b>${basket.count}</b> items
+      in your basket, <em>${basket.onSale}</em>
+      are on sale!`);
+    #+END_SRC
+    去除字符中的空格与回车
+    #+BEGIN_SRC js
+      $('#list').html(`
+      <ul>
+      <li>first</li>
+      <li>second</li>
+      </ul>`.trim());
+    #+END_SRC
+    模板编译
+    #+BEGIN_SRC js
+      let template=`
+      <ul>
+      <% for(let i=0;i<data.supplies.length;i++){ %>
+      <li><%= data.supplies[i] %></li>
+      <% } %>
+      </ul>`;
+    #+END_SRC
+*** 数组的扩展
+**** 扩展运算符
+     把数组元素拆分成单个元素
+     #+BEGIN_SRC js
+       console.log(...[1,2,3])
+     #+END_SRC
+*** 对象的扩展
+**** 属性的简洁表示法
+     #+BEGIN_SRC js
+       const foo='bar';
+       const baz={foo};
+       //等同于
+       const baz={foo:foo};
+     #+END_SRC
+
+     #+BEGIN_SRC js
+       function f(x,y){
+	   return {x,y};
+       }
+       //等同于
+       function f(x,y){
+	   return {x:x,y:y};
+       }
+       f(1,2)
+     #+END_SRC
+
+     #+BEGIN_SRC js
+       const o ={
+	   method(){
+	       return "Hello!";
+	   }
+       };
+       //等同于
+       const o={
+	   method:function(){
+	       return "hello";
+	   }
+       };
+     #+END_SRC
+
+     #+BEGIN_SRC js
+       let birth='2000/01/01'
+
+       const Person={
+	   name:'ksdf',
+	   birth,
+	   hello(){console.log('kdsjf', this.name);}
+       };
+     #+END_SRC
+
+     #+BEGIN_SRC js
+       function getPoint(){
+	   const x=1;
+	   const y=10;
+	   return {x,y};
+       }
+
+       getPoint()
+     #+END_SRC
+
+     CommonJS模块输出一组变量
+     #+BEGIN_SRC js
+       let ms = {};
+
+       function getItem(key){
+	   return key in ms ? ms[key] : null;
+       }
+
+       function setItem(key,value){
+	   ms[key]=value;
+       }
+
+       function clear(){
+	   ms={};
+       }
+
+       module.exports={getItem,setItem,clear};
+       //等同于
+       modeule.exports={
+	   getItem: getItem,
+	   setTtem: setTtem,
+	   clear:clear
+       }
+     #+END_SRC
+     
+     #+BEGIN_SRC js
+       const cart={
+	   _wheels:4,
+
+	   get wheels(){
+	       return this._wheels;
+	   },
+
+	   set wheels(value){
+	       if(value<this._wheels){
+		   throw new Error('');
+	       }
+	       this._wheels=value;
+	   }
+       }
+     #+END_SRC
+*** Promoise
+    异步编程，最开始现的是回调函数，事件机制，现在使用Promise统一了语法
+    Promise是一个容器，保存某个未来才会结束的事件，Promise是一个对象，对消息
+    进行异步操作，提供一组统一的API，它有三种状态pending（进行中），fulfilled
+    （已成功）和rejected（已失败），当异步操作结束时，根据结果才能确定状态
+    状态只能由pending变为fulfilled或rejected，事件机制则是监听事件，只有当
+    被监听的事件发生时，才会执行代码，而回调函数，则是只有当回调对象完成之后
+    才会执行。
+    Promise使用一个函数作为参数，且有两个固定参数，由JS引擎部署，resolve函数
+    的作用是将Promise对象的状态从未完成变为成功（从pending变为resolved），而
+    reject的作用是将未完成变为失败
+    #+BEGIN_SRC js
+      const promise=new Promise(function(resolve,reject){
+	  // ... some code
+	  if(/**/){
+	      resolve(value);
+	  }else{
+	      reject(error);
+	  }
+      });
+    #+END_SRC
+
+    返回一个Promise对象，传递一个参数，首先是设置定时器，使用resolve做作为参数，设置
+    promise状态，接着调用该函数时，使用then方法设置当函数执行成功之后的函数
+    #+BEGIN_SRC js
+      function timeout(ms){
+	  return new Promise((resolve,reject)=>{
+	      setTimeout(resolve,ms,'done');
+	  });
+      }
+      timeout(100).then((value)=>{
+	  console.log(value);
+      });
+    #+END_SRC
+
+    
+    #+BEGIN_SRC js
+      let promise=new Promise(function(resolve,reject){
+	  console.log('Promise');
+	  resolve();
+      });
+
+      promise.then(function(){
+	  console.log('resolved');
+      });
+
+      console.log('Hi!');
+    #+END_SRC
+
+    #+BEGIN_SRC js
+      function loadImageAsync(url){
+	  return new Promise(function(resolve,reject){
+	      const image=new Image();
+
+	      image.onload=function(){
+		  resolve(image);
+	      };
+
+	      image.onerror=function(){
+		  reject(new Error('Cloud not load image at '+url));
+	      };
+
+	      image.src=url;
+	  });
+      }
+    #+END_SRC
+    
+    创建一个getJSON函数，返回一个Promise对象，当执行成功是
+    #+BEGIN_SRC js
+      const getJSON=function(url){
+	  const promise=new Promise(function(resolve,reject){
+	      const handler=function(){
+		  if(this.readyState!==4){
+		      resolve(this.response);
+		  }else{
+		      reject(new Error(this.statusText));
+		  }
+	      };
+	      const client=new XMLHttpRequest();
+	      client.open("GET",url);
+	      client.onreadystatechange=handler;
+	      client.responseType="json";
+	      client.setRequestHeader("Accept","application/json");
+	      client.send();
+	  });
+
+	  return promise;
+      };
+
+      getJSON("/posts.json").then(function(json){
+	  console.log('Contents: '+json);
+      },function(error){
+	  console.error('wrong',error);
+      });
+    #+END_SRC
+
+    #+BEGIN_SRC js
+      const p1=new Promise(function(resolve,reject){
+	  setTimeout(()=>reject(new Error('fail')),3000)
+      })
+
+      const p2=new Promise(function(resolve,reject){
+	  setTimeout(()=>resolve(p1),1000)
+      })
+
+      p2.then(result=>console.log(result)).catch(error=>console.log(error))
+    #+END_SRC
+
+    #+BEGIN_SRC js
+      getJSON("/posts.json").then(function(json){
+	  return json.post;
+      }).then(function(post){
+      });
+    #+END_SRC
+    
+    #+BEGIN_SRC js
+      getJSON("/post/1.json").then(
+	  post=>getJSON(post.commentURL)
+      ).then(
+	  comments=>console.log("resolved: ",comments),
+	  err=>console.log("rejected: ",err)
+      );
+    #+END_SRC
+    
+    #+BEGIN_SRC js
+      const promise=new Promise(function(resolve,reject){
+	  try{
+	      throw new Error('test');
+	  }catch(e){
+	      reject(e);
+	  }
+      });
+      promise.catch(function(error){
+	  console.log(error);
+      });
+
+      const promise=new Promise(function(resolve,reject){
+	  reject(new Error('test'));
+      });
+      promise.catch(function(error){
+	  console.log(error);
+      });
+    #+END_SRC
+
+    #+BEGIN_SRC js
+      const someAsyncThing=function(){
+	  return new Promise(function(resolv,reject){
+	      resolve(x+2);
+	  });
+      };
+
+      someAsyncThing().then(function(){
+	  return someOtherAsyncThing();
+      }).catch(function(error){
+	  console.log('oh no',error);
+	  y+2;
+      }).then(function(){
+	  console.log('carry on');
+      });
+    #+END_SRC
+    
+    #+BEGIN_SRC js
+      Promise.prototype.finally=function(callback){
+	  let P =this.constructor;
+	  return this.then(
+	      value=>P.resolve(callback()).then(()=>value),
+	      reason=>P.resolve(callback()).then(()=>{throw reason})
+	  );
+      };
+    #+END_SRC
+
+    #+BEGIN_SRC js
+      const promises=[2,3,5,7,11,13].map(function (id){
+	  return getJSON('/post/'+id+".json");
+      });
+
+      Promise.all(promises).then(function(posts){
+	  // ...
+      }).catch(function(reason){
+	  // ...
+      });
+    #+END_SRC
+
+    #+BEGIN_SRC js
+      const databasePromise=connectDatabase();
+
+      const bookPromise=databasePromise.then(findAllBooks);
+
+      const userPromise=databasePromise.then(getCurrentUser);
+
+      Promise.all([
+	  booksPromise,
+	  userPromise]).then(
+	      ([books,user])=>pickTopRecommendations(books,usesr));
+    #+END_SRC
+
+    #+BEGIN_SRC js
+      const p1=new Promise((resolve,reject)=>{
+	  resolve('hello');
+      }).then(result=>result)
+	    .catch(e=>e);
+
+      const p2=new Promise((resolve,reject)=>{
+	  throw new Error('error');
+      }).then(result=>result)
+	    .catch(e=>e);
+
+      Promise.all([p1,p2])
+	  .then(result=>console.log(result))
+	  .catch(e=>console.log(e));
+    #+END_SRC
+*** set和map
+    #+BEGIN_SRC js
+      const s=new Set();
+      [2,3,4,5,2,2].forEach(x=>x.add(x));
+
+      for(let i of s){
+	  console.log(i);
+      }
+    #+END_SRC
+
+    #+RESULTS:
+
+    #+BEGIN_SRC js
+      const set=new Set([1,2,3,4,4])
+      [...set]
+
+      const items=new Set([1,2,3,4,5,6,7]);
+      item.size
+
+      const set=new Set(Document.querySelectorAll('div'));
+      set.size
+
+      const set=new Set();
+      document.
+	  querySelectorAll('div').
+	  forEach(div=>set.add(div));
+      set.size
+    #+END_SRC
+    
+    #+BEGIN_SRC js
+      const properties={
+	  'width':1,
+	  'height':1
+      };
+
+      if(proerties[someName]){
+	  //do something
+      }
+
+      const properties=new Set();
+
+      properties.add('width');
+      properties.add('height');
+
+      if(properties.has(someName)){
+	  //do something
+      }
+    #+END_SRC
+
+    打印键和值
+    #+BEGIN_SRC js
+      let set=new Set(['red','green','blue']);
+
+      for(let item of set.keys()){
+	  console.log(item);
+      }
+
+      for(let item of set.values()){
+	  console.log(item);
+      }
+
+      for(let item of set.entries()){
+	  console.log(item);
+      }
+    #+END_SRC
+    
+    使用forEach输出
+    #+BEGIN_SRC js
+      let set=new Set([1,3,4]);
+      set.forEach((value,key)=>console.log(key+' : '+value))
+    #+END_SRC
+
+    
+    #+BEGIN_SRC js
+      let set=new Set([1,2,3]);
+      set=new Set([...set].map(x=>x*2));
+
+      let set=new Set([1,2,3,4,5]);
+      set=new Set([...set].filter(x=>x(x%2)==0));
+    #+END_SRC
+      inte
+*** Generator函数语法
+    #+BEGIN_SRC js
+      function* helloWorldGenerator(){
+	  yield 'hello';
+	  yield 'world';
+	  return 'ending';
+      }
+
+      var hw =helloWorldGenerator();
+
+      hw.next();
+
+      hw.next();
+
+      hw.next();
+    #+END_SRC
+
+    #+RESULTS:
+
+*** async函数
+    #+BEGIN_SRC js
+      const fs = require('fs');
+
+      const readFile = function(fileName){
+	  return new Promise(function(resolve,reject){
+	      fs.readFile(fileName,function(error,data){
+		  if(error) return reject(error);
+		  resolve(data);
+	      });
+	  });
+      };
+
+      const gen = function* (){
+	  const f1=yield readFile('/etc/fstab');
+	  const f2=yield readFile('/etc/shells');
+	  console.log(f1.toString());
+	  console.log(f2.toString());
+      };
+    #+END_SRC
+
+    #+RESULTS:
+
+*** Proxy
+    数据拦截
+    #+BEGIN_SRC js
+      var obj=new Proxy({},{
+	  get: function(target,propKey,receiver){
+	      console.log(`getting ${propKey}!`);
+	      return Reflect.get(target,propKey,receiver);
+	  },
+	  set: function(target,propKey,value,receiver){
+	      console.log(`setting ${propKey}!`);
+	      return Reflect.set(target,propKey,value,receiver);
+	  }
+      });
+
+      obj.count=1
+      ++obj.count
+    #+END_SRC
+
+    #+RESULTS:
+    : setting count!
+    : getting count!
+    : setting count!
+    : undefined
+    
+    #+BEGIN_SRC js
+      var proxy=new Proxy({},{
+	  get: function(target,propKey){
+	      return 35;
+	  }
+      });
+
+      proxy.time
+      proxy.name
+      proxy.title
+    #+END_SRC
+
+    #+RESULTS:
+    : undefined
+
+    #+BEGIN_SRC js
+      var target={};
+      var handler={};
+      var proxy=new Proxy(target,handler);
+      proxy.a='b';
+      target.a
+    #+END_SRC
+
+    #+RESULTS:
+    : undefined
+
+    #+BEGIN_SRC js
+      var proxy=new Proxy({},{
+	  get: function(target,propKey){
+	      return 35;
+	  }
+      });
+
+      let obj=Object.create(proxy);
+      obj.time
+    #+END_SRC
+
+    #+RESULTS:
+    : undefined
+
+    #+BEGIN_SRC js
+      var handler={
+	  get: function(target,name){
+	      if(name === 'prototype'){
+		  return Object.prototype;
+	      }
+	      return 'Hello, '+name;
+	  },
+	  apply: function(target,thisBinding,args){
+	      return args[0];
+	  },
+
+	  construct: function(target,args){
+	      return {value: args[1]};
+	  }
+      };
+
+      var fproxy=new Proxy(function(x,y){
+	  return {value: args[1]};
+      },handler);
+
+      fproxy(1,2)
+      new fproxy(1,2)
+      fproxy.prototype === Object.prototype
+      fproxy.foo === "Hello, foo"
+		    
+    #+END_SRC
+
+    #+RESULTS:
+    : undefined
+
+** es7相关变化
+
+* 编程思想
+** 函数柯里化
+   #+BEGIN_SRC js
+     let myAdd=(a,b,c)=>a+b+c;
+     function curry(fn,args){
+	 let len=fu.length;
+	 let _this=this;
+	 let _args=args || [];
+	 return function(){
+	     let args=Array.prototype.slice.apply(arguments);
+	     args=Array.prototype.concat.call(_args,args);
+	     if(args.length<len){
+		 return curry.call(_this,fn,args);
+	     }
+	     return fn.apply(this,args);
+	 }
+     }
+     let add=curry(myAdd)
+     console(add(2)(3)(4));
+     console.log(add(2,3)(4));
+     console.log(add(2,3,4));
+   #+END_SRC
+
+   #+BEGIN_SRC js
+     function add(){
+	 var _args=Array.prototype.slice.call(arguments);
+
+	 var _adder=function(){
+	     _args.push(...arguments);
+	     return _adder;
+	 };
+
+	 _adder.toString=function(){
+	     return _args.reduce(function(a,b){
+		 return a+b;
+	     });
+	 }
+	 return _adder;
+     }
+
+     add(1)(2)(3);
+     add(1,2,3)(4);
+     add(1)(2)(3)(4)(5);
+     add(2,6)(1);
+   #+END_SRC
+   
+** 原型
+** 闭包
+
+    
+* 功能扩展
+** 类工厂
+*** def.js
+*** JS.Class
+*** P.js
+** 选择器
+   
+* 相关的库
+** jquery
+** mootools
+** extjs 
+** umi
+   提供一种项目组织方法
+** express
+   | 文件                | 作用                                               |
+   |---------------------+----------------------------------------------------|
+   | middleware/init.js  | 初始化request，response                            |
+   | middleware/query.js | 格式化url，剥离rquest参数，存储到req.query中       |
+   | router/index.js     |                                                    |
+   | router/route.js     |                                                    |
+   | router/layer.js     |                                                    |
+   | express.js          |                                                    |
+   | appliction.js       |                                                    |
+   | request.js          |                                                    |
+   | response.js         |                                                    |
+   | view.js             | 封装模式渲染引擎，通过res.render()调用引擎渲染网页 |
+   |                     |                                                    |
+* 增强功能
+** eslint
+   安装
+   #+BEGIN_SRC sh
+     npm install eslint --save-dev
+     yarn add eslint --dev
+   #+END_SRC
+   设置配置文件，并对文件进行语法检查
+   #+BEGIN_SRC sh
+     npx eslint --init
+     npx eslint yourfile.js
+   #+END_SRC
+** webpack
+*** 相关概念
+    1. 入口
+    2. 出口
+    3. Loader
+    4. Plugins
+    5. 模式
+       设置mode选项，使用相应的模式优化
+       development
+       设置process.env.NODE_ENV值为development
+       启用 NamedChunksPlugin 和 NamedModulesPlug
+       production
+       设置process.env.NODE_ENV的值为production
+       启用FlagDependencyUsagePlugin, FlagIncludedChunksPlugin, ModuleConcatenationPlugin, NoEmitOnErrorsPlugin, OccurrenceOrderPlugin, SideEffectsFlagPlugin 和 UglifyJsPlugin.
+    6. 插件
+       在plugins属性中传入new实例
+
+
+   针对代码进行
+**  flowjs
+   
+* 相关示例
+** antd-pro
+   大型前端项目中台界面
+   相关技术使用
+   umi，dva,express
+   | 目录       | 详细信息           |
+   |------------+--------------------|
+   | components | 相关网站的公共组件 |
+   | layouts    | 模板的公共布局方法 |
+   | pages      | 网站的相关页       |
+   | models     | 全局dav模型        |
+   | locales    | 国际化             |
+   | services   | 相关数据的异步请求 |
+   | utils      | 工具集             |
+   | global.js  | 全局样式           |
+   | global.ts  | 全局ts             |
+   | test       | 相关测试           |
+   |            |                    |
+
+  

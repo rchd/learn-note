@@ -1,0 +1,232 @@
+
+* bpf
+  
+* 安装bcc
+  在Gentoo中安装，在Gentoo中bcc是被屏蔽掉的
+  #+begin_src sh
+  emerge --ask sys-kernel/gentoo-source
+  echo "dev-util/bcc" >> /etc/portage/package.unmask 
+  echo "dev-util/bcc ~amd64" >> /etc/portage/package.keywords
+  emerge --ask dev-util/bcc
+  #+end_src
+  
+  在ubuntu中安装，执行下列命令
+  #+begin_src sh
+  apt install bcc-tools 
+  apt install python3-bpfcc
+  #+end_src
+  
+*  BPF程序的种类
+  
+** Socket Filter Programs
+   BPF_PROG_TYPE_SOCKET_FILTER是第一个初添加到Linux内核的bpf程序，当使用这类bpf程序
+   能够获得在处理socket中所有数据包。Socket filter program不允许用户修改数据包的内容
+   或数据包的目标地址，仅仅只能作观测使用。你的程序从相关的网络栈中接收数据，比如协议
+   类型，是被用来传递数据的。
+** Kprobe Programs
+   kprobes是使得在内核中动态附加到某一个调用点的函数，BPF kprobe类型的程序允许你使用
+   BPF支程序作为kprobe例程。BPF虚拟机确保你的kprobe程序总是安全运行，对于传统的kprobe
+   模块是一个优点。
+   
+   当你写一个BPF程序被附加到kprobe中时，需要决定是
+** Tracepoint Programs
+
+** XDP Programs
+
+** Perf Event Program
+
+** Cgroup Open Socket Programs
+
+** Socket Option Programs
+
+** Socket Map Programs
+
+** Cgroup Device Programs
+
+** Socket Message Delivery Programs
+
+** Raw Tracepoint Programs
+
+** Cgroup Socket Address Programs
+
+** Socket Reuseport Programs
+
+** Flow Dissection Programs
+
+* BPF虚拟文件系统
+  #+begin_src c
+    static const char * file_path="/sys/fs/bpf/my_array";
+    int main(int argc, char **argv)
+    {
+      int key, value, fd, added, pinned;
+      fd=bpf_create_map(BPF_MAP_TYPE_ARRAY,sizeof(int),sizeof(int),100,0);
+      if(fd<0){
+	printf("Failed to create map: %d (%s)\n", fd, strerror(errno));
+	return -1;
+      }
+      key=1,value=1234;
+      added=bpf_map_update_elem(fd, &key, &value, BPF_ANY);
+      if(added<0){
+	printf("Failed to update map: %d (%s)\n", added, strerror(errno));
+	return -1;
+      }
+      pinned=bpf_obj_pin(fd, file_path);
+      if(pineed<0){
+	printf("Failed to pin map to the file system: %d (%s)\n",
+	       pinned,strerror(errno));
+	return -1;
+      }
+      return 0;
+    }
+  #+end_src
+  
+  #+begin_src c
+    static const char * file_path="/sys/fs/bpf/my_array";
+
+    int main(int argc, char **argv){
+      int fd, key, value, result;
+
+      fd=bpf_obj_get(file_path);
+      if(fd<0){
+	printf("Failed to fetch the map: %d (%s)\n", fd, strerror(errno));
+	return -1;
+      }
+
+      key=1;
+      result=bpf_map_lookup_elem(fd, &key, &value);
+      if(result<0){
+	printf("Failed to read value from the map: %d (%s)\n",
+	       result, strerror(errno));
+	return -1;
+      }
+
+      printf("Value read from the map: '%d'\n", value);
+      return 0;
+    }
+  #+end_src
+
+** Kprobes示例
+
+   #+begin_src python
+     from bcc import BPF
+     bpf_source="""
+     int do_sys_execve(struct pt_regs *ctx, void filename, void argv, void envp){
+	 char comm[16];
+	 bpf_get_current_comm(&comm, sizeof(comm));
+	 bpf_trace_printk("executing program: %s", comm);
+	 return 0;
+     }
+     """
+     bpf=BPF(text=bpf_source)
+     execve_function=bpf.get_syscall_fnname("execve")
+     bpf.attach_kprobe(event=execve_function, fn_name="do_sys_execve")
+     bpf.trace_print()
+   #+end_src
+   bpf程序开始时，bpf_get_current_comm会先获取当前内核的命令名，把它赋给comm变量。
+   定义的定长数组，因为内核对命令名有16个字符的限制，获取命令之后，把它输出到调试
+   跟踪，所以用户通过Python脚本，使用BPF获取所有命令
+   加载BPF程序到内核
+   关联程序到execve系统调用，不同内核版本的系统调用不同，BCC提供的相关函数使得不
+   需要记住运行的系统版本
+   该代码输出到跟踪日志，所有可以看到所有的跟踪信息
+
+** Kretprobes示例
+   #+begin_src python
+     from bcc import BPF
+
+     bpf_source= """
+     int ret_sys_execve(struct pt_regs *ctx){
+     int return_value;
+     char comm[16];
+     bpf_get_current_comm(&comm, sizeof(comm));
+     return_value=PI_REGS_RC(ctx);
+
+     bpf_trace_printk("program: %s, return: %d", comm, return_value);
+
+     return 0;
+     }
+     """
+
+     bpf=BPF(text=bpf_source)
+     execve_function=bpf.get_syscall_fnname("execve")
+     bpf.attach_kretprobe(event=execve_function, fn_name="ret_sys_execve")
+     bpf.trace_print()
+   #+end_src
+   定义一个函数实现BPF程序，内核会在execve系统调用之后立刻执行该程序，PT_REGS_RC是一个
+   宏，读取从BPF寄存器在特定的上下文的值，也会使用bpf_trace_printk输出命令，将值输出到
+   调度日志。
+   初始化BPF程序接着加载到内核
+   修改附加函数到attach_kretprobe
+   
+** Tracepoints示例
+   #+begin_src python
+     from bcc import BPF
+
+     bpf_source= """
+     int trace_bpf_prog_load(void ctx){
+     char comm[16];
+     bpf_get_current_comm(&comm, sizeof(comm));
+
+     bpf_trace_printk("%s is loading a BPF program", comm);
+     return 0;
+     }
+     """
+
+     bpf=BPF(text=bpf_source)
+     bpf.attach_tracepoint(tp="bpf:bpf_prog_load",
+			   fn_name="trace_prog_load")
+     bpf.trace_print()
+   #+end_src
+   
+   声明一个函数定义BPF程序，代码有kprobes有些不同
+   
+* User-Space Probes
+  
+** Uprobes
+   #+begin_src go
+   package main
+   import "fmt"
+   func main(){
+      fmt.Println("Hello, BPF")
+   }
+   #+end_src
+   
+   #+begin_src python
+     from bcc import BPF
+
+     bpf_source="""
+     int trace_go_main(strcut pt_regs *ctx){
+     u64 pid=bpf_get_current_tgid();
+     bpf_trace_printk("New hello-bpf process running with PID: %d", pid);
+     }
+     """
+
+     bpf=BPF(text=bpf_source)
+     bpf.attach_uprobe(name="hello-bpf",
+		       sym="main.main", fn_name="trace_go_main")
+     bpf.trace_print()
+   #+end_src
+   使用bpf_get_current_pid_tgid函数获取当前hello-bpf程序的pid
+   将程序附加到uprobe中，该调用需要知道想追踪的对象，hello-bpf,是对象文件的绝对路径
+   想要追踪的程序，需要追踪对象内的符号，示例中的是main.main，每当运行hello-bpf时，会
+   从追踪管道获取新的日志
+
+** Uretprobes
+   
+* User Statically Defined Tracepoints
+  #+begin_src python
+    from bcc import BPF, USDT
+
+    bpf_source="""
+    #include<uapi/linux/ptrace.h>
+    int trace_binary_exec(struct pt_regs *ctx){
+       u64 pid=bpf_get_current_pid_tgid();
+       bpf_trace_printk("New hello_usdt process running with PID: %d", pid);
+    }
+    """
+
+    usdt=USDT(path="./hello_usdt")
+    usdt.enable_probe(probe="probe-main", fn_name="trace_binary_exec")
+    bpf=BPF(text=bpf_source, usdt=usdt)
+    bpf.trace_print()
+  #+end_src

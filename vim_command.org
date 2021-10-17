@@ -1,0 +1,550 @@
+#+BLOG: myblog
+#+POSTID: 5
+#+BLOG: myblog
+
+#+ORG2BLOG:
+#+DATE: [2020-04-11 Sat 19:15]
+#+OPTIONS: toc:nil num:nil todo:nil pri:nil tags:nil ^:nil
+#+CATEGORY: Uncategorized, Hello
+#+TAGS:
+#+DESCRIPTION:
+#+TITLE: vim命令
+
+* vim技巧
+** vim为运算符自动插入空格
+   设置一个函数，接受一个参数
+   =~与一个正则表达式进行匹配，如果存在匹配成功返回1,否则返回0
+   getline('.')获取当前行的内容
+   :inoremap设置在vim插入模式下的快捷键
+
+   #+BEGIN_SRC vimrc
+       function! EqualSi	gn(char)
+	 if a:char  =~ '='  && getline('.') =~ ".*("  
+	     return a:char
+	 endif 
+	 if a:char  =~ '[\/\<\>]' && getline('.') =~ '"'
+	     return a:char
+	 endif
+	 let ex1 = getline('.')[col('.') - 3]
+	 let ex2 = getline('.')[col('.') - 2]
+   
+	 if ex1 =~ "[-=+><>\/\*]"
+	     if ex2 !~ "\s"
+		 return "\<ESC>i".a:char."\<SPACE>"
+	     else
+		 return "\<ESC>xa".a:char."\<SPACE>"
+	     endif 
+	 else
+	     if ex2 !~ "\s"
+		 return "\<SPACE>".a:char."\<SPACE>\<ESC>a"
+	     else
+		 return a:char."\<SPACE>\<ESC>a"
+	     endif 
+	 endif
+     endfunction
+
+     :inoremap = <c-r>=EqualSign('=')<CR>
+     :inoremap + <c-r>=EqualSign('+')<CR>
+     :inoremap - <c-r>=EqualSign('-')<CR>
+     :inoremap * <c-r>=EqualSign('*')<CR>
+     :inoremap / <c-r>=EqualSign('/')<CR>
+     :inoremap > <c-r>=EqualSign('>')<CR>
+     :inoremap < <c-r>=EqualSign('<')<CR>
+     :inoremap , ,<space>
+
+   #+END_SRC
+** options
+   该命令显示vim所有设置,该命令打开一个窗口方便设置vim各个内置变量，
+   按回车可以查看详细设置，在set命令上按回车即可修改，按空格则可以
+   刷新当前窗口
+** lopen
+  
+** 粘贴代码混乱
+   set pastetoggle=<F1>
+   从浏览器复制代码时，
+   在一般模式下
+   首先按<F1>
+   状态栏会出现paste字样，
+   然后"+p即可完成正确格式的粘贴
+   在插入模式下
+   按<F1>
+   下方会出现INSERT(paste)字样
+   按下Ctrl r组合键，从寄存器粘贴
+   再选择"+通用寄存器
+** lcd
+
+   vim自7.4增加了tabe功能之后，一个tab可以有多个buffer，那么是不是可以在一个 
+   窗口中开启多个项目，它们之间的最大问题在于工作目录需要不同，而lcd命令则非 
+   常完美的解决了该问题，它的作用是修改当前tab页的工作目录，完美解决了该问题
+** options
+
+   这是我在浏览vim帮助文档，无意中发现的，很有意思的命令，在命令模式下，它会
+   打开一个buffer，这个buffer中列出了当前vim的所有变量，总共26个大类，按回车
+   进行修改，空格键刷新变量
+** Ctrl+a
+
+   该功能比较冷门，这是在生成序列的时候，无意中发现的，在一般模式下，光标定位
+   到数字，然后，按下组合键，数字开始自增，
+** vim启动分析
+
+   在命令行上输入命令vim –startuptime log，然后打开log文件，它列出所有文件加 
+   载的时间，可以快速锁定问题，提高vim的启动速度
+** Ctrl+c，Ctrl+[，Esc
+
+   它们的作用都是一样的，即从插入模式切换到一般模式，
+** AsyncRun
+   这是一个叫asyncrun的插件中带来的，它的作用是异步执行任务，这是简直是神器， 
+   它为vim增加了异步的功能，比如，原来在vim中执行make命令时，无法获取输入，在 
+   vim中不能输入，使用AyncRun命令之后， 一边进行代码的编译，一边写代码。
+   与make命令结合使用，相关输入会重定向到quickfix中
+   与recoll命令结合使用，异步的方法将搜索结果追加到quickfix中
+** vim-textobj
+
+   自定义的文本对象 主要有以下
+
+     i,和a,：参数对象，写代码一半在修改，现在可以用di,/ci,一次性删除/改写当前参数
+     ii和ai：缩进对象，同一个缩进层次的代码，可以用vii选中，dii/cii删除或改写
+     if和af：函数对象，可以用vif/dif/cif来选中/删除/改写函数的内容
+
+** cscope
+
+   cscope与ctags之间不同之处在于，它把函数调用的信息也列出来，相关的各种信息比较完善
+   它只支持C/C++语言，当然也有办法可以支持其他编程语言
+
+   #+BEGIN_SRC sh
+   find . --name '*.language* -print >> cscope.file
+   cscope -b -q
+  
+   #+END_SRC
+
+   同样也会生成相关的数据库文件 接下来就是在vim中载入文件
+
+** 快速移动
+
+   使用m命令，将命令绑定到快捷键
+   #+BEGIN_SRC vimrc
+   nnoremap <C-j> :m .+1<cr>==
+   nnoremap <C-k> :m .-2<cr>==
+   inoremap <C-j> <Esc>:m .+1<cr>==gi
+   inoremap <C-k> <Esc>:m .-2<cr>==gi
+   vnoremap <C-j> :m '>+1<cr>gv=gv
+   vnoremap <C-k> :m '<-2<cr>gv=gv
+   #+END_SRC
+
+** vim启动日志
+   将启动日志写入到log文件中
+   #+BEGIN_SRC sh
+   vim --startuptime log 
+   #+END_SRC
+  
+** vim性能测试
+   #+BEGIN_SRC sh
+   :profile start ~/log
+   :profile file ~/dest.vim
+   :profile func *
+   :q
+   #+END_SRC
+   重新启动则会将信息写入log文件中
+
+** verbose
+   查询相关vimscript环境相关信息
+   显示当前set设置的变量
+   #+begin_src vimrc
+   :verbose set
+   #+end_src
+
+   显示当前let设置的变量
+   #+begin_src vimrc
+   :verbose let
+   #+end_src
+
+   显示当前的自定义函数
+   #+begin_src vimrc
+   :verbose function
+   #+end_src
+   
+** :message
+   该命令的作用会打印出缓冲区的写入日志
+** 补全
+   | 快捷键        | 补全           |
+   |---------------+----------------|
+   | Ctrl x Ctrl l | 行补全         |
+   | Ctrl x Ctrl k | 字典关键字补全 |
+   | Ctrl x Ctrl t | 同义词补全     |
+   | Ctrl x Ctrl f | 补全路径       |
+   | Ctrl x Ctrl v | 补全vim命令    |
+
+**** YouCompleteMe
+     直接从apt仓库安装即可，使用apt install youcompleteme命令安装完成之后，还需要安装
+     apt install vim-addon-manager即可完成，最后运行
+     #+begin_src sh
+     apt install youcompleteme vim-addon-manager
+     vim-addon-manager youcompleteme
+     #+end_src
+     最后还需要设置.ycm_extra_config文件，
+     即可完成安装
+** 统计字符数
+   在一般模式下输入g Ctrl g即可，相关信息会显示在下方的命令栏中
+  
+** package命令
+   vim使用的包管理器，使用
+** 光标跳转
+   g; 跳转到光标上一位置
+   g, 跳转到光标下一位置
+   详情见:help jumplist
+** fzf
+   它是一款增强软件，主要是针对搜索的增强，它可以搜索历史命令，书签和git提交信息
+   以及进程
+   在shell中使用Ctrl+r在历史命令中进行搜索
+   在cd命令下，使用tab进行文件列表搜索
+   在shell中输入kill -9 <Tab>，即可打开进程列表选择需要杀死的进程
+** 创建vim主题
+   在.vim目录下创建一个colors文件夹
+   然后创建一个theme.vim文件
+   #+BEGIN_SRC vimrc
+   hi clear
+   syntax reset
+   let g:colors_name = "my-scheme"
+   set background=dark
+   set t_Co=256
+   hi Normal guifg=#b06060 ctermbg=NONE guibg=#272935 gui=NONE
+
+   hi DiffText guifg=#fc7575 guibg=NONE
+   hi ErrorMsg guifg=#fc7575 guibg=NONE
+   hi WarningMsg guifg=#fc7575 guibg=NONE
+   hi PreProc guifg=#fc7575 guibg=NONE
+   hi Exception guifg=#fc7575 guibg=NONE
+   hi Error guifg=#fc7575 guibg=NONE
+   hi DiffDelete guifg=#fc7575 guibg=NONE
+   hi GitGutterChangeDelete guifg=#fc7575 guibg=NONE
+   hi GitGutterDelete guifg=#fc7575 guibg=NONE
+   hi cssIdentifier guifg=#fc7575 guibg=NONE
+   hi cssImportant guifg=#fc7575 guibg=NONE
+   hi Type guifg=#fc7575 guibg=NONE
+   hi Identifier guifg=#fc7575 guibg=NONE
+   hi PMenuSel guifg=#6ef8be guibg=NONE
+   hi Constant guifg=#6ef8be guibg=NONE
+   hi Repeat guifg=#6ef8be guibg=NONE
+   hi GitGutterAdd guifg=#6ef8be guibg=NONE
+   hi cssIncludeKeyword guifg=#6ef8be guibg=NONE
+   hi Keyword guifg=#6ef8be guibg=NONE
+   hi DiffAdd guifg=#6ef8be guibg=NONE
+   hi IncSearch guifg=#e9ff81 guibg=NONE
+   hi Title guifg=#e9ff81 guibg=NONE
+   hi PreCondit guifg=#e9ff81 guibg=NONE
+   hi Debug guifg=#e9ff81 guibg=NONE
+   hi SpecialChar guifg=#e9ff81 guibg=NONE
+   hi Conditional guifg=#e9ff81 guibg=NONE
+   hi Todo guifg=#e9ff81 guibg=NONE
+   hi Special guifg=#e9ff81 guibg=NONE
+   hi Label guifg=#e9ff81 guibg=NONE
+   hi Delimiter guifg=#e9ff81 guibg=NONE
+   hi Number guifg=#e9ff81 guibg=NONE
+   hi CursorLineNR guifg=#e9ff81 guibg=NONE
+   hi Define guifg=#e9ff81 guibg=NONE
+   hi MoreMsg guifg=#e9ff81 guibg=NONE
+   hi Tag guifg=#e9ff81 guibg=NONE
+   hi String guifg=#e9ff81 guibg=NONE
+   hi MatchParen guifg=#e9ff81 guibg=NONE
+   hi Macro guifg=#e9ff81 guibg=NONE
+   hi DiffChange guifg=#e9ff81 guibg=NONE
+   hi GitGutterChange guifg=#e9ff81 guibg=NONE
+   hi cssColor guifg=#e9ff81 guibg=NONE
+   hi Function guifg=#6aa2ff guibg=NONE
+   hi Directory guifg=#c481ff guibg=NONE
+   hi markdownLinkText guifg=#c481ff guibg=NONE
+   hi javaScriptBoolean guifg=#c481ff guibg=NONE
+   hi Include guifg=#c481ff guibg=NONE
+   hi Storage guifg=#c481ff guibg=NONE
+   hi cssClassName guifg=#c481ff guibg=NONE
+   hi cssClassNameDot guifg=#c481ff guibg=NONE
+   hi Statement guifg=#6de5ff guibg=NONE
+   hi Operator guifg=#6de5ff guibg=NONE
+   hi cssAttr guifg=#6de5ff guibg=NONE
+
+
+   hi Pmenu guifg=#b06060 guibg=#454545
+   hi SignColumn guibg=#272935
+   hi Title guifg=#b06060
+   hi LineNr guifg=#2d1717 guibg=#272935
+   hi NonText guifg=#c481ff guibg=#272935
+   hi Comment guifg=#c481ff gui=italic
+   hi SpecialComment guifg=#c481ff gui=italic guibg=#272935
+   hi CursorLine guibg=#454545
+   hi TabLineFill gui=NONE guibg=#454545
+   hi TabLine guifg=#2d1717 guibg=#454545 gui=NONE
+   hi StatusLine gui=bold guibg=#454545 guifg=#b06060
+   hi StatusLineNC gui=NONE guibg=#272935 guifg=#b06060
+   hi Search guibg=#c481ff guifg=#b06060
+   hi VertSplit gui=NONE guifg=#454545 guibg=NONE
+   hi Visual gui=NONE guibg=#454545
+
+   #+END_SRC
+** 数据库相关操作
+*** vim-dadbod 
+    提供一组命令，方便操作数据库
+   
+*** vim-dadbod-ui
+    在vim-dadbod之上提供了一组UI
+
+** vimdiff
+   可直接使用vimdiff命令进行比较
+  
+   或者在vim环境中使用如下命令
+   #+begin_src vimrc
+   vertical diffsplit ~/filename 
+   #+end_src
+  
+   使用dp命令将当前文件的差异注入到另一个文件
+
+** 调试vim代码
+   显示所有加载vim代码文件
+   #+begin_src vimrc
+   :scr[iptnames]  "输出所有加载的vim文件
+   #+end_src
+   直接从vim -D启动可即可，它会进入调试模式，设置断点
+   | 命令                        | 描述                         |
+   |-----------------------------+------------------------------|
+   | breakadd func [lnum] {name} | 在函数中设置断点             |
+   | breakadd file [lnum] {name} | 在vim代码文件中设置断点      |
+   | breakadd here               | 在当前文件中设置断点         |
+   | breakadd expr {expression}  | 不论在何时设置，都会设置断点 |
+   | cont                        | 执行到断点                   |
+   | breakdel {nr}               |                              |
+   | breakdel *                  | 删除所有断点                 |
+   | breakdel func [lnum] {name} | 删除某个函数中的断点         |
+   | breakdel file [lnum] {name} | 删除某个文件中的断点         |
+   | breakdel here               | 删除当前文件当前行的断点     |
+   | breaklist                   | 显示所有断点                 |
+   |                             |                              |
+
+** 正则表达式
+   :global  
+   [range]g[lobal]/{pattern}/[cmd] 
+   筛选出符合正则表达式的内容
+   cmd表示需要使用的命令，默认为p，打印输出
+   
+   :vglobal
+   筛选出不符合正则表达式的内容
+* vim源码分析
+  
+** 启动分析
+   首先由于vim跨平台的特性，所以代码中充斥着大量的#ifdef的条件编译
+   本次分析主要针对linux平台
+   main函数则保存在src/main.c文件中，该函数根据操作系统不同，windows下使用VimMain，其他平台则使用main
+   params变量保存了全局的设置
+   #+begin_src c
+       CLEAR_FIELD(params); //主要是对params的数据成员设置初值
+       params.argc = argc;  //获取argc,argv参数
+       params.argv = argv;
+       params.want_full_screen = TRUE;//设置全屏
+   #+end_src
+   
+   接下来需要控制--startuptime选项和--clean选项，如果设置--startuptime，
+   #+begin_src c
+     #ifdef STARTUPTIME
+     //查找是否有--startuptime选项
+     for (i = 1; i < argc - 1; ++i)
+       if (STRICMP(argv[i], "--startuptime") == 0)
+	 {
+	   time_fd = mch_fopen(argv[i + 1], "a");
+	   TIME_MSG("--- VIM STARTING ---");
+	   break;
+	 }
+     #endif
+     starttime = time(NULL);
+
+     #ifdef CLEAN_RUNTIMEPATH
+     //在解析之间需要查看是否在--clean选项
+     for (i = 1; i < argc; ++i)
+       if (STRICMP(argv[i], "--clean") == 0)
+	 {
+	   params.clean = TRUE;
+	   break;
+	 }
+     #endif
+
+   #+end_src
+
+   接着调用common_init(&params)，该函数进行初始化，先初始化vimscript执行栈，该变量保存在globals.h文件中的exestack中
+   它数据类型是garray_T，当中有个变量void *ga_data，被转换estack_T的数据类型，该数据类型保存vimscript的执行信息，
+   接着是cmdline_init()调用，该函数比较简单，就是对ccline变量进行初始化，该变量保存在命令模式下的输入
+
+   eval_init()调用则是初始化vimscript的全局变量以及，v:类变量，全部保存在globvardict变量，同时也能通过不使用前缀访问
+   这类变量，将它注册到compat_hashtab中，而所有变量全部保存在vimvars变量，最后还需要初始化func_hashtab变量，该变量保
+   存了用户自定函数
+
+   init_normal_cmds()函数进行初始化，Normal，Visual模式相关的快捷键,相关的快捷键信息保存在nv_cmds变量中，同时设置
+   nv_cmd_idx数组中保存各操作的索引
+
+   接着是init_locale()函数，这个比较简单，它是进行设置语言，直接调用setlocale()函数，或者使用gettext进行设置
+
+   early_arg_scan(paramp)调用，则是
+
+   clip_init()函数调用则时，在图形界面，使用鼠标复制数据，粘贴到vim中，复制的数据保存在clip_plus，而选择的数据则是
+   保存在clip_star变量中。
+
+   通过win_alloc_fist()调用，首先分配一个win_T类型的对象，设置curwin，再分配一个缓冲区对象，将缓冲区关联到curwin结构体
+   最后在终端中绘制，还需要创建frame，为了控制窗口布局，还需要创建tabpage，设置curtab管理窗口，成功则继续，否则终止程序
+   
+   init_yank()调用比较简单，初始化y_regs数组。
+
+   init_homedir()调用则是初始化工作目录通过获取环境变量设置，如果没有相关环境变量，则置为NULL
+
+   #+begin_src c
+     void
+     common_init(mparm_T *paramp)
+     {
+       estack_init();//vimscript执行栈初始化
+       cmdline_init();
+
+       (void)mb_init();	// init mb_bytelen_tab[] to ones
+     #ifdef FEAT_EVAL
+       eval_init();	// init global variables
+     #endif
+       init_normal_cmds(); //初始化normal,visual
+       if ((IObuff = alloc(IOSIZE)) == NULL
+	   || (NameBuff = alloc(MAXPATHL)) == NULL)
+	 mch_exit(0);
+       TIME_MSG("Allocated generic buffers");
+
+     #if defined(HAVE_LOCALE_H) || defined(X_LOCALE)
+       init_locale();//设置语言
+       TIME_MSG("locale set");
+     #endif
+
+       early_arg_scan(paramp);
+
+     #ifdef FEAT_CLIPBOARD
+       clip_init(FALSE);		// 初始化剪贴板
+       TIME_MSG("clipboard setup");
+     #endif
+       stdout_isatty = (mch_check_win(paramp->argc, paramp->argv) != FAIL);
+       TIME_MSG("window checked");
+       if (win_alloc_first() == FAIL) //分配窗口与缓冲区对象，如果失败则退出
+	 mch_exit(0);
+       init_yank();		// 初始化与复制等操作相关的寄存器
+       alist_init(&global_alist);	// 初始化global_alist变量
+       global_alist.id = 0;
+       init_homedir();		// 查看HOME环境变量
+       set_init_1(paramp->clean);
+       TIME_MSG("inits 1");
+     #ifdef FEAT_EVAL//关于vimscript的功能
+
+       set_lang_var(); //设置v:lang,v:ctype变量
+
+       set_argv_var(paramp->argv, paramp->argc); //设置v:argv变量
+     #endif
+
+     #ifdef FEAT_SIGNS
+       init_signs();//初始化sg_table变量
+     #endif
+     }
+
+   #+end_src
+
+
+   parse_command_name()调用主要是控制vimdiff,rvim等，比如rvim会禁用shell功能，与shell相关的命令全部无法使用
+   而command_line_scan()则是控制相关选项，设置params中的变量，
+   #+begin_src c
+     parse_command_name(&params);
+     command_line_scan(&params);
+     TIME_MSG("parsing arguments");
+   #+end_src
+
+
+   判断params.literal变量控制是否展开目录，设置start_dir变量，最后设置vimscript中的isf变量
+  #+begin_src c
+    if (!params.literal)
+    {
+	start_dir = alloc(MAXPATHL);
+	if (start_dir != NULL)
+	  mch_dirname(start_dir, MAXPATHL);
+	do_cmdline_cmd((char_u *)":set isf+=(,)");
+	alist_expand(NULL, 0);
+	do_cmdline_cmd((char_u *)":set isf&");
+	if (start_dir != NULL)
+	  mch_chdir((char *)start_dir);
+    }
+  #+end_src
+  
+  GARGCOUNT保存的是global_alist变量的长度，is_not_a_term函数则是返回params.not_a_term变量的值，如果条件成立则输出提
+  示信息，接着判断want_full_screen变量，成立则创建一个终端，同时设置当前屏幕的行列数，最后是设置vi默认的行和列，以及
+  初始化firstwin的window和frame
+  #+begin_src c
+    if (GARGCOUNT > 1 && !silent_mode && !is_not_a_term())
+	printf(_("%d files to edit\n"), GARGCOUNT);
+    if (params.want_full_screen && !silent_mode)
+    {
+	termcapinit(params.term);	// 设置终端初始化
+	screen_start();		
+	TIME_MSG("Termcap init");
+    }
+    ui_get_shellsize();		// 初始化行和列
+    win_init_size();
+
+  #+end_src
+  
+  接着需要初始相关的快捷键以及语法高亮，init_mappings()则是控制不同模式的快捷键，而init_hlighlight()则是控制语法高亮
+  #+begin_src c
+    init_mappings();
+
+    init_hlighlight(TRUE,FALSE);
+  #+end_src
+
+  检查vimrc的路径，接着执行exe_pre_commands()调用执行--cmd选项的命令，其实内部就是调用do_cmdline_cmd()函数，最后从
+  estack_pop()取出返回的值,接着是调用source_startup_scripts()函数，首先是设置params->use_vimrc的值，调用do_source()
+  函数载入vimscript文件
+  #+begin_src c
+    if (params.use_vimrc != NULL
+	    && (STRCMP(params.use_vimrc, "NONE") == 0
+		|| STRCMP(params.use_vimrc, "DEFAULTS") == 0))
+	p_lpl = FALSE;
+    exe_pre_commands(&params);
+    source_startup_scripts(&params);
+  #+end_src
+
+  控制MZSCHME功能，而mzscheme_main()增加关于MZSCHEME的功能，之后也是调用vim_main2()函数
+  #+begin_src c
+    #ifdef FEAT_MZSCHEME
+    return mzscheme_main();
+    #else
+    return vim_main2();
+  #+end_src
+  vim_main2()函数调用最重要的函数是main_loop()，完成所有相关设置之后，进入vim环境，负责与用户之间的交互,设置完相关参数
+  之后就进入一个无限循环，不停的调用normal_cmd()函数，即开始进行编辑文本。
+
+** 调试vim
+   生成包含调试信息的Makefile，接着编译
+   #+begin_src sh
+   CFLAGS="-g" ./configure && make -j4
+   #+end_src
+   如下命令即可进行调试，需要设置gdb的工作目录为当前源码目录，它可以观察到当程序初始化
+   的部分
+   #+begin_src sh
+   gdb vim
+   #+end_src
+
+   它可以控制程序在运行时的相关变化，查看程序运行时的数据结构，能深入程序的各个功能
+   #+begin_src sh
+   gdb -p $(pidof vim)
+   #+end_src
+
+
+
+** 正则表达式实现
+   与正则表达式相关的文件主要有regexp.h,regexp.c,regexp_nfa.c,regexp_bt.c   
+   vim中的normal.c文件的normal_search()函数则是执行/或?时调用的功能函数，该函数代码不多，最重要的就是
+   调用了search.c文件中do_search()函数,正则表达搜索功能则是在searchit()函数，最后调用vim_regexc_multi
+   函数执行正则表达式
+   
+** 屏幕绘制
+   首先需要分配屏幕相关的函数，在screen.c中的screenalloc函数
+   与屏幕相关的文件主要有drawscreen.c, drawline.c, screen.c，其中最重要的就是drawscreen.c中的update_screen
+   函数在main_loop函数中调用的相关的屏幕绘制函数主要是设置屏幕绘制的相关变量，接着在update_screen函数中统
+   进行绘制。
+
+** vimscript实现
+
+** 
+

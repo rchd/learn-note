@@ -1,0 +1,1160 @@
+* typescript
+** 接口
+   关键字interface用来定义接口，而implements则是继承接口在子类中重写父类方法，
+   在C++中则是使用class与virtual关键字实现，
+   #+BEGIN_SRC typescript
+     function printLabel(labelledObj: { label: string }){
+	 console.log(labelledObj.label);
+     }
+     let myObj={size:10,label:"Size 10 Object"};
+     printLabel(myObj);
+   #+END_SRC
+
+   使用interface定义接口，定义createSequare，以SequareConfig类型作为参数，同时返回
+   设置对象。
+   #+BEGIN_SRC typescript
+     interface SquareConfig{
+	 color?: string;
+	 width?: number;
+     }
+
+     function createSquare(config: SquareConfig):{color: string; area: number}{
+	 let newSquare={color: "white", area:100};
+	 if (config.color){
+	     newSquare.color=config.color;
+	 }
+	 if(config.width){
+	     newSqure.area=config.width * config.width;
+	 }
+	 return newSquare;
+     }
+
+     let mySquare=createSquare({color:"black"});
+     console.log(mySquare);
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-LHGVRG/ts-src-9zm2Pv.ts(12,2): error TS2552: Cannot find name 'newSqure'. Did you mean 'newSquare'?
+   : { color: 'black', area: 100 }
+   
+   readonly修饰的关键字，当对象初始化之后就无法改变
+   #+BEGIN_SRC typescript
+     interface Point{
+	 readonly x: number;
+	 readonly y: number;
+     }
+   #+END_SRC
+
+   #+RESULTS:
+
+** 类   
+   定义一个类，该类有一个成员，greeting，string类型，同时它的构造函数对该变量进行初始化，
+   使用new创建一个该类的实例,constructor关键字定义的是构造函数，主要是对相关变量的初始化
+   当类实例化时会自动调用构造函数
+   #+BEGIN_SRC typescript
+     class Greeter{
+	 greeting:string;
+	 constructor(message:string){
+	     this.greeting=message;
+	 }
+	 greet(){
+	     return "hello, "+this.greeting;
+	 }
+     }
+     let greeter=new Greeter("world");
+     console.log(greeter);
+   #+END_SRC
+
+   #+RESULTS:
+   : Greeter { greeting: 'world' }
+
+   继承，Dog类继承自Animal，Dog类就有了Animal所有的属性以及方法，调用相关直接使用点号即可
+   #+BEGIN_SRC typescript
+     class Animal{
+	 move(distanceInMeters: number=0){
+	     console.log(`Animal moved ${distanceInMeters}m.`);
+	 }
+     }
+
+     class Dog extends Animal{
+	 bark(){
+	     console.log('Woof! Woof!');
+	 }
+     }
+
+     const dog=new Dog();
+     dog.bark();
+     dog.move(10);
+     dog.bark();
+   #+END_SRC
+
+   #+RESULTS:
+   : Woof! Woof!
+   : Animal moved 10m.
+   : Woof! Woof!
+
+   在继承时，使用super关键字，子类构造函数中调用父类构造函数，同时父类提供与子类之间的类型转换
+   #+BEGIN_SRC typescript
+     class Animal{
+	 name: string;
+	 constructor(theName: string){this.name=theName;}
+	 move(distanceInMeters: number = 0){
+	     console.log(`${this.name} moved ${distanceInMeters}m.`);
+	 }
+     }
+
+     class Snake extends Animal{
+	 constructor(name: string){ super(name); }
+	 move(distanceInMeters=5){
+	     console.log("Slithering...");
+	     super.move(distanceInMeters);
+	 }
+     }
+
+     class Horse extends Animal{
+	 constructor(name: string){super(name);}
+         move(distanceInMeters=45){
+	     console.log("Galloping...");
+	     super.move(distanceInMeters);
+	 }
+     }
+
+     let sam=new Snake("Sammy the Python");
+     let tom: Animal=new Horse("Tommy the Palomino");
+
+     sam.move();
+     tom.move(34);
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-TNj1MJ/ts-src-69pkCr.ts(19,6): error TS1005: ';' expected.
+   : Slithering...
+   : Sammy the Python moved 5m.
+   : Galloping...
+   : Tommy the Palomino moved 34m.
+
+   访问修饰符,使用public修饰的变量名或方法，可以被直接访问，
+   #+BEGIN_SRC typescript
+     class Animal{
+	 public name: string;
+	 public constructor(theName: string){ this.name=theName;}
+	 public move(distanceInMeters: number){
+	     console.log(`${this.name} moved ${distanceInMeters}m`);
+	 }
+     }
+   #+END_SRC
+   
+   私有变量，无法直接访问，若直接访问则报错，需要通过接口进行，使用new运算符对对象进行实例化
+   #+BEGIN_SRC typescript
+     class Animal{
+	 private name: string;
+	 constructor(theName: string){this.name=theName;}
+     }
+     new Animal("Cat").name;
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-TNj1MJ/ts-src-pXH1v2.ts(5,19): error TS2341: Property 'name' is private and only accessible within class 'Animal'.
+   
+   Rhino继承自Animal类，同时在构造函数中显示调用父类Animal构造函数，然后使用new实例化对象
+   将Rhino赋值给animal，但把employee赋值给animal会出错，因为它无法进行隐式转换
+   #+BEGIN_SRC typescript
+     class Animal{
+	 private name: string;
+	 constructor(theName: string){this.name=theName;}
+     }
+
+     class Rhino extends Animal{
+	 constructor(){super("Rhino");}
+     }
+
+     class Employee{
+	 private name: string;
+	 constructor(theName: string){this.name=theName;}
+     }
+
+     let animal=new Animal("Goat");
+     let rhino=new Rhino();
+     let employee=new Employee("Bob");
+
+     animal=rhino;
+     console.log(animal);
+     animal=employee;
+     console.log(animal);
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-TNj1MJ/ts-src-GmeCL2.ts(21,1): error TS2322: Type 'Employee' is not assignable to type 'Animal'.
+   :   Types have separate declarations of a private property 'name'.
+   : Rhino { name: 'Rhino' }
+   : Employee { name: 'Bob' }
+
+   保护成员只有在当前类可以使用方法访问，继承的子类，无法直接访问，需要使用父类方法进行
+   #+BEGIN_SRC typescript
+     class Person{
+	 protected name: string;
+	 constructor(name: string){this.name=name;}
+     }
+
+     class Employee extends Person{
+	 private department: string;
+
+	 constructor(name: string,department: string){
+	     super(name);
+	     this.deaprtment=department;
+	 }
+	 public getElevatorPitch(){
+	     return `Hello, my name is ${this.name} and I work in ${this.department}.`;
+	 }
+     }
+
+     let howard=new Employee("Howard","Sales");
+     console.log(howard.getElevatorPitch());
+     console.log(howard.name);
+   #+END_SRC
+   
+   readonly属性，表示该变量是只读的，该变量在类实例化时需要确定该变量的值
+   #+BEGIN_SRC typescript
+     class Octopus{
+	 readonly name: string;
+	 readonly numberOfLegs: number=8;
+	 constructor(theName: string){
+	     this.name=theName;
+	 }
+     }
+     let dad=new Octopus("Man with the 8 strong legs");
+     console.log(dad);
+     dad.name="Man with the 3-piece suit";
+     console.log(dad);
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-TNj1MJ/ts-src-cYfTuc.ts(10,5): error TS2540: Cannot assign to 'name' because it is a read-only property.
+   : Octopus { numberOfLegs: 8, name: 'Man with the 8 strong legs' }
+   : Octopus { numberOfLegs: 8, name: 'Man with the 3-piece suit' }
+   
+   #+BEGIN_SRC typescript
+     class Octopus{
+	 readonly numberOfLegs: number=8;
+	 constructor(readonly name: string){
+	 }
+     }
+   #+END_SRC
+   
+   存取器，class中默认的访问权限为public，属性应当隐藏起来，同时对属性的操作应当使用方法进行
+   从而保证数据的安全
+   #+BEGIN_SRC typescript
+     class Employee{
+	 fullName: string;
+     }
+
+     let employee =new Emplyee();
+     employee.fullName="Bob Smith";
+     if(employee.fullName){
+	 console.log(employee.fullName);
+     }
+   #+END_SRC
+
+   #+RESULTS:
+   
+   写入get和set方法，同时把属性设为私有，所有当对私有属性时行操作时，它会报错，应当使用
+   #+BEGIN_SRC typescript
+     let passcode="secret passcode";
+
+     class Employee{
+	 private _fullName:string;
+
+	 get fullName():string{
+	     return this._fullName;
+	 }
+
+	 set fullName(newName:string){
+	     if(passcode && passcode == "secret passcode"){
+		 this._fullName=newName;
+	     }else{
+		 console.log("Error: Unauthorized update of employee!");
+	     }
+	 }
+     }
+
+     let employee = new Employee();
+     employee.fullName="Bob Smith";
+     if(employee.fullName){
+	 console.log(employee.fullName);
+     }
+	
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-TNj1MJ/ts-src-RLswXO.ts(6,9): error TS1056: Accessors are only available when targeting ECMAScript 5 and higher.
+   : ../../../../tmp/babel-TNj1MJ/ts-src-RLswXO.ts(10,9): error TS1056: Accessors are only available when targeting ECMAScript 5 and higher.
+   : Bob Smith
+
+   静态属性
+   #+BEGIN_SRC typescript
+     class Grid{
+	 static origin={x:0,y:0;};
+	 calculateDistanceFromOrigin(point:{x:number;y:number;}){
+	     let xDist=(point.x-Grid.origin.x);
+	     let yDist=(point.y-Grid.origin.y);
+	     return Math.sqrt(xDist * xDist + yDist * yDist)/this.scale;
+	 }
+	 constructor(public scale:number){}
+     }
+     let grid1=new Grid(1.0);
+     let grid2=new Grid(5.0);
+
+     console.log(grid1.calclulateDistanceFromOrigin({x:10,y:10}));
+     console.log(grid2.calculateDistanceFromOrigin({x:10,y:10}));
+   #+END_SRC
+
+   #+RESULTS:
+
+   抽象类
+   只能被继承，无法实例化，通常用来定义公共方法与公共属性，需要注意子类与父类之间的转换
+   #+BEGIN_SRC typescript
+     abstract class Animal{
+	 abstract makeSound():void;
+	 move():void {
+	     console.log('roaming the earch...');
+	 }
+     }
+   #+END_SRC
+
+   抽象基类，子类重写抽象基类方法，使用abstract关键字定义抽象基类
+   #+BEGIN_SRC typescript
+     abstract class Department{
+	 constructor(public name: string){
+	 }
+	 printName():void{
+	     console.log('Deaprtment name: '+this.name);
+	 }
+	 abstract printMetting():void;
+     }
+
+     class AccountingDepartment extends Department{
+	 constructor(){
+	     super('Accounting and Auditing');
+	 }
+	 printMeeting():void{
+	     console.log('The Accounting Deaprtment meets each Monday at 10am.');
+	 }
+	 generateReports():void{
+	     console.log('Generating accounting reports...');
+	 }
+     }
+
+     let department;Department;
+     department=new Department();
+     department=new AccountingDepartment();
+     department.printName();
+     department.printMeeting();
+     department.generateReports();
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-TNj1MJ/ts-src-EkEqtY.ts(10,7): error TS2515: Non-abstract class 'AccountingDepartment' does not implement inherited abstract member 'printMetting' from class 'Department'.
+   : ../../../../tmp/babel-TNj1MJ/ts-src-EkEqtY.ts(23,12): error TS2511: Cannot create an instance of an abstract class.
+   : Deaprtment name: Accounting and Auditing
+   : The Accounting Deaprtment meets each Monday at 10am.
+   : Generating accounting reports...
+
+   构造函数
+   只在对象被实例化时，才会调用，主要用来对数据的初始化
+   #+BEGIN_SRC typescript
+     class Greeter{
+	 greeting:string;
+	 constructor(message: string){
+	     this.greeting=message;
+	 }
+	 greet(){
+	     return "Hello, "+this.greeting;
+	 }
+     }
+
+     let greeter: Greeter;
+     greeter=new Greeter("world");
+     console.log(greeter.greet()):
+   #+END_SRC
+
+   #+BEGIN_SRC typescript
+     class Gretter=(function (){
+	 function Greeter(message){
+	     this.greeting=message;
+	 }
+	 Greeter.prototype.greet=function(){
+	     return "Hello, "+this.greeting;
+	 };
+	 return Greeter;
+     })();
+
+     let greeter;
+     greeter=new Greeter("world");
+     console.log(greeter.greet());
+   #+END_SRC
+
+   #+BEGIN_SRC typescript
+     class Greeter{
+	 static standardGreeting="Hello, there";
+	 greeting:string;
+	 greet(){
+	     if(this.greeting){
+		 return "Hello, "+this.greeting;
+	     }else{
+		 return Greeter.standardGreeting;
+	     }
+	 }
+     }
+
+     let greeter1:Greeter;
+     greeter1=new Greeter();
+     console.log(greeter1.greeter());
+
+     let greeterMaker: typeof Greeter=Greeter;
+     greeterMake.standardGreeting="Hey there!";
+
+     let greeter2: Greeter=new greeterMaker();
+     console.log(greeter2.greet());
+   #+END_SRC
+   
+   把类当作接口使用
+   #+BEGIN_SRC typescript
+     class Point{
+	 x: number;
+	 y: number;
+     }
+
+     interface Point3d extends Point{
+	 z: number;
+     }
+
+     let point3d: Point3d={x:1,y:2,z:3};
+   #+END_SRC
+
+** 函数
+   #+BEGIN_SRC typescript
+     function add(x,y){
+	 return x+y;
+     }
+
+     let myAdd=function(x,y){return x+y;}
+   #+END_SRC
+
+   #+BEGIN_SRC typescript
+     let z=100;
+
+     function addToZ(x,y){
+	 return x+y+z;
+     }
+   #+END_SRC
+
+   #+BEGIN_SRC typescript
+     function add(x: number , y: number): number{
+	 return x+y;
+     }
+
+     let myAdd=function(x: number,y: number): number{return x+y;}
+   #+END_SRC
+   
+   #+BEGIN_SRC typescript
+     let myAdd:(x: number , y: number)=>number=
+	 function(x: number, y: number): number { return x+y;}
+   #+END_SRC
+    
+   #+BEGIN_SRC typescript
+     let myAdd: (baseValue: number,increment: number)=>number=
+	 function(x: number,y: number): number {return x+y;};
+   #+END_SRC
+
+   推断类型
+   #+BEGIN_SRC typescript
+     let myAdd=function(x: number,y: number): number{ return x+y;};
+
+     let myAdd:(baseValue: number, increment: number) => number=
+	 function(x,y){return x+y;};
+   #+END_SRC
+
+   可选参数和默认参数
+   #+BEGIN_SRC typescript
+     function buildName(firstName: string, lastName: string){
+	 return firstName+" "+lastName;
+     }
+
+     let result1=buildName("Bob");
+     let result2=buildName("Bob","Adams","Sr.");
+     let result3=buildName("Bob","Adams");
+   #+END_SRC
+
+   #+BEGIN_SRC typescript
+     function buildName(firstName="Will", lastName: string){
+	 return firstName+" "+lastName;
+     }
+
+     let result1=buildName("Bob");
+     let result2=buildName("Bob","Adams","Sr.");
+     let result3=buildName("Bob","Adams");
+     let result4=buildName(undefined,"Adams");
+   #+END_SRC
+
+   剩余参数
+   #+BEGIN_SRC typescript
+     function buildName(firstName: string,...restOfName: string[]){
+	 return firstName+" "+restOfName.join(" ");
+     }
+
+     let employeeName=buildName("Joseph","Samuel","Lucas","MacKinzie");
+   #+END_SRC
+   
+   #+BEGIN_SRC typescript
+     function buildName(firstName: string, ...restOfName; string[]){
+	 return firstName+" "+restOfName.join(" ");
+     }
+
+     let buildNameFun:(fname: string,...rest: string[])=>string=buildName;
+   #+END_SRC
+
+   this和箭头函数
+   #+BEGIN_SRC typescript
+     let deck={
+	 suits:["hearts","spades","clubs","diamonds"],
+	 cards:Array(52),
+	 createCardPicker:function(){
+	     return function(){
+		 let pickedCard=Math.floor(Math.random()*52);
+		 let pickedSuit=Math.floor(packedCard/13);
+
+		 return {suit:this.suits[pickedSuit],card:pickedCard % 13};
+	     }
+	 }
+     }
+
+     let cardPicker=deck.createCardPicker();
+     let pcikedCard=cardPicker();
+
+     alert("card: "+pickedCard.card+" of "+pickedCard.suit);
+   #+END_SRC
+   
+   #+BEGIN_SRC typescript
+     interface Card{
+	 suit: string;
+	 card: number;
+     }
+     interface Deck{
+	 suits: string[];
+	 cards: number[];
+	 createCardPicker(this: Deck):()=>Card;
+     }
+     let deck:Deck={
+	 suits:["hearts","spades","clubs","diamonds"],
+	 cards:Array(52),
+	 createCardPicker:function(this: Deck){
+	     return ()=> {
+		 let pickedCard=Math.floor(Math.random()*52);
+		 let pickedSuit=Math.floor(pickedCard/13);
+
+		 return {suit:this.suits[pickedSuit],card:pickedCard % 13};
+	     }
+	 }
+     }
+
+     let cardPicker=deck.createCardPicker();
+     let pickedCard=cardPicker();
+
+     alert("card: "+pickedCard.card+" of "+pickedCard.suit);
+   #+END_SRC
+   
+   this参数在回调函数里
+   #+BEGIN_SRC typescript
+     interface UIElement{
+	 addClickListener(onclick: (this: void,e: Event)=> void ):void;
+     }
+
+     class Handler{
+	 info: string;
+	 onClickBad(this: Handler, e: Event){
+	     this.info=e.message;
+	 }
+     }
+     let h=new Handler();
+     uiElement.addClickListener(h.onClickBad);
+   #+END_SRC
+   
+   重载
+   #+BEGIN_SRC typescript
+     let suits=["hearts","spades","clubs","diamonds"];
+
+     function pickCard(x): any{
+	 if(typeof x == "object"){
+	     let pickedCard=Math.floor(Math.random()*x.length);
+	     return pickedCard;
+	 }else if(typeof x == "number"){
+	     let pickedSuit=Math.floor(x/13);
+	     return {suit:suits[pickedSuit],card: x % 13};
+	 }
+     }
+
+     let myDeck=[{suit:"diamonds",card:2},{suit:"spades",card:10},
+		 {suit:"hearts",card:4}];
+     let pickedCrad1=myDeck[pickCard(myDeck)];
+     alert("card: "+pickedCard1.card+" of "+pickedCard1.suit);
+
+     let pickedCard2=pickCard(15);
+     alert("card: "+pickedCard2.card+" of "+pickedCard2.suit);
+   #+END_SRC
+
+   函数重载，是指相同函数名，但是参数数量，或参数数据类型不同。
+   #+BEGIN_SRC typescript
+     let suits=["hearts","spades","clubs","diamonds"];
+
+     function pickCard(x:{suit: string; card: number;}[]): number;
+     function pickCard(x: number): {suit: string; card: number;};
+     function pickCard(x): any{
+	 if (typeof x == "object"){
+	     let pickedCard=Math.floor(Math.random()*x.length);
+	     return pickedCard;
+	 }else if(typeof x == "number"){
+	     let pickedSuit=Math.floor(x/13);
+	     return {suit:suits[pickedSuit],card:x % 13};
+	 }
+     }
+
+     let myDeck=[{suit:"diamonds",card:2},{suit:"spades",card:10},
+		 {suit:"hearts",card:4}];
+     let pickedCard1=myDeck[pickCard(myDeck)];
+     alert("card: "+pickedCard1.card+" of "+pickedCard1.suit);
+
+     let pickedCard2=pickCard(15);
+     alert("card: "+pickedCard2.card+" of "+pickedCard2.suit);
+   #+END_SRC
+ 
+** 泛型
+   泛型，这个概念是在C++中实现，主要在于，编译型语言，有一个特点，它在运行必须要确定
+   数据类型，否则无法运行，这就出现一个问题，比如写一个加法函数，只针对int类型，那么
+   其他float,double等，都要为它们重写加法函数，因此出现了泛型这个概念
+
+   第一个函数针对数字类型，第二个则是针对任何类型，但是相关的类型信息不会保存，第三
+   则是针对泛型，根据不同类型作为参数，返回相应的类型
+   #+BEGIN_SRC typescript
+     function identity(arg:number):number{
+	 return arg;
+     }
+
+     function identity(arg: any):any{
+	 return arg;
+     }
+
+     function identity<T>(arg: T): T {
+	 return arg;
+     }
+   #+END_SRC
+
+   泛型与相关容器结合
+   #+BEGIN_SRC typescript
+     function loggingIdentity<T>(arg: Array<T>): Array<T> {
+	 console.log(arg.length);
+	 return arg;
+     }
+   #+END_SRC
+
+   #+BEGIN_SRC typescript
+     function identity<T>(arg: T): T {
+	 return arg;
+     }
+
+     let myIdentity: <T>(arg: T) => T = identity;
+
+     function identity<T>(arg: T): T{
+	 return arg;
+     }
+
+     let myIdentity: <U>(arg: U)=>U=identity;
+
+     function identity<T>(arg: T): T {
+	 return arg;
+     }
+
+     let myIdentity: {<T>(arg: T): T} =identity;
+
+     interface GenericIdentityFn{
+	 <T>(arg: T): T;
+     }
+
+     function identity<T>(arg: T): T {
+	 return arg;
+     }
+
+     let myIdentity: GenericIdentityFn=identity;
+
+     interface GenericIdentityFn<T>{
+	 (arg: T): T;
+     }
+
+     function identity<T>(arg: T): T {
+	 return arg;
+     }
+
+     let myIdentity: GenericIdentityFn<number>=identity;
+   #+END_SRC
+
+   泛型与类定义结合，在使用时指定需要实例化的数据类型
+   #+BEGIN_SRC typescript
+     class GenericNumber<T>{
+	 zeroValue: T;
+	 add: (x: T,y: T)=>T;
+     }
+
+     let myGenericNumber=new GenericNumber<number>();
+     myGenericNumber.zeroValue=0;
+     myGenericNumber.add=function(x,y){return x+y;}
+   #+END_SRC
+** 迭代器与生成器
+   #+BEGIN_SRC typescript
+     let someArray=[1,"string",false];
+
+     for(let entry of someArray){
+	 console.log(entry);
+     }
+   #+END_SRC
+
+   #+BEGIN_SRC typescript
+     let list=[4,5,6];
+
+     for(let i in list){
+	 console.log(i);
+     }
+
+     for(let i of list){
+	 console.log(i);
+     }
+   #+END_SRC
+
+   #+BEGIN_SRC typescript
+     let pets=new Set(["Cat","Dog","Hamster"]);
+     pets["species"]="mammals";
+
+     for(let pet in pets){
+	 console.log(pet);
+     }
+
+     for(let pet of pets){
+	 console.log(pet);
+     }
+   #+END_SRC
+
+   在ES5或ES3时，迭代器只允许在Array类型上使用，for...of会被翻译成for循环
+   #+BEGIN_SRC typescript
+     let numbers=[1,2,3];
+     for(let num of numbers){
+	 console.log(num);
+     }
+   #+END_SRC
+
+   生成的js代码
+   #+BEGIN_SRC typescript
+     var numbers=[1,2,3];
+     for(var _i=0;_i<numbers.length;_i++){
+	 var num=numbers[_i];
+	 console.log(num);
+     }
+   #+END_SRC
+** 命名空间
+   命名空间，与C++中的命名空间是一样的，主要为了大型项目设计，当下的前端其实也越来越
+   复杂，引入状态管理，异步路由等等，这为管理增加了难度，所以需要有命名空间
+   
+   定义了一个接口，由LettersOnlyValidator与ZipCodeValidator继承该接口，并重新实现，
+   这是受Java影响，接着创建一个字典，使用父类作为数据类型，在对数据进行初始化时，
+   直接使用子类，实际它会作一个隐式的类型转换，最后使用一个循环，为它们统一调用
+   isAcceptable方法。
+   #+BEGIN_SRC typescript
+     interface StringValidator{
+	 isAcceptable(s: string): boolean;
+     }
+
+     let lettersRegexp=/^[A-Za-z]+$/;
+     let numberRegexp=/^[0-9]+$/;
+
+     class LettersOnlyValidator implements StringValidator{
+	 isAcceptable(s: string){
+	     return lettersRegexp.test(s);
+	 }
+     }
+
+     class ZipCodeValidator implements StringValidator{
+	 isAcceptable(s: string){
+	     return s.length === 5 && numberRegexp.test(s);
+	 }
+     }
+
+     let strings=["hello","98502","101"];
+
+     let validators:{[s:string]: StringValidtor;}={};
+     validators["ZIP code"]=new ZipCodeValidator();
+     validators["Letters only"]=new LettersOnlyValidator();
+
+     for(let s of strings){
+	 for(let name in validators){
+	     let isMatch=validators[name].isAcceptable(s);
+	     console.log(`'${s}' ${isMatch ? "matches" : "does not match" } '${name}'.`);
+	 }
+     }
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-8D9KQA/ts-src-OgHJAD.ts(22,29): error TS2304: Cannot find name 'StringValidtor'.
+   : 'hello' does not match 'ZIP code'.
+   : 'hello' matches 'Letters only'.
+   : '98502' matches 'ZIP code'.
+   : '98502' does not match 'Letters only'.
+   : '101' does not match 'ZIP code'.
+   : '101' does not match 'Letters only'.
+
+
+   
+   #+BEGIN_SRC typescript
+     namespace Validation{
+	 export interface StringValidator{
+	     isAcceptable(s: string): boolean;
+	 }
+
+	 const letterRegexp=/^[A-Za-z]+$/;
+	 const numberRegexp=/^[0-9]+$/;
+
+	 export class LettersOnlyValidator implements StringValidator{
+	     isAcceptable(s: string){
+		 return lettersRegexp.test(s);
+	     }
+	 }
+
+	 export class ZipCodeValidator implements StringValidator{
+	     isAcceptable(s: string){
+		 return s.length === 5 && numberRegexp.test(s);
+	     }
+	 }
+     }
+
+     let strings=["Hello","98502","101"];
+
+     let validators:{[s: string]: Validation.StringValidator;}={};
+     validators["ZIP code"]=new Validation.ZipCodeValidator();
+     validators["Letters only"]=new Validation.LettersOnlyValidator();
+
+     for(let s of strings){
+	 for(let name in validators){
+	     console.log(`${s}" - ${ validators[name].isAcceptable(s) ? "does not match"} ${name}`);
+	 }
+     }
+   #+END_SRC
+
+   #+RESULTS:
+
+   Validation.ts
+   #+BEGIN_SRC typescript
+     namespace Validation{
+	 export interface StringValidator{
+	     isAcceptable(s: string): boolean;
+	 }'
+     }
+   #+END_SRC
+
+   LetterOnlyValidator.ts
+   #+BEGIN_SRC typescript
+     namespace Validation{
+	 const letterRegxp=/^[A-Za-z]+$/;
+	 export class LetterOnlyValidator implements StringValidator{
+	     isAcceptable(s: string){
+		 return letterRegexp.test(s);
+	     }
+	 }
+     }
+   #+END_SRC
+
+   ZipCodeValidator.ts
+   #+BEGIN_SRC typescript
+     namespace Validation{
+	 const numberRegexp=/^[0-9]+$/;
+	 export class ZipCodeValidator implements StringValidator{
+	     isAcceptable(s: string){
+		 return s.length===5 && numberRegexp.test(s);
+	     }
+	 }
+     }
+   #+END_SRC
+
+   Test.ts
+   #+BEGIN_SRC typescript
+     let strings=["Hello","98502","101"];
+
+     let validators: {[s: string]: Validation.StringValidator; } ={};
+     validators["ZIP code"]=new Validation.ZipCodeValidator();
+
+     for(let s of strings){
+	 for(let name in validators){
+	     console.log(`${s}" - ${ validators[name].isAcceptable(s) ? "matches" : "does not match" } ${name}`);
+	 }
+     }
+
+   #+END_SRC
+
+   加载多文件代码
+   tsc --outFile sample.js Test.js
+   
+   别名
+   #+BEGIN_SRC typescript
+     namespace Shapes{
+	 export namespace Polygons{
+	     export class Triangle{}
+	     export class Square{}
+	 }
+     }
+
+     import polygons=Shape.Polygons;
+     let sq=new polygons.Square();
+   #+END_SRC
+** 装饰器
+   #+BEGIN_SRC typescript
+     function f(){
+	 console.log("f(): evaluated");
+	 return function(target,properKey: string,descriptor: PropertyDescriptor){
+	     console.log("f(): called");
+	 }
+     }
+
+     function g(){
+	 console.log("g(): evaluated");
+	 return function(target,propertyKey: string, descriptor: PropertyDescriptor){
+	     console.log("g(): called");
+	 }
+     }
+
+     class C{
+	 @f()
+	 @g()
+	 method(){}
+     }
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-O8QMxS/ts-src-ai8BXs.ts(3,21): error TS7006: Parameter 'target' implicitly has an 'any' type.
+   : ../../../../tmp/babel-O8QMxS/ts-src-ai8BXs.ts(10,21): error TS7006: Parameter 'target' implicitly has an 'any' type.
+   : ../../../../tmp/babel-O8QMxS/ts-src-ai8BXs.ts(16,5): error TS1241: Unable to resolve signature of method decorator when called as an expression.
+   : ../../../../tmp/babel-O8QMxS/ts-src-ai8BXs.ts(17,5): error TS1241: Unable to resolve signature of method decorator when called as an expression.
+   : ../../../../tmp/babel-O8QMxS/ts-src-ai8BXs.ts(18,5): error TS1219: Experimental support for decorators is a feature that is subject to change in a future release. Set the 'experimentalDecorators' option in your 'tsconfig' or 'jsconfig' to remove this warning.
+   : f(): evaluated
+   : g(): evaluated
+   : g(): called
+   : f(): called
+
+
+   #+BEGIN_SRC typescript
+     function classDecorator<T extends {new(...args:any[]):{}}>(constructor:T{
+	 return class extends constructor{
+	     newProerty="new property";
+	     hello="override";
+	 }
+     }
+     @classDecorator
+     class Greeter{
+          property="property";
+	  hello:string;
+	  constructor(m: string){
+		this.hello=m;
+	}
+      }
+
+    console.log(new Greeter("world"));							    
+
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(1,74): error TS1005: ',' expected.
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(2,13): error TS1005: ':' expected.
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(2,19): error TS1005: ':' expected.
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(2,27): error TS1005: ':' expected.
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(2,38): error TS1005: ',' expected.
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(3,28): error TS1005: ',' expected.
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(4,19): error TS1005: ',' expected.
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(6,2): error TS1005: ',' expected.
+   ../../../../tmp/babel-O8QMxS/ts-src-Kw5fDm.ts(8,2): error TS1359: Identifier expected. 'class' is a reserved word that cannot be used here.
+   Greeter { property: 'property', hello: 'world' }
+   #+end_example
+   
+   #+BEGIN_SRC typescript
+     function enumerable(value: boolean){
+	 return function(target: any,propertyKey: string,descriptor: PropertyDescriptor){
+	  //   descriptor.enumerable=value;
+	     console.log(value);		 
+	     console.log(target);
+	     console.log(propertyKey);
+	     console.log(descriptor);
+	     greeting=value;
+	 }
+     }
+
+     class Greeter{
+	 greeting: string;
+	 constructor(message: string){
+	     this.greeting=message;
+	 }
+
+	 @enumerable(false)
+	 greet(){
+	     return "Hello, "+this.greeting;
+	 }
+     }
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-PrFBjN/ts-src-WcNDQt.ts(8,2): error TS2304: Cannot find name 'greeting'.
+   : ../../../../tmp/babel-PrFBjN/ts-src-WcNDQt.ts(18,5): error TS1241: Unable to resolve signature of method decorator when called as an expression.
+   : ../../../../tmp/babel-PrFBjN/ts-src-WcNDQt.ts(19,5): error TS1219: Experimental support for decorators is a feature that is subject to change in a future release. Set the 'experimentalDecorators' option in your 'tsconfig' or 'jsconfig' to remove this warning.
+   : false
+   : Greeter { greet: [Function] }
+   : greet
+   : undefined
+
+   #+BEGIN_SRC typescript
+     function classDecorator<T extends {new(...args:any[]):{}}>(constructor:T){
+	 return class extends constructor{
+	     newProerty="new property";
+	     hello="override";
+	 }
+     }
+
+     @classDecorator
+     class Greeter{
+	 property="property";
+	 hello: string;
+	 constructor(m:string){
+	     this.hello=m;
+	 }
+     }
+
+     console.log(new Greeter("world"));
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-PrFBjN/ts-src-DvSNeE.ts(9,7): error TS1219: Experimental support for decorators is a feature that is subject to change in a future release. Set the 'experimentalDecorators' option in your 'tsconfig' or 'jsconfig' to remove this warning.
+   : class_1 {
+   :   property: 'property',
+   :   hello: 'override',
+   :   newProerty: 'new property'
+   : }
+
+   #+BEGIN_SRC typescript
+     function configurable(value: boolean){
+	 return function(target: any,propertyKey: string,descriptor: PropertyDescriptor){
+	     //descriptor.configurable=value;
+	console.log(target);
+	console.log(target._x);
+	 }
+     }
+
+     class Point{
+	 private _x: number;
+	 private _y: number;
+	 constructor(x: number,y: number){
+	     this._x=x;
+	     this._y=y;
+	 }
+	 @configurable(false)
+	 get x(){ return this._x; }
+
+	 @configurable(false)
+	 get y(){ return this._y; }
+     }
+
+
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   ../../../../tmp/babel-PrFBjN/ts-src-hw7j49.ts(16,5): error TS1241: Unable to resolve signature of method decorator when called as an expression.
+   ../../../../tmp/babel-PrFBjN/ts-src-hw7j49.ts(17,9): error TS1056: Accessors are only available when targeting ECMAScript 5 and higher.
+   ../../../../tmp/babel-PrFBjN/ts-src-hw7j49.ts(17,9): error TS1219: Experimental support for decorators is a feature that is subject to change in a future release. Set the 'experimentalDecorators' option in your 'tsconfig' or 'jsconfig' to remove this warning.
+   ../../../../tmp/babel-PrFBjN/ts-src-hw7j49.ts(19,5): error TS1241: Unable to resolve signature of method decorator when called as an expression.
+   ../../../../tmp/babel-PrFBjN/ts-src-hw7j49.ts(20,9): error TS1056: Accessors are only available when targeting ECMAScript 5 and higher.
+   ../../../../tmp/babel-PrFBjN/ts-src-hw7j49.ts(20,9): error TS1219: Experimental support for decorators is a feature that is subject to change in a future release. Set the 'experimentalDecorators' option in your 'tsconfig' or 'jsconfig' to remove this warning.
+   Point {}
+   undefined
+   Point {}
+   undefined
+   #+end_example
+** Symbols
+   #+BEGIN_SRC typescript
+     let sym1=Symbol();
+     let sym2=Symbol("key");
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-ZaiyVX/ts-src-VNdY8k.ts(1,10): error TS2585: 'Symbol' only refers to a type, but is being used as a value here. Do you need to change your target library? Try changing the `lib` compiler option to es2015 or later.
+   : ../../../../tmp/babel-ZaiyVX/ts-src-VNdY8k.ts(2,10): error TS2585: 'Symbol' only refers to a type, but is being used as a value here. Do you need to change your target library? Try changing the `lib` compiler option to es2015 or later.
+
+   #+BEGIN_SRC typescript
+     let sym2 = Symbol("key");
+     let sym3=Symbol("key");
+     console.log(sym2===sym2);
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-LHGVRG/ts-src-gEWMZw.ts(1,12): error TS2585: 'Symbol' only refers to a type, but is being used as a value here. Do you need to change your target library? Try changing the `lib` compiler option to es2015 or later.
+   : ../../../../tmp/babel-LHGVRG/ts-src-gEWMZw.ts(2,10): error TS2585: 'Symbol' only refers to a type, but is being used as a value here. Do you need to change your target library? Try changing the `lib` compiler option to es2015 or later.
+   : true
+   
+   #+BEGIN_SRC typescript
+     let sym=Symbol();
+     let obj={
+	 [sym]:"value"
+     };
+     console.log(obj[sym]);
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-ZaiyVX/ts-src-2ZjEX5.ts(1,9): error TS2585: 'Symbol' only refers to a type, but is being used as a value here. Do you need to change your target library? Try changing the `lib` compiler option to es2015 or later.
+   : value
+
+   #+BEGIN_SRC typescript
+     const getClassNameSymbol=Symbol();
+     class C{
+	 [getClassNameSymbol](){
+	     return "C";
+	 }
+     }
+
+     let c=new C();
+     let className=c[getClassNameSymbol]();
+     console.log(className);
+   #+END_SRC
+
+   #+RESULTS:
+   : ../../../../tmp/babel-ZaiyVX/ts-src-L9yBSN.ts(1,31): error TS2585: 'Symbol' only refers to a type, but is being used as a value here. Do you need to change your target library? Try changing the `lib` compiler option to es2015 or later.
+   : ../../../../tmp/babel-ZaiyVX/ts-src-L9yBSN.ts(10,20): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type 'C'.
+   : C
+* 源码分析
+** 文件解析
+   Scanner扫描器(scanner.ts)
+   Parser解析器(parser.ts)
+   Binder绑定器(binder.ts)
+   Checker检查器(checker.ts)
+   Emitter发射器(emitter.ts)
+** 处理流程
+   1. SourceCode(源码)
+   2. 扫描器
+   3. Token流
+   4. 解析器
+   5. AST(抽象语法树)
+   6. 绑定器
+   7. Symbols(符号)
+   8. 检查器
+   9. 发射器
+   10. JavaScript代码
+** 重要文件
+   #+BEGIN_SRC typescript
+   let objectAllocator: ObjectAllocator
+   #+END_SRC
+   该代码定义一个全局的单例对象
+* vscode源码分析
+  
+
+
+
