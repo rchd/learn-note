@@ -1,75 +1,103 @@
-* 架构
-** 整体设计
-  sqlite通过将sql编译成字节码，在虚拟机中运行。sqlite3_prepare_v2()与相关的接口函数把
-  sql转换到字节码，sqlite3_stmt对象保存了字节码程序实现单条sql语句。sqlite3_step()通过
-  把字节码在虚拟机中运行，直到所有工作完成，或者执行一条语句返回结果。
-  
-** 接口
-   大多数的C语言接口都在main.c,legacy.c和vbdeapi.c三个文件中。sqlite3_get_table()相关
-   实现在table.c文件中，而sqlite3_mprintf()则是在printf.c文件中。sqlite3_complete()实
-   现在complete.c中，最后TCL相关接口则是在tclsqlite.c中
-   为了避免变量名冲突，所有sqlite3库中相关函数全部使用sqlite3作为前缀。所有开放给外部
-   的相关接口函数全部使用sqlite3_作为前缀。插件API有时候添加插件名和下划线，比如
-   sqlite3rbu_或sqlite3session_。
-** 分词器
-   当一条sqlite语句开始执行时，道先将它发送到分词器。分词器切分sql语句解析为单词，分词
-   的相关实现在tokenize.c文件中
-   注意在本设计中，分词器实际上就是解析器，可能人们比起其他方法，更熟悉yacc和bison，分
-   词器比较解析器更好，因为这是线程安全，而且运行更快
-** 解析器
-   解析器使得上文的分词有意义，SQLite的使用Lemon分析器生成，Lemon做的工作和YACC/BISON
-   是一样的，但是它使用了不同的输入语法，且它更准确。Lemon生成的分析器同样也是可重用的
-   且是线程安全的。Lemon定义了非终端析构函数的概念，为了在语法错误出现时不出现内存泄漏
-   ，相关的语法定义文件在parse.y
-   因为Lemon是一个开发工具，它的完整代码在SQLite的tools目录下
-   
-** 中间代码生成
-   在通过解析器把单词转换为解析树，代码生成器会分析解析树，接着会把sql语句转换成中间代
-   码运行。sqlite3_stmt对象保存了相关字节码。相关的实现文件有许多attach.c,auth.c,build.c
-   delete.c,expr.c,insert.c,pragma.c,select.c,trigger.c,update.c,vacuum.c,where.c,
-   wherecode.c以及whereexpr.h。在这些文件中有许多有趣的操作，expr.c为表达式生成中间代码
-   where*.c则是为where以及相关的select,update,delete子句生成中间代码。其他的sql语句的
-   实现则是在build.c文件中。auth.c文件则实现了sqlite3_set_authorizer()
-   在代码生成中，尤其中where*.c逻辑，在select.c中有时候名为query planner。对于任一sql
-   语句，可能会有成千上万的不同的算法计算结果。而query planner则是可以从无数种选择中
-   找到适合的选择
-** 字节码引擎
-   字节码是通过中间代码生成且运行在虚拟机中。虚拟机相关的定义全部在vdbe.c文件中，而vdbe.h
-   文件定义了虚拟机与其他sqlite功能之间的接口，而vbdeInt.h则定义了相关的数据结构以及
-   虚拟机的相关私有结构，其他的vdbe*.c文件则定义了虚拟机的函数。vdbeaux.c文件则是包含
-   相关的工具函数用来构造虚拟机。vdbeapi.c文件是对外的接口，比如sqlite3_bind_int()和
-   sqlite3_step()。单个值在内部的对象名为Mem，通过vdbemem.c中实现的。
-   sqlite实现sql函数通过回调函数，甚至中内置的sql函数也是如此。大多数sqlite内部函数都能
-   在func.c文件中实现。时间和时间的转换函数则是在date.c中实现。一些函数如coalesce()和
-   typeof()则是通过中间代码生成字节码生成
-** B-树
-   sqlite数据库是通过B-树保存在磁盘上，它的实现保存在btree.c文件中，分隔B-树用来分别保
-   存表对象和索引对象。所有的B-树都保存在同一个磁盘文件中。
-   B-树子系统的接口和sqlite库定义在btree.h中
-** 页缓存
-   B-树模块从磁盘请求固定大小的页。页的默认大小是4096位，它的取值范围在512到65536之间，
-   页缓存主要是为了读和写，缓存页，同时也提供回滚和原子提交以及锁住数据库文件。B-树从
-   从页缓冲请求特定的页，当请求写入页或提交或回滚时会进入通知，页缓存会处理快速，安全
-   高效的处理请求。
-   页缓存相关实现在pager.c文件中，WAL模式的逻辑在wal.c文件中，实时缓存实现则是在pcache.c
-   和pcache1.c文件。页缓存和其余的相关操作则在pager.h中
-** 操作系统接口
-   为了在不同操作系统之间进行移植，SQLite使用了VFS抽象，每个VFS对象提供了打开，读写，
-   关闭对磁盘的操作，以及其他特定操作，比如获取当前时间，内置的伪随机数生成器。SQLite
-   使用VFSec对接unix和Windows
-** 工具函数
-   内存分配，字符串比较函数，数字与字符串之间的转换函数，以及其他的函数保存在util.c中，
-   用来保存符号表的hash表实现在hash.c文件，而utf.c文件中则包含字符编码相关的函数。SQLite
-   在自己实现的printf()函数在printf.c文件中以及自己实现的伪随机数生成器在random.c中
-** 测试代码
-   在src/目录是所有以test打头的文件所有全部是测试文件
+* sql
 
-* Mutexes设计
-  #+begin_src c
-    sqlite3_mutex *sqlite3_mutex_alloc(int);
-    void sqlite3_mutex_free(sqlite3_mutex*);
-    void sqlite3_mutex_enter(sqlite3_mutex*);
-    int sqlite3_mutex_try(sqlite3_mutex*);
-    void sqlite3_mutex_leave(sqlite3_mutex*);
-  #+end_src
-  SQLite核心使用这些函数实现线程同步，
+
+* mariadb
+  
+** innodb设计
+   
+*** 架构设计
+    
+*** 源码目录
+    | 目录    | 作用                                                       |
+    |---------+------------------------------------------------------------|
+    | handler | 继承于MySQL的handler，插件式存储引擎的实现                 |
+    | ibuf    | 插入缓冲的实现                                             |
+    | include | InnoDB将头文件都统一主在到这个文件夹下                     |
+    | lock    | InnoDB存储引擎锁的实现，如S锁，X锁，以及定义锁的一系列算法 |
+    | log     | 日志缓冲和重组日志文件的实现。                             |
+    | mem     | 辅助缓冲池的实现，用来申请一些数据结构的内存               |
+    | mtr     | 事务的底层实现                                             |
+    | os      | 封装一些对于操作系统的操作                                 |
+    | page    | 页的实现                                                   |
+    | row     | 对于各种类型行数据的操作                                   |
+    | srv     | 对于InnoDB存储引擎参数的设计                               |
+    | sync    | InnoDB存储引擎互斥量的实现                                 |
+    | thr     | InnoDB存储引擎封装的可移植的线程库                         |
+    | ut      | 工具类                                                     |
+
+* sqlite3
+** 架构设计
+*** 整体设计
+   sqlite通过将sql编译成字节码，在虚拟机中运行。sqlite3_prepare_v2()与相关的接口函数把
+   sql转换到字节码，sqlite3_stmt对象保存了字节码程序实现单条sql语句。sqlite3_step()通过
+   把字节码在虚拟机中运行，直到所有工作完成，或者执行一条语句返回结果。
+  
+*** 接口
+    大多数的C语言接口都在main.c,legacy.c和vbdeapi.c三个文件中。sqlite3_get_table()相关
+    实现在table.c文件中，而sqlite3_mprintf()则是在printf.c文件中。sqlite3_complete()实
+    现在complete.c中，最后TCL相关接口则是在tclsqlite.c中
+    为了避免变量名冲突，所有sqlite3库中相关函数全部使用sqlite3作为前缀。所有开放给外部
+    的相关接口函数全部使用sqlite3_作为前缀。插件API有时候添加插件名和下划线，比如
+    sqlite3rbu_或sqlite3session_。
+*** 分词器
+    当一条sqlite语句开始执行时，道先将它发送到分词器。分词器切分sql语句解析为单词，分词
+    的相关实现在tokenize.c文件中
+    注意在本设计中，分词器实际上就是解析器，可能人们比起其他方法，更熟悉yacc和bison，分
+    词器比较解析器更好，因为这是线程安全，而且运行更快
+*** 解析器
+    解析器使得上文的分词有意义，SQLite的使用Lemon分析器生成，Lemon做的工作和YACC/BISON
+    是一样的，但是它使用了不同的输入语法，且它更准确。Lemon生成的分析器同样也是可重用的
+    且是线程安全的。Lemon定义了非终端析构函数的概念，为了在语法错误出现时不出现内存泄漏
+    ，相关的语法定义文件在parse.y
+    因为Lemon是一个开发工具，它的完整代码在SQLite的tools目录下
+   
+*** 中间代码生成
+    在通过解析器把单词转换为解析树，代码生成器会分析解析树，接着会把sql语句转换成中间代
+    码运行。sqlite3_stmt对象保存了相关字节码。相关的实现文件有许多attach.c,auth.c,build.c
+    delete.c,expr.c,insert.c,pragma.c,select.c,trigger.c,update.c,vacuum.c,where.c,
+    wherecode.c以及whereexpr.h。在这些文件中有许多有趣的操作，expr.c为表达式生成中间代码
+    where*.c则是为where以及相关的select,update,delete子句生成中间代码。其他的sql语句的
+    实现则是在build.c文件中。auth.c文件则实现了sqlite3_set_authorizer()
+    在代码生成中，尤其中where*.c逻辑，在select.c中有时候名为query planner。对于任一sql
+    语句，可能会有成千上万的不同的算法计算结果。而query planner则是可以从无数种选择中
+    找到适合的选择
+*** 字节码引擎
+    字节码是通过中间代码生成且运行在虚拟机中。虚拟机相关的定义全部在vdbe.c文件中，而vdbe.h
+    文件定义了虚拟机与其他sqlite功能之间的接口，而vbdeInt.h则定义了相关的数据结构以及
+    虚拟机的相关私有结构，其他的vdbe*.c文件则定义了虚拟机的函数。vdbeaux.c文件则是包含
+    相关的工具函数用来构造虚拟机。vdbeapi.c文件是对外的接口，比如sqlite3_bind_int()和
+    sqlite3_step()。单个值在内部的对象名为Mem，通过vdbemem.c中实现的。
+    sqlite实现sql函数通过回调函数，甚至中内置的sql函数也是如此。大多数sqlite内部函数都能
+    在func.c文件中实现。时间和时间的转换函数则是在date.c中实现。一些函数如coalesce()和
+    typeof()则是通过中间代码生成字节码生成
+*** B-树
+    sqlite数据库是通过B-树保存在磁盘上，它的实现保存在btree.c文件中，分隔B-树用来分别保
+    存表对象和索引对象。所有的B-树都保存在同一个磁盘文件中。
+    B-树子系统的接口和sqlite库定义在btree.h中
+*** 页缓存
+    B-树模块从磁盘请求固定大小的页。页的默认大小是4096位，它的取值范围在512到65536之间，
+    页缓存主要是为了读和写，缓存页，同时也提供回滚和原子提交以及锁住数据库文件。B-树从
+    从页缓冲请求特定的页，当请求写入页或提交或回滚时会进入通知，页缓存会处理快速，安全
+    高效的处理请求。
+    页缓存相关实现在pager.c文件中，WAL模式的逻辑在wal.c文件中，实时缓存实现则是在pcache.c
+    和pcache1.c文件。页缓存和其余的相关操作则在pager.h中
+*** 操作系统接口
+    为了在不同操作系统之间进行移植，SQLite使用了VFS抽象，每个VFS对象提供了打开，读写，
+    关闭对磁盘的操作，以及其他特定操作，比如获取当前时间，内置的伪随机数生成器。SQLite
+    使用VFSec对接unix和Windows
+*** 工具函数
+    内存分配，字符串比较函数，数字与字符串之间的转换函数，以及其他的函数保存在util.c中，
+    用来保存符号表的hash表实现在hash.c文件，而utf.c文件中则包含字符编码相关的函数。SQLite
+    在自己实现的printf()函数在printf.c文件中以及自己实现的伪随机数生成器在random.c中
+*** 测试代码
+    在src/目录是所有以test打头的文件所有全部是测试文件
+
+** Mutexes设计
+   #+begin_src c
+     sqlite3_mutex *sqlite3_mutex_alloc(int);
+     void sqlite3_mutex_free(sqlite3_mutex*);
+     void sqlite3_mutex_enter(sqlite3_mutex*);
+     int sqlite3_mutex_try(sqlite3_mutex*);
+     void sqlite3_mutex_leave(sqlite3_mutex*);
+   #+end_src
+   SQLite核心使用这些函数实现线程同步，
