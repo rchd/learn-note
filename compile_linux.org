@@ -1,4 +1,10 @@
 * 编译linux内核
+  :PROPERTIES:
+  :ID:       o2b:23e394da-0aa1-46d1-b476-e63047a82517
+  :POST_DATE: [2021-10-23 六 16:21]
+  :BLOG:     myblog
+  :POSTID:   68
+  :END:
 ** ARM
    #+begin_src sh
    sudo apt install gcc-aarch64-linux-gnu
@@ -138,5 +144,23 @@
     需要使用宿主机的/proc/kcore文件，以及vmlinux符号表，
     最后执行命令ddd vmlinux /proc/kcore即可
     这种方法只能查看数据结构，无法进行断点调试
+
+
+  
+* initramfs
+  initramfs是一个临时的文件系统，其中包含了必要的设备如硬盘，网卡，文件系统等的驱动以及加载驱动的
+  工具及其运行环境，比如基本的C库，动态库的链接加载器等。第三方程序负责将initramfs从硬盘装载进内存
+  以硬盘驱动为例，内核就不必再从硬盘，而是从已经加载到内存的initramfs中获取硬盘控制器等相关驱动了，
+  继而可以驱动硬盘，访问硬盘上的根文件系统。
+  在初始化的最后，内核运行initramfs中的init程序，该程序将探测硬件设备，加载驱动，挂载真正的文件系统
+  执行文件系统上的/sbin/init，进而切换到真正的用户空间。真正的文件系统挂载后，initramfs即完成了使命
+  其占用的内存的也会释放
+  在内核中设置
+  General setup
+     -> Initial RAM filesystem and RAM disk (initramfs/initrd) support
+       -> () Initramfs source file(s)
+  设置busybox环境即可
+
+
 
 
