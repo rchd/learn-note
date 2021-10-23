@@ -757,13 +757,40 @@
     
 ** qemu
    虚拟机仿真软件，它与其他虚拟机不同，它是用来模拟CPU架构的，比如桌面PC
-   采用X86_64,手机处理器则是使用ARM架构的处理，我更喜欢用它进行linux内核
-   调试
+   采用X86_64,手机处理器则是使用ARM架构的处理，或者是最流行的RISCV架构。
+   它最重要的一个模块叫做微型代码生成器(TCG)，它用来将目标代码翻译成主机
+   代码，QEMU的主要功能就是不断提取客户代码并且转化成主机指定架构的代码。
+   整个翻译任务分为两个部分，第一个部分是将做目标代码(TB)转化为(TCG)中间
+   代码，然后再将中间代码转化为主机代码。
+   qemu命令
+   | 命令                | 解释                          |
+   |---------------------+-------------------------------|
+   | qemu-system-x86_64  | QEMU模拟x86_64指令CPU的模拟器 |
+   | qemu-system-aarch64 | QEMU模拟ARM64                 |
+   | qemu-system-arm     | 模拟arm32                     |
+   | qemu -kernel        | 设置bzImage作为Linux内核      |
+   | qemu -initrd        | 指定initrd镜像                |
+   | qemu -append        | 附加内核启动参数              |
+   | qemu -nographic     | 不开启GUI，定向到终端输出     |
+   | qemu -cpu           | 设置CPU类型                   |
+   | qemu -smp           | 设置CPU核心数                 |
+   |                     |                               |
+   
+   内核启动参数
+   | 参数     | 意义                                       |
+   |----------+--------------------------------------------|
+   | root=    | 使用设备作为根文件系统                     |
+   | rdinit=  | 内核加载完毕后，运行initrd指定义路径的程序 |
+   | init=    | 内核加载完毕后，运行initramfs中指定的程序  |
+   | noapic   | apic，高级可编程中断中控制器               |
+   | console= | 设置终端                                   |
+
+
+   
 ** docker
    容器虚拟化技术，与virtualbox之流的全虚拟化技术不同，它依赖于linux内核
    在资源使用上，比起全虚拟化技术要节约的多，同时它以进程的形式运行，这就
    方便了开发，可以把编译环境放到docker中，加快启动速度
-*** docker-machine
 *** dockerfile
     1. ADD        添加文件到镜像中
     2. COPY       
@@ -779,16 +806,6 @@
     12. RUN     该指令在当前镜像的最顶执行命令，然后提交结果
 
 
-*** docker-compose
-    该软件是对docker的管理工具,使用yaml格式的数据设置容器参数
-
-*** docker技术内幕
-    
-**** Namespace
-
-**** Cgroup
-
-**** Aufs
 *** minikube
     kurbernetes则是docker的分布式管理工具，只能使用docker，像openstack则不同，底层的虚拟化
     技术可以更改，可以使用docker，virtualbox或者是vmware workstation之类
