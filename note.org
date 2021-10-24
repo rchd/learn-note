@@ -1,3 +1,0 @@
-* Mariadb关键技术                                                      :NOTE:
-[2021-10-22 Fri 23:13]
-[[file:~/Documents/org/sql.org::*关键技术][关键技术]]
