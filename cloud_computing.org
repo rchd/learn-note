@@ -56,7 +56,14 @@
 *** 缓存服务
     #+begin_src sh
       apt-get install memcached python-memcache
-      systemctl start memcached 
+      systemctl start memcached
+      systemctl enable memcached
+    #+end_src
+*** 安装apache2
+    #+begin_src sh
+      apt install apache2
+      systemctl start apache2
+      systemctl enable apache2
     #+end_src
 ** 相关组件
 *** keystone
