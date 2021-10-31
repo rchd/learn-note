@@ -87,13 +87,30 @@
 	   identified by 'keystone_pass';
      grant all privileges on keystone.* to 'keystone'@'%' \
 	   identified by 'keystone_pass';
+   #+end_src
 
+   修改/etc/keystone/keystone.conf文件
+   #+begin_src 
+    [database]
+    connection=mysql+pymysql://keystone:KEYSTONE_DBPASS@controller/keystone
+    [token]
+    provider=fernet
+   #+end_src
 
-     echo "manual" > /etc/init/keystone.override
-
-     apt install keystone apache2 libapache2-mod-wsgi
+   初始化数据库以及Fernet
+   #+begin_src sh
      su -s /bin/sh -c "keystone-manage db_sync" keystone
      keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone
+     keystone-manage credential_setup --keystone-user keystone --keystone-group keystone 
+   #+end_src
+
+   开启keystone服务
+   #+begin_src sh
+     keystone-manage bootstrap --bootstrap-password ADMIN_PASS \
+     --bootstrap-admin-url http://controller:5000/v3/ \
+     --bootstrap-internal-url http://controller:5000/v3/ \
+     --bootstrap-public-url http://controller:5000/v3/ \
+     --bootstrap-region-id RegionOne
    #+end_src
 
    设置控制节点
@@ -101,48 +118,19 @@
      echo 'ServerName controller' > /etc/apache2/apache2.conf
    #+end_src
 
-   在/etc/apache2/sites-avaliable/wsgi-keystone.conf中输入以下内容
-   #+begin_src xml
-     Listen 5000
-     Listen 35357
-
-     <VirtualHost *:5000>
-	 WSGIDaemonProcess keystone-public processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP}
-	 WSGIProcessGroup keystone-public
-	 WSGIScriptAlias / /usr/bin/keystone-wsgi-public
-	 WSGIApplicationGroup %{GLOBAL}
-	 WSGIPassAuthorization On
-	 ErrorLogFormat "%{cu}t %M"
-	 ErrorLog /var/log/apache2/keystone.log
-	 CustomLog /var/log/apache2/keystone_access.log combined
-
-	 <Directory /usr/bin>
-	     Require all granted
-	 </Directory>
-     </VirtualHost>
-
-     <VirtualHost *:35357>
-	 WSGIDaemonProcess keystone-admin processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP}
-	 WSGIProcessGroup keystone-admin
-	 WSGIScriptAlias / /usr/bin/keystone-wsgi-admin
-	 WSGIApplicationGroup %{GLOBAL}
-	 WSGIPassAuthorization On
-	 ErrorLogFormat "%{cu}t %M"
-	 ErrorLog /var/log/apache2/keystone.log
-	 CustomLog /var/log/apache2/keystone_access.log combined
-
-	 <Directory /usr/bin>
-	     Require all granted
-	 </Directory>
-     </VirtualHost>
-   #+end_src
-   
-   设置软链接
-   #+begin_src sh
-     ln -s /etc/apache2/sites-available/wsgi-keystone.conf /etc/apache2/sites-enabled
-   #+end_src
    开始服务
    #+begin_src sh
      systemctl start apache2
    #+end_src
 
+  设置环境变量，方便进行访问
+  #+begin_src sh
+    export OS_USERNAME=admin
+    export OS_PASSWORD=ADMIN_PASS
+    export OS_PROJECT_NAME=admin
+    export OS_USER_DOMAIN_NAME=Default
+    export OS_PROJECT_DOMAIN_NAME=Default
+    export OS_AUTH_URL=http://controller:5000/v3
+    export OS_IDENTITY_API_VERSION=3
+  #+end_src
+   
