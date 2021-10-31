@@ -46,6 +46,7 @@
       apt-get install mariadb-server python-mysql
       systemctl start mysqld
       mysql_secure_installation
+      systemctl start mariadb
     #+end_src
 *** 消息队列
     #+begin_src sh
