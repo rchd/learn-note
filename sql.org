@@ -60,10 +60,6 @@
       两个或两个以上的事务在执行过程中，因争执资源而造成的一种互相等待的现象。若无外力作用，事务将无
       法推进下去。
 
-
-
-   
-   
 ** Mariadb日志
    1. 错误日志
       错误日志记录文件对MariaDB的启动，运行，关闭过程进行了记录，以及所有的错误信息，一些警告或正
@@ -80,8 +76,52 @@
       审计，用户可以通过二进制日志中的信息进行审计，判断是否是攻击
    5. 重做日志
       当实例或介质失败时，InnoDB存储引擎会使用重做日志恢复到掉电前的时刻
+   
+** Mariadb事务
+   事务会把数据库从一种一致状态转换为另一种一致状态，可以确保要么所有修改都已经保存了，要么所有修改都不
+   保存
+   1. 原子性(atomicity)
+      原子性指整个数据库事务不是可分割的工作单位，只有使事务中所有的数据库操作都执行成功，才算整个事务
+      成功，事务中任何一个SQL语句执行失败，已经执行成功的SQL语句也必须撤销，数据库状态应该退回到执行
+      事务前的状态
+   2. 一致性(consistency)
+      一致性指事务将数据库从一种状态转变为下一种一致的状态，事务是一致性的单位，如果事务中的某个动作失
+      败了，系统可以自动撤销事务－－返回初始化的状态
+   3. 隔离性(isolation)
+      事务的隔离性要求每个读写事务的对象对其他事务的操作对象能相互离开，即该事务提交前对其他事务都不可
+      见，通过使用锁来实现
+   4. 持久性(durability)
+      事务一旦提交，其结果就是永久性的，即使发生宕机等故障，数据库也能将数据恢复，需要注意，只能从事务
+      本身的角度来保证结果的永久性。
 
 
+*** 事务的实现
+   重做日志用来实现事务的持久性，即事务ACID中的D，其中由两部分组成：一是内存中的重做日志缓冲(redo log buffer)
+   其是易失的，二是重做日志文件(redo log file)，其是持久的，redo通常是物理日志，记录的是页的物理修改操作，
+   undo是逻辑日志，根据每行记录进行记录。
+   redo组成
+   log block
+   [[/Users/ren/Documents/org/images/QXiQxi.png]]
+
+
+   [[/Users/ren/Documents/org/images/7s8nrT.png]]
+
+
+   log group为重做日志组，其中有多个重做日志组，只是一个逻辑上的概念，由多个重做日志文件组成，每个log group
+   中的日志文件大小是相同的
+   重做日志文件中存储的就是之前是在log buffer中保存的log block，因此其也是根据块方式进行物理存储的管理，每个
+   块的大小与log block一样，同样为512字节，在InnoDB存储引擎运行过程中，log buffer根据一定的规则将内存中的
+   log block刷新到磁盘。
+   [[/Users/ren/Documents/org/images/7qkVhD.png]]
+   
+   重做日志格式
+   [[/Users/ren/Documents/org/images/UQ0EMI.png]]
+
+   [[/Users/ren/Documents/org/images/Ls6WEP.png]]
+
+   undo日志设计
+   
+   
 ** innodb设计
    
 *** 架构设计
@@ -275,34 +315,4 @@
     在自己实现的printf()函数在printf.c文件中以及自己实现的伪随机数生成器在random.c中
 *** 测试代码
     在src/目录是所有以test打头的文件所有全部是测试文件
-
-** Mutexes设计
-   #+begin_src c
-     sqlite3_mutex *sqlite3_mutex_alloc(int);
-     void sqlite3_mutex_free(sqlite3_mutex*);
-     void sqlite3_mutex_enter(sqlite3_mutex*);
-     int sqlite3_mutex_try(sqlite3_mutex*);
-     void sqlite3_mutex_leave(sqlite3_mutex*);
-   #+end_src
-   SQLite核心使用这些函数实现线程同步，
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
