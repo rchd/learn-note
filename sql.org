@@ -101,10 +101,10 @@
    undo是逻辑日志，根据每行记录进行记录。
    redo组成
    log block
-   [[/Users/ren/Documents/org/images/QXiQxi.png]]
+   [[./images/QXiQxi.png]]
 
 
-   [[/Users/ren/Documents/org/images/7s8nrT.png]]
+   [[./images/7s8nrT.png]]
 
 
    log group为重做日志组，其中有多个重做日志组，只是一个逻辑上的概念，由多个重做日志文件组成，每个log group
@@ -112,12 +112,12 @@
    重做日志文件中存储的就是之前是在log buffer中保存的log block，因此其也是根据块方式进行物理存储的管理，每个
    块的大小与log block一样，同样为512字节，在InnoDB存储引擎运行过程中，log buffer根据一定的规则将内存中的
    log block刷新到磁盘。
-   [[/Users/ren/Documents/org/images/7qkVhD.png]]
+   [[./images/7qkVhD.png]]
    
    重做日志格式
-   [[/Users/ren/Documents/org/images/UQ0EMI.png]]
+   [[./images/UQ0EMI.png]]
 
-   [[/Users/ren/Documents/org/images/Ls6WEP.png]]
+   [[./images/Ls6WEP.png]]
 
    undo日志设计
    
