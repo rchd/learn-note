@@ -1,10 +1,41 @@
-* pkg 命令
+* 软件管理命令
+ 
   | 命令                | 说明             |
   |---------------------+------------------|
   | pkg info            | 显示已安装的软件 |
   | pkg install package | 安装软件         |
   | pkg search package  | 搜索软件包       |
+  | pkg delete package  | 删除软件包       |
+  | pkg autoremove      | 删除相关依赖     |
   |                     |                  |
+
+  
+** 系统更新
+   #+begin_src sh
+     freebsd-update fetch install  # 更新软件包
+     freebsd-update upgrade -r system-version # 更新系统
+   #+end_src
+
+
+* 内核功能
+  与硬件无关的功能
+  * 基本的内核功能:定时器和系统时钟处理机制，描述符管理，以及进程管理
+  * 支持内存管理：调页(paging)和交换(swapping)机制
+  * 通用系统接口: I/O，控制，在描述符上执行的多重复用(multiplexing)操作
+  * 文件系统: 文件，目录，路径名转换，文件加锁以及I/O缓冲管理
+  * 终端处理: 伪终端(pseudo-terminal)接口和终端行规程(line discipline)
+  * 进程间通信功能: 套接口(socket)
+  * 支持网络通信: 通信协议和基本网络功能
+
+
+  与硬件相关的代码
+  * 底层的系统启动动作
+  * 陷阱(trap)和出错的处理
+  * 进程在运行时刻(run-time)上下文的底层操作
+  * 对硬件设备的配置和初始化
+  * 对I/O设备在运行时刻的支持
+
+
 * 源代码分析
   
 ** 获取源代码
@@ -28,3 +59,24 @@
    sudo make installworld KERNCONF=MYKERNEL
    sudo make installkernel KERNCONF=MYKERNEL
    #+end_src
+
+** 源码目录
+   | 目录       | 作用                        |
+   |------------+-----------------------------|
+   | /bin       | /bin下程序的源码            |
+   | /etc       | /etc目录的配置文件          |
+   | /include   | /usr/include系统API的头文件 |
+   | /kerberos5 | kerberos5框架的源代码       |
+   | /lib       | /usr/lib下的库代码          |
+   | /libexec   | /usr/libexec程序源码        |
+   | /sbin      | /sbin程序源码               |
+   | /sys       | 内核源码                    |
+   | /usr.bin   | /usr/bin下程序源码          |
+   | /usr.sbin  | /usr/sbin下程序源码         |
+   | /tests     | freebsd测试用例             |
+   | /share     | /usr/share帮助目录          |
+   | /contrib   | 第三方程序源码              |
+   | /crypto    | 相关的加密解密程序          |
+   | /gnu       | GPL声明                     |
+   | /release   | 构建freebsd的配置文件                |
+   |            |                             |
