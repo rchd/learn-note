@@ -37,7 +37,74 @@
 
 
 * 源代码分析
+
   
+** 启动分析
+   freebsd的入口函数在sys/kern/init_main.c中，命名为mi_startup()，该函数主要是把所有的SYSINIT模块全部加载到
+   内存，它通过比较subsystem和order进行排序，接着依次调用相关的初始化函数
+   基本服务
+   | 模块                    | 第一个例程               |
+   |-------------------------+--------------------------|
+   | SI_SUB_MTX_POOL_STATIC  | mtx_pool_setup()         |
+   | SI_SUB_LOCKMGR          | lockngr_init()           |
+   | SI_SUB_VM               | vm_mem_init()            |
+   | SI_SUB_KMEM             | kmeminit()               |
+   | SI_SUB_KVM_RSRC         | vmrnapentry_rsrc_init()  |
+   | SI_SUB_WITNESS          | witness_initialize()     |
+   | SI_SUB_MTX_POOL_DYNAMIC | mtx_pool_setup_dynamic() |
+   | SI_SUB_LOCK()           | selectinit()             |
+   | SI_SUB_EVENTHANDLER     | eventhandler_init()      |
+   | SI_SUB_KLD              | linker_init()            |
+   | SI_SUB_CPU              | cpu_startup()                         |
+
+   初始化内核进程
+   | 模块                 | 第一个例程       |
+   |----------------------+------------------|
+   | SI_SUB_INTRINSIC     | proc0_init()     |
+   | SI_SUB_VM_CONF       | vm_init_limits() |
+   | SI_SUB_RUN_QUEUE     | runq_init()      |
+   | SI_SUB_KTRACE        | ktrace_init()    |
+   | SI_SUB_CREATE_INIT   | create_init()    |
+   | SI_SUB_SCHED__IDLE() | idle_setup()     |
+
+   初始化设备模块
+   | 模块            | 第一个例程                       |
+   |-----------------+----------------------------------|
+   | SI_SUB_MBUF     | mbuf_init()                      |
+   | SI_SUB_INTR     | intr_init()                      |
+   | SI_SUB_SOFTINTR | start_softintr(), start_netisr() |
+   | SI_SUB_DEVFS    | devry_init(), devs_set_ready()   |
+   | SI_SUB_INIT_IF  | if_init()                        |
+   | SI_SUB_DRIVERS  |                                  |
+   | SI_SUBCONFIGURE | configure_first()                |
+   | SI_SUB_VFS      | vfsinit()                        |
+   | SI_SUB_CLOCKS   | initclocks()                     |
+   | SI_SUB_CLIST    | clist_init()                     |
+
+   启动进程间通信
+   | 模块                        | 第一个例程        |
+   |-----------------------------+-------------------|
+   | SI_SUB_SYSV_SEM             | sysvsem_modload() |
+   | SI_SUB_SYSV_SHM             | sysvshm_modload() |
+   | SI_SUB_SYSV_MSG             | sysvmsg_modload() |
+   | SI_SUB_PROTO_IF             | if_check()        |
+   | SI_SUB_PROTO_DOMAIN         | domaininit()      |
+   | SI_SUB_PROTO_IFATTACHDOMAIN | if_attachdomain() |
+
+   启动内核线程
+   | 模块                  | 第一个例程    |
+   |-----------------------+---------------|
+   | SI_SUB_INTRINSIC_POST | proc0_post()  |
+   | SI_SUB_KTHREAD_INIT   | kick_init()   |
+   | SI_SUB_KTHREAD_PAGE   | vm_pageout()  |
+   | SI_SUB_KTHREAD_VM     | vm_daemon()   |
+   | SI_SUB_KTHREAD_BUF    | buf_daemon()  |
+   | SI_SUB_KTHREAD_UPDATE | vnlru_proc()  |
+   | SI_SUB_KTHREAD_IDLE   | ald_daemon()  |
+   | SI_SUB_SMP            | release_aps() |
+   | SI_SUB_RUN_SCHEDULER  | scheduler()              |
+
+   
 ** 获取源代码
    #+begin_src sh
      cd /usr/src && \
