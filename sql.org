@@ -344,4 +344,12 @@
     在自己实现的printf()函数在printf.c文件中以及自己实现的伪随机数生成器在random.c中
 *** 测试代码
     在src/目录是所有以test打头的文件所有全部是测试文件
-
+** 代码设计
+   sqlite3的main函数保存在shell.c.in文件中
+   首先进行对sqlite3的data进行初始化shell工具中的相关变量，比如提示符，分隔符等
+   sqlite3_initialize()函数则是sqlite3数据库进行初始化
+   sqlite2GlobalConfig是一个宏，它实际指的是gloab.c中的sqlite3Config变量，
+   接着调用sqlite3MutexInit()函数初始化mutex子系统，根据不同的平台设置不同的mutex，unix中使用
+   pthread
+   调用sqlite3MallocInit()初始化
+   
