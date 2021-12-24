@@ -151,7 +151,75 @@
 * 编程
   
 ** kqueue模型
+   kqueue是BSD中使用的内核事件通知机制，一个kqueue指的是一个描述符，这个描述符会塞等待直到一个特定类型
+   和种类的事件发生。用户态的进程(或内核)可以等待这个描述符，因而kqueue提供一种用于一个或多进程同步的
+   简单而高效的方法
+   kqueue和对应的kevent(表示事件的数据结构)构成了内核异步I/O的基础(因此也实现了POSIX的poll(2)/select(2))
+   在用户态，简单地调用kqueue(2)系统调用就可以创建一个kqueue，不需要传任何参数。通过EV_SET宏设置指定事件
+   即初始化kevent结构体，调用kevent(2)或kevent64(2)系统调用设置事件过滤器，如果满足过滤器的话则返回(否则
+   阻塞)。系统支持一些"预定义"的过滤器
+   | 事件过滤器      | 用途                                                                  |
+   |-----------------+-----------------------------------------------------------------------|
+   | EVFILT_MACHPORT | 监视一个Mach port或一个port组，如果监视的port接收到了一条消息，则返回 |
+   | EVILT_PROC      | 监视一个指定PID表示的进程调用execve(2),exit(2),fork(2),wait(2)或      |
+   |                 | 被发送信号等事件                                                      |
+   | EVFILT_READ     | 如果监视文件，那么当文件指针没有在EOF时返回                           |
+   |                 | 如果监视套接字，管道或FIFO，那么当有数据可读时就返回                  |
+   | EVFILT_SESSION  | 监视一个审计会话                                                      |
+   | EVFILT_SIGNAL   | 监控发给一个进程的特定信号，即使这个信号衩进程忽略                    |
+   | EVFILT_TIMER    | 最高能达到纳秒精确度周期定时器                                        |
+   | EVFILT_WRITE    | 如果监视文件，那么当文件可以写入时返回                                |
+   |                 | 如果监视套接字，管道或FIFO，那么当数据可写入返回                      |
+   | EVFILT_VM       | 虚拟内存相关的通知                                                    |
+   | EVFILT_VNODE    | 文件(vnode)相关系统调用的过滤器，例如rename(2), delete(2), unlink(2)  |
+
+   通过kevent跟踪某个PID表示的进程的进程级别示例
+   #+begin_src c
+     void main(int arvc, char **argv)
+     {
+       pid_t pid;
+       int kq;
+       int rc;
+       int done;
+       struct kevent ke;
+
+       pid = atoi(argv[1]);
+
+       kq = kqueue();
+
+       if(kq == -1) { perror("kqueue"); exit(2); }
+
+       EV_SET(&ke, pid, EVFILT_PROC, EV_ADD,
+	      NOTE_EXIT | NOTE_FORK | NOTE_EXEC, 0, NULL);
+
+       rc = kevent(kq, &ke, 1, NULL, 0, NULL);
+       if(rc < 0) { perror("kevent"); exit(3);}
+
+       done = 0;
+       while(!done){
+	 memset(&ke, '\0', 1, NULL, 0, NULL);
+
+	 rc = kevent(kq, NULL, 0, &ke, 1, NULL);
+	 if(rc < 0) { perror("kevent"); exit(4); }
+
+	 if(ke.fflags & NOTE_FORK)
+	   printf("PID %d fork()end\n", ke.ident);
+
+	 if(ke.fflags & NOTE_EXEC)
+	   printf("pid %d has exec()ed\n", ke.ident);
+
+	 if(ke.fflags & NOTE_EXIT){
+	   printf("pid %d has exited\n", ke.ident);
+	   done++;
+	 }
+       }
+     }
+
+	
+  
+
+   #+end_src
    
 
-
+   
 
