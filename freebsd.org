@@ -148,6 +148,11 @@
    | /release   | 构建freebsd的配置文件                |
    |            |                             |
 
+   
+** 虚拟内存
+   
+*** 调页器
+    
 * 编程
   
 ** kqueue模型
@@ -222,4 +227,31 @@
    
 
    
+* 磁盘操作
+  geom是freebsd的磁盘管理框架，相关的磁盘设备文件保存/dev中，在freebsd中磁盘的分区也是作为设备的，它
+  为磁盘的I/O请求提供了一个模块化的转换，磁盘I/O请求在内核上层和设备驱动之间来回传递。
+  gpart分区程序，为GEOM管理的磁盘进行分区以及格式操作
+
+** 分区扩展  
+  #+begin_src bash
+     #根分区扩展
+     gpart recover nda0
+     gpart resize -i partid -a 4k -s size nda0
+     growfs /dev/gpt/rootfs
+   #+end_src
+
+** 查看磁盘信息
+   查看磁盘 
+   #+begin_src bash
+     geom disk list 
+   #+end_src
+   查看分区信息
+   #+begin_src bash
+     gpart show
+   #+end_src
+   查看分区状态
+   #+begin_src bash
+     gpart status 
+   #+end_src
+
 
