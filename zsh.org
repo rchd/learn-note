@@ -1,0 +1,69 @@
+
+* zsh实用功能
+  
+** 别名alias命令
+   本质就是缩写，事先定义一个缩写，在使用时，别名会被替换成真正的命令，再加上后接的参数，再执行
+   比如alias as="apt search"，调用该命令，as vim，实际它执行的apt search vim ，这样使得
+   输入减少，比较方便，再比如Ubuntu的软件更新，可以这样
+   #+begin_src sh
+     alias update="sudo apt update -y && sudo apt upgrade && sudo apt autoremove"
+   #+end_src
+   大大减少了相关的输入，当然该功能是shell的基本功能，如bash和zsh都有
+
+   
+** 补全功能
+   zsh的补全功能比起bash要强大太多，bash的补全仅限于命令名以及目录文件名的补全，
+   开启zsh的补全功能，输入如下命令
+   #+begin_src sh
+     echo "autoload -Uz compinit && compinit" >> ~/.zshrc
+     source ~/.zshrc
+   #+end_src
+   这样开启，这样它就可以补全命令选项，但是并不是所有软件都可以，需要相关的补全函数实现
+   
+*** 实用设置
+    #+begin_src sh
+      zstyle ':completion:*:*:*:*:*' menu select
+      zstyle ':completion:*' sepcial-dirs true
+      zstyle ':completion:*:*:kill:*:processes' list-colors '=(#b) #([0-9]#) ([0-9a-z-]#)*=01;34=0=01'
+      zstyle ':completion:*:*:*:*:processes' command "ps -u $USERNAME -o pid,user,comm -w -w"
+    #+end_src
+
+    结果如下
+    [[./images/RLLWjh.png]]
+  
+    设置提示符中显示git信息
+    需要如下代码，首先开启vcs_info模块，预设precmd_functions，再打开prompt_subst选项，再将设置PROMPT
+    变量显示git信息，最后设置相关的颜色
+    #+begin_src sh
+      autoload -Uz vcs_info
+      precmd_vcs_info() { vcs_info }
+      precmd_functions+=( precmd_vcs_info )
+      setopt prompt_subst
+      RPROMPT='${vcs_info_msg_0_}'
+      zstyle ':vcs_info:git:*' formats '%F{240}(%b)%r%f'
+      zstyle ':vcs_info:*' enable git
+    #+end_src
+    [[./images/AzHRZ1.png]]
+
+** 快速切换目录
+   平时在使用终端程序时，经常切换目录，每一次要一级一级按<Tab>切换，就算有pushd，popd有时也会忘记，这非常不方便，当然
+   zsh有关的好功能，使用setopt autopushd，该选项打开，会记录每一次切换的目录，通过cd -<Tab> 进行切换
+   [[./images/gSkC4Q.png]]
+
+   当然更强大的就是z命令，[[eww:https://www.github.com/rupa/z][z的github地址]] ，先切换几个常用目录，它记录下来，接着使用z 命令，只要有关键字可以锁定，它
+   就可以直接切换。
+   
+** 历史命令搜索
+   bash也相关功能，使用<Ctrl>－r即可触发，但是搜索结果不太准确，zsh也是使用相同的快捷键，它是从后往前搜索，而且会
+   进行实时补全，如下
+   [[./images/ti68KO.png]]
+
+   当然如果嫌弃它不够强大的话，可以使用fzf，它不止可以搜索历史命令，也能搜索文件，且与git集成。
+
+   
+** oh-my-zsh
+   这是一个功能集，扩展了非常多的zsh功能，对我而言九成功能都用不上，于是就删除了，但不可否认，它还是非常强大的，平时
+   我也会关注，它有些什么功能，再把它添加到我自己的配置中，如果是bash的话，还有一个oh-my-bash的项目。
+
+   
+* zsh源码分析
