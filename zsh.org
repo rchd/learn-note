@@ -1,5 +1,11 @@
 
 * zsh实用功能
+  :PROPERTIES:
+  :ID:       o2b:4FD59CA7-B92E-4968-A1AC-13F630C3810C
+  :POST_DATE: [2022-03-02 Wed 21:40]
+  :BLOG:     myblog
+  :POSTID:   71
+  :END:
   
 ** 别名alias命令
    本质就是缩写，事先定义一个缩写，在使用时，别名会被替换成真正的命令，再加上后接的参数，再执行
@@ -52,6 +58,11 @@
 
    当然更强大的就是z命令，[[eww:https://www.github.com/rupa/z][z的github地址]] ，先切换几个常用目录，它记录下来，接着使用z 命令，只要有关键字可以锁定，它
    就可以直接切换。
+
+   快速显示当前目录的文件，绑定到快捷键Ctrl-g，即可显示当前目录下文件
+   #+begin_src sh
+     bindkey -s '^g' 'll^M'
+   #+end_src
    
 ** 历史命令搜索
    bash也相关功能，使用<Ctrl>－r即可触发，但是搜索结果不太准确，zsh也是使用相同的快捷键，它是从后往前搜索，而且会
