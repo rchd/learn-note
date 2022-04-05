@@ -254,4 +254,154 @@
      gpart status 
    #+end_src
 
+* 内核模块管理
+  内核模块保存目录/boot/kernel
+  内核模块一般是驱动和内核的增强功能
+  查看模块列表
+  #+begin_src sh
+  kldstat -d 
+  #+end_src
+  需要注意它的引用计数，如果它不为1说明它被其他内核模块使用，不移除引用的模块，该模块无法移除
+
+  加载模块
+  #+begin_src sh
+  kldload <module name>
+  #+end_src
+
+  查看模块的详细信息
+  #+begin_src sh
+  kldstat -h -v -n dtrace 
+  #+end_src
+  
+
+* dtrace动态追踪
+
+** dtrace是什么
+   全称为dynamic traceing，即动态追踪，主要是在操作系统运行态中进行调试。UNIX中的动态追踪技术，是dtrace，也就是所谓的D
+   语言，所以相关的UNIX操作系统基本上都有dtarce实现，比如FreeBSD,MacOSX等。
+  
+** 示例
+   #+begin_src sh
+   dtrace -l | grep 'syscall.*read'
+   #+end_src
+   dtrace -l显示所有probes
+   每一个probe都可以获取对应的事件数据
+   grep从dtrace -l 中搜索。也可以使用dtrace -n 'syscall::*read*:entry，结果是一样的
+   输出结果有五个字段，需要注意provider，module，function，probe等字段
+   最重要的是provider和probe两个字段，它们稳定的API，大多数工作都可以及通过这些来完成
+
+   #+begin_src sh
+   dtrace -n 'dtrace:::BEGIN { printf("Hello FreeBSD\n"); }'
+   #+end_src
+   该命令会打印Hello FreeBSD，运行该命令，使用Ctrl-C终止
+   dtrace:::BEGIN是一个特殊的probe，当dtrace开始的时候触发，可以设置变量并输出
+   一个动作可以关联到在{}，该示例在probe触发时调用printf()
+
+   #+begin_src sh
+     dtrace -n 'syscall::open*:entry { printf("%s %s", execname, copyinstr(arg0)); }'
+   #+end_src
+   追踪文件打开事件，显示对应的进程名和路径名
+   execname:保存当前进程名字的内置变量，其他内置变量包括pid, tid, ppid
+   arg0: 表示是第一个probe参数，syscall提供了entry探针，系统调用的参数的名字为arg0, arg1, ... argN
+   open()函数的调用参数为:const char *pathname, int flags, mode_t mode，所以arg0是一个路径指针
+   copyinstr():推送用户空间的数据到内核，dtrace就能读取它。此时args0只是一串数字，dtrace需要读取对的数据
+
+   进程执行的系统调用计数
+   #+begin_src sh
+     dtrace -n 'syscall:::entry { @[execname, probefunc] = count(); }'
+   #+end_src
+   收集进程进行系统调用的函数信息，输入Ctrl-C时输出结果
+   @:代表一个特殊的聚合变量，可以非常方便高效的统计数据
+   []:表示聚合多个值，类似于关联数组
+   probefunc:这是一个内置变量，提供probe名字，由系统调用提供，保存系统调用的函数名
+   count():这是一个聚合函数，非常好用，统计函数调用的次数，保存为execname变量时，该结果通过进程名统计调用频率
+   相关结果会在dtrace结束时输出结果，它会显示调用printa()，允许自定义显示
+   
+   read()函数读取的字节数
+   #+begin_src sh
+     dtrace -n 'syscall::read:return /execname == "sshd"/ { @ = quantize(arg0); }'
+   #+end_src
+   统计read函数的系统调用，使用图表输出
+   //:它本质上做了过滤。该动作只有在条件成立的情况下才会执行，该示例中仅对；sshd的进程起作用，同时也支持&&, ||
+   arg0: 当系统调用完成时，会返回一个值，对于read()函数来说，-1代表出错，其他数据则是成功读取
+   @: 与上述示例的借用相同，但没有[]
+   quantize(): 这是一个聚合函数，read调用统计作为数据源。count列显示的是read调用时填充的数据大小
+   其他聚合函数包含lquantize()，avg()，min()，max()
+
+   计算read()系统调用的时间
+   #+begin_src sh
+     dtrace -n 'syscall::read:return { self->ts=timestamp;} syscall::read:return /self->ts/ { @=quantize(timestamp-self->ts); self->ts=0;}'
+   #+end_src
+   统计read()函数所花的时间，输出ASCII图表
+
+   self->:代表线程本地变量，存储在当前线程中，当前示例保存系统调用开始的时间到ts变量中，可以被同一线程的probe引用
+   timstamp: 这是高分辨率时钟计数
+   /self->ts/: 检查ts变量不为0,确保接下来的代码能够执行，必须保证probe中的变量是有意义的
+   self->ts=0: 释放线程本地变量
+   
+   计算read()函数的CPU时间
+   #+begin_src sh
+     dtrace -n 'syscall::read:entry { self->vts=vtimestamp; } syscall::read:return /self->vts/ { @["On-CPU us:"]=lquantize((vtimestamp-self->vts)/1000, 0, 10000, 10); self->vts=0; }'
+   #+end_src
+   统计CPU在read()函数中所花费的时间，输出ASCII图表
+
+   vtimestamp: 当当前线程被CPU执行时，时钟计数器才会计数，当两个时间进行比较时，可以看出阻塞时间和运行时间
+   "On-CPU us:": 这是声明输出的一个标签
+   luqantize(): 线生quantize函数，它的参数为: value, min, max, step
+
+   统计CPU级别的事件
+   #+begin_src sh
+     dtrace -n 'proc::: { @probename]=count(); } tick-5s { exit(0); }'
+   #+end_src
+   统计5秒内进程事件
+   proc: proc provider提供了高层次的进程事件，比如进程和线程的创建以及销毁，剩余的:::是空白，它会匹配与proc中的所有probe
+   可以通过dtrace -ln 'proc:::'列出
+   probename: probe的名字，这是一个内置变量，表示provider名字
+   tick-5s: 这是profile:::tick-5s的缩写，该probe会在5秒后触发
+   exit(0): 该动作为退出dtrace，返回0
+
+   CPU内核栈的执行例程
+   #+begin_src sh
+     dtrace -x stackframes=100 -n 'profile-99 /arg0/ { @[stack()]=count(); }'
+   #+end_src
+   99 Hertz的CPU状态
+   -x stackframes=100: 调整栈帧到100,默认为20,这是stack()函数返回的栈帧的大小限制，可以设置更大的值
+   profile-99: profile中的一个probe，当所有CPU在99 Hertz时触发
+   arg0: profile中的一个参数，这是内核参数计数
+   stack(): 返回内核栈状态，作为聚集函数的一个键，用来计数频率
+
+   调度器
+   #+begin_src sh
+     dtrace -n 'sched:::off-cpu { @[stack(8)]=count(); }'
+   #+end_src
+   内核栈off-cpu事件计数
+   sched: sched:::off-cpu为CPU内核事件触发的probe，有on-cpu，off-cpu，enqueue，dequeue，使用dtrace -ln 'sched:::'即可查询
+   off-cpu: 该probe在线程离开CPU时才会触发，它会阻塞事件，比如io等待事件，定时器事件或锁
+   stack(5): 内核栈状态，输出8个帧
+   off-cpu会在线程上下文中触发，stack()会延迟到线程离开执行
+   
+   
+
+   TCP连接创建统计
+   #+begin_src sh
+     dtrace -n 'tcp:::accept-established { @[args[3]->tcps_raddr] = count(); }'
+   #+end_src
+   被远程地址打开的TCP连接
+   tcp: dtrace中为tcp提供的probe事件，以及对协议检查的参数
+   accept-established: 当tcp连接成功创建时该probe才会触发
+   args[3]->tcps_raddr: arg[0...N]为输入的参数，且都为无符号的int类型，这是dtrace提供的tcp协议信息的参数，在示例中
+   args[3]->tcps_raddr保存远程地址的IP字符串，使用dtrace -lnv可以列出相关的参数
+   probe的上下文非常重要，如果内核的TCP例程完成了TCP握手，此接收程序并不处on-cpu状态，内置的execname不会输出
+
+   内核trace
+   #+begin_src sh
+     dtrace -n 'fbt::vmem_alloc:entry { @[curthread->td_name, args[0]->vm_name] = sum(arg1);}'
+   #+end_src
+   统计调用vmem_alloc的线程，vmem缓存以及请求的字节大小
+
+   fbt: 表示内核函数的进入和返回的相关控制
+   curthread: 一个保存当前正在CPU中运行的线程变量(sys/sys/proc.h)，成员可以被引用，就像C，在示例中td_name就是线程名
+   args[0]: 进入vmem_alloc()中的第一个参数，触发entry，该数据为vmem_t类型，vm_name为该结构体中成员引用
+   arg1: vmem_alloc()的第二个参数vm_size_t类型的引用，它是无符号的int类型，可以及通过args[1]或arg1获取
+
 
