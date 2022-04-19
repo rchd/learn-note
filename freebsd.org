@@ -10,12 +10,26 @@
   |                     |                  |
 
   
+  
 ** 系统更新
    #+begin_src sh
      freebsd-update fetch install  # 更新软件包
      freebsd-update upgrade -r system-version # 更新系统
    #+end_src
 
+** 从源码编译安装
+   获取ports源，
+   #+begin_src sh
+     portsnap fetch && portsnap extract  && portsnap update
+   #+end_src
+
+   从/usr/ports安装vim，同时它会弹出对话设置相关选项，且它会自动解决相关依赖
+   #+begin_src sh
+     cd /usr/ports/editors/vim
+     make install
+   #+end_src
+   也能使用pkg 进行删除
+   
 
 * 内核功能
   与硬件无关的功能
