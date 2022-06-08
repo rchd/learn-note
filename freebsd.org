@@ -54,8 +54,9 @@
 
   
 ** 启动分析
-   freebsd的入口函数在sys/kern/init_main.c中，命名为mi_startup()，该函数主要是把所有的SYSINIT模块全部加载到
-   内存，它通过比较subsystem和order进行排序，接着依次调用相关的初始化函数
+   freebsd的入口函数在sys/kern/init_main.c中，命名为mi_startup()，该函数主要是把所有的SYSINIT模块全部加载到，相关的
+   内存，它通过比较subsystem和order进行排序，相关的模块次序则由sys/sys/kernel.h中的sysinit_sub_id的枚举进行控制
+   接着依次调用相关的初始化函数
    基本服务
    | 模块                    | 第一个例程               |
    |-------------------------+--------------------------|
@@ -289,6 +290,12 @@
   
 
 * dtrace动态追踪
+  :PROPERTIES:
+  :ID:       o2b:25E4658A-A2F3-4AAB-889D-4054630D1EDC
+  :POST_DATE: [2022-04-05 Tue 19:39]
+  :BLOG:     myblog
+  :POSTID:   73
+  :END:
 
 ** dtrace是什么
    全称为dynamic traceing，即动态追踪，主要是在操作系统运行态中进行调试。UNIX中的动态追踪技术，是dtrace，也就是所谓的D
@@ -417,5 +424,94 @@
    curthread: 一个保存当前正在CPU中运行的线程变量(sys/sys/proc.h)，成员可以被引用，就像C，在示例中td_name就是线程名
    args[0]: 进入vmem_alloc()中的第一个参数，触发entry，该数据为vmem_t类型，vm_name为该结构体中成员引用
    arg1: vmem_alloc()的第二个参数vm_size_t类型的引用，它是无符号的int类型，可以及通过args[1]或arg1获取
+
+
+   
+** dtrace单行示例
+   
+   
+*** 版本号
+    #+begin_src sh
+      # 显示dtrace版本号
+      dtrace -v
+
+      # 显示dwatch版本号
+      dwatch -v 
+    #+end_src
+
+    显示probes
+    #+begin_src sh
+      # 显示所有probe并且搜索包含foo的项
+      dtrace -l | grep foo
+      # 根据providers进行统计probe
+      dtrace -l | awk '{ print $2 }' | sort | uniq -c | sort -n
+      # 显示特定的provider
+      dtrace -l -P syscall
+
+      # 显示所有probe且包含foo的项
+      dwatch -lr foo
+      # 显示唯一的providers
+      dwatch -lP
+      # 显示特定的provider中的probes
+      dwatch -lP syscall
+      # 显示唯一的函数
+      dwatch -lf
+      # 显示所有以read结尾的函数
+      dwatch -lf '*read'
+
+    #+end_src
+
+    
+*** 系统调用
+    #+begin_src sh
+      # 追踪使用open函数的进程和文件名
+      dtrace -n 'syscall::open*:entry { printf("%s %s", execname, copyinstr(arg0)); }'
+      # 通过程序计算系统调用次数
+      dtrace -n 'syscall:::entry { @[execname] = count(); }'
+      # 统计进行系统调用的函数
+      dtrace -n 'syscall:::entry { @[probefunc] = count(); }'
+      # 只统计特定进程号为123的进程的系统调用
+      dtrace -n 'syscall:::entry /pid == 123/ { @[probefunc] = count(); }'
+      # 只统计进程名为nginx的进程的系统调用
+      dtrace -n 'syscall:::entry /execname == "nginx" / { @[probefunc] = count(); }'
+      # 输出进行系统调用的进程PID和进程名
+      dtrace -n 'syscall:::entry { @[pid, execname] = count(); }'
+      # 查找进行系统调用的父进程
+      dtrace -n 'syscall::read::entry { printf("execname=%s parent_execname=%s, execname, curthread->td_proc->p_pptr->p_comm); }'
+      # 
+      dtrace -n 'syscall::read:entry { @[execname]=quantize(arg2); }'
+
+      dtrace -n 'syscall::read:entry { @[execname]=quantize(arg1); }'
+
+      dtrace -n 'syscall::read:entry { self->ts=timestamp; } syscall::read:return /self->ts/ { @[execname, "ns"]=quantize(timestamp-self->ts); self->ts=0; }'
+
+
+
+    #+end_src
+
+**** 使用dwatch     
+     #+begin_src sh
+       # 追踪使用open函数的进程
+       dwatch -X open
+
+       # 查找进行read函数调用的父进程
+       dwatch -R syscall::read::entry
+
+       # 查看进行系统调用的probe 
+       dwatch -F syscall 
+
+       # 查看python进程的probe
+       dwatch -k 'python*' -F syscall
+
+       # 查看daemon守护进程的probe
+       dwatch -k '*daemon' -F syscall
+
+       # 查看pid为1234的进程的open和openat调用
+       dwatch -X open -- -p 1234
+     #+end_src
+    
+    
+
+
 
 

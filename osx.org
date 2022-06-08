@@ -21,6 +21,7 @@
   
 * XNU 架构
   
+  
 ** Mach微内核
    该内核仅能处理操作系统最基本的职责
    * 进程和线程抽象
@@ -90,7 +91,7 @@
 ** bsd子目录
    | 子目录           | 包含的内容                        |
    |------------------+-----------------------------------|
-   | bsm/security     | Basic Security Module(审计子系统) |
+   | bsd/security     | Basic Security Module(审计子系统) |
    | conf             | 机器相关的Makefile                |
    | crypto           | 对称加密算法和散列算法的实现      |
    | dev              | BSD设备                           |
@@ -121,4 +122,30 @@
    | vm               | 虚拟内存的实现和头文件                   |
 
    
+* macports
+  在macosx平台的包管理器，类似于debian的apt之流，可以方便的管理软件
+  | 命令                       | 作用                   |
+  |----------------------------+------------------------|
+  | port install packagename   | 安装软件包             |
+  | port uninstall packagename | 删除软件包             |
+  | port echo leaves           | 查看不需要的依赖       |
+  | port uninstall leaves      | 删除不需要的信赖       |
+  | port selfupdate            | 更新port，以及仓库索引 |
+  | port outdated              | 输出可更新的软件包     |
+  | port upgrade outdated      | 升级所有可更新的软件包 |
+  | port uninstall inactive    | 删除没有用到的软件包   |
+
+   
+* 内核扩展
+  内核扩展保存目录/System/Library/Extensions
+  查看内核扩展
+  #+begin_src sh
+   kextstat
+  #+end_src
+
+  加载内核扩展
+  #+begin_src sh
+  kextload /path/filename.kext
+  #+end_src
+  
 

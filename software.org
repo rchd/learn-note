@@ -1101,9 +1101,6 @@
     #+end_src
     它会自动扫描该文件夹下所有文件
 
-   
-   
-
  # /home/ren/.emacs.img/2LVLuI.png https://www.rchd.xyz/wp-content/uploads/2020/11/2LVLuI.png
 *** selinux
     管理工具semanage
