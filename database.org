@@ -1,0 +1,30 @@
+* postgresql
+  
+** 编译
+   执行如下命令即可编译安装
+   #+begin_src sh
+     ./configure -prefix=/usr/local/pgsql && make && make install 
+   #+end_src
+   即可编译安装
+   #+begin_src sh
+     export PATH=$PATH:/usr/local/pgsql/bin
+     adduser postgres && su - postgres
+
+     initdb -D /var/db/pgsql
+
+     pg_ctl -D /var/db/pgsql -l logfile start
+   #+end_src
+
+   启用调试
+   #+begin_src sh
+     ./configure --enable-debug
+   #+end_src
+   接着安装即可
+
+   #+begin_src sh
+     psql
+     select pg_backend_pid(); # 输出进行连接的线程
+     gdb attach [thread-id]       
+   #+end_src
+
+   打上断点，使用dir命令设置源码目录，即可开始调试
