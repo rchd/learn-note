@@ -28,3 +28,47 @@
    #+end_src
 
    打上断点，使用dir命令设置源码目录，即可开始调试
+
+** postgresql相关的命令行工具
+   客户端应用
+   | 命令           | 说明                                                  |
+   |----------------+-------------------------------------------------------|
+   | clusterdb      | 聚簇一个PostgreSQL数据库                              |
+   | createdb       | 创建一个新的PostgreSQL数据库                          |
+   | createuser     | 定义一个新的PostgreSQL用户账户                        |
+   | dropdb         | 移除一个PostgreSQL数据库                              |
+   | dropuser       | 移除一个PostgresSQL用户账户                           |
+   | ecpg           | 嵌入式C预处理器                                       |
+   | pg_basebackup  | 获得一个PostgreSQL集簇的一个基础备份                  |
+   | pgbench        | 在PostgreSQL运行一个基准测试                          |
+   | pg_config      | 获取已安装的PostgreSQL的信息                          |
+   | pg_dump        | 把PostgreSQL数据库抽取为一个脚本文件或其他归档文件    |
+   | pg_dumpall     | 将一个PostgreSQL数据集簇抽取到一个脚本文件中          |
+   | pg_isready     | 检测一个PostgreSQL服务器的连接状态                    |
+   | pg_receivewal  | 以流的方式从一个PostgreSQL服务器得到预写式日志        |
+   | pg_recvlogical | 控制PostgreSQL逻辑解码流                              |
+   | pg_restore     | 从一个由pg_dump创建的归档文件恢复一个PostgreSQL数据库 |
+   | psql           | PostgreSQL的交互式终端                                |
+   | reindexdb      | 重索引一个PostgreSQL数据库                            |
+   | vacuumdb       | 对一个PostgreSQL数据库进行垃圾收集和分析              |
+
+
+   服务器应用
+   | 命令             | 说明                                                             |
+   |------------------+------------------------------------------------------------------|
+   | initdb           | 创建一个新的postgresql数据库集簇                                 |
+   | pg_achivecleanup | 清理PostgreSQL WAL归档文件                                       |
+   | pg_checksums     | 在PostgreSQL数据库集簇中启用，禁用或检查数据校验和               |
+   | pg_controldata   | 显示一个PostgreSQL数据库集簇的控制信息                           |
+   | pg_ctl           | 初始化，启动，停止或控制一个PostgreSQL服务器                     |
+   | pg_resetwal      | 重置一个PostgreSQL数据库集簇的预写式日志以及控制信息             |
+   | pg_rewind        | 把一个PostgreSQL数据目录与另一个从该目录中复制出来的数据目录同步 |
+   | pg_test_fsync    | 为PostgreSQL判断最快的wal_sync_method                            |
+   | pg_test_timing   | 度量计时开销                                                     |
+   | pg_upgrade       | 升级PostgreSQL服务器实例                                         |
+   | pg_waldump       | 以及人类可读的形式显示一个PostgreSQL数据库集簇的预写式日志       |
+   | postgres         | PostgreSQL数据库服务器                                           |
+   | postmaster       | PostgreSQL数据库服务器                                                           |
+
+   
+*  源码目录分析
