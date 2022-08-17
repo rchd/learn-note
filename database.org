@@ -72,3 +72,25 @@
 
    
 *  源码目录分析
+  主要代码位于src/backend/目录下，src/include则包含相关定义信息，src/bin包含postgres的相关工具
+  | 目录       | 说明                                                                        |
+  |------------+-----------------------------------------------------------------------------|
+  | bootstrap  | 创建初的模板数据库                                                          |
+  | main       | 主程序模块，负责将控制权转到Postmaster进程或Postgres进程                    |
+  | postmaster | 监听用户请求的守护进程，并控制Postgres进程的启动和终止                      |
+  | libpq      | C/C++的库函数，处理与客户端间的通信                                         |
+  | tcop       | Postgres服务进程的主要部分，调用parser,optimizer, executor,commands 执行SQL |
+  | parser     | 语法分析，将SQL查询转化为内部查询树                                         |
+  | optimizer  | 优化器，根据查询树创建最优的查询路径和查询计划                              |
+  | executor   | 执行器，执行来自optimizer的查询计划                                         |
+  | commands   | 执行非计划查询的SQL命令                                                     |
+  | catalog    | 系统表操作，包含用于操作系统表的专用函数                                    |
+  | storage    | 管理各种类型的存储系统                                                      |
+  | access     | 提供各种存取方法，支持堆，索引等对数据的存取                                |
+  | nodes      | 定义系统内部所用到的节点，链表等结构，以及处理这些结构的函数                |
+  | utils      | 各种支持函数，如错误报告，各种初始化操作                                    |
+  | regex      | 正则表达式库及相关函数，用于支持正则表达式处理                              |
+  | rewrite    | 查询重写，根据规则系统对查询进行重写                                        |
+  | tsearch    | 全文索引，倒排索引                                                          |
+  | port       | 平台兼容性处理相关的函数我                                                  |
+
