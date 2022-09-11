@@ -68,29 +68,172 @@
    | pg_upgrade       | 升级PostgreSQL服务器实例                                         |
    | pg_waldump       | 以及人类可读的形式显示一个PostgreSQL数据库集簇的预写式日志       |
    | postgres         | PostgreSQL数据库服务器                                           |
-   | postmaster       | PostgreSQL数据库服务器                                                           |
+   | postmaster       | PostgreSQL数据库服务器                                           |
 
-   
-*  源码目录分析
-  主要代码位于src/backend/目录下，src/include则包含相关定义信息，src/bin包含postgres的相关工具
-  | 目录       | 说明                                                                        |
-  |------------+-----------------------------------------------------------------------------|
-  | bootstrap  | 创建初的模板数据库                                                          |
-  | main       | 主程序模块，负责将控制权转到Postmaster进程或Postgres进程                    |
-  | postmaster | 监听用户请求的守护进程，并控制Postgres进程的启动和终止                      |
-  | libpq      | C/C++的库函数，处理与客户端间的通信                                         |
-  | tcop       | Postgres服务进程的主要部分，调用parser,optimizer, executor,commands 执行SQL |
-  | parser     | 语法分析，将SQL查询转化为内部查询树                                         |
-  | optimizer  | 优化器，根据查询树创建最优的查询路径和查询计划                              |
-  | executor   | 执行器，执行来自optimizer的查询计划                                         |
-  | commands   | 执行非计划查询的SQL命令                                                     |
-  | catalog    | 系统表操作，包含用于操作系统表的专用函数                                    |
-  | storage    | 管理各种类型的存储系统                                                      |
-  | access     | 提供各种存取方法，支持堆，索引等对数据的存取                                |
-  | nodes      | 定义系统内部所用到的节点，链表等结构，以及处理这些结构的函数                |
-  | utils      | 各种支持函数，如错误报告，各种初始化操作                                    |
-  | regex      | 正则表达式库及相关函数，用于支持正则表达式处理                              |
-  | rewrite    | 查询重写，根据规则系统对查询进行重写                                        |
-  | tsearch    | 全文索引，倒排索引                                                          |
-  | port       | 平台兼容性处理相关的函数我                                                  |
+** 源码目录分析
+   主要代码位于src/backend/目录下，src/include则包含相关定义信息，src/bin包含postgres的相关工具
+   | 目录       | 说明                                                                        |
+   |------------+-----------------------------------------------------------------------------|
+   | bootstrap  | 创建初的模板数据库                                                          |
+   | main       | 主程序模块，负责将控制权转到Postmaster进程或Postgres进程                    |
+   | postmaster | 监听用户请求的守护进程，并控制Postgres进程的启动和终止                      |
+   | libpq      | C/C++的库函数，处理与客户端间的通信                                         |
+   | tcop       | Postgres服务进程的主要部分，调用parser,optimizer, executor,commands 执行SQL |
+   | parser     | 语法分析，将SQL查询转化为内部查询树                                         |
+   | optimizer  | 优化器，根据查询树创建最优的查询路径和查询计划                              |
+   | executor   | 执行器，执行来自optimizer的查询计划                                         |
+   | commands   | 执行非计划查询的SQL命令                                                     |
+   | catalog    | 系统表操作，包含用于操作系统表的专用函数                                    |
+   | storage    | 管理各种类型的存储系统                                                      |
+   | access     | 提供各种存取方法，支持堆，索引等对数据的存取                                |
+   | nodes      | 定义系统内部所用到的节点，链表等结构，以及处理这些结构的函数                |
+   | utils      | 各种支持函数，如错误报告，各种初始化操作                                    |
+   | regex      | 正则表达式库及相关函数，用于支持正则表达式处理                              |
+   | rewrite    | 查询重写，根据规则系统对查询进行重写                                        |
+   | tsearch    | 全文索引，倒排索引                                                          |
+   | port       | 平台兼容性处理相关的函数我                                                  |
+
+  
+*** postgresql数据库目录
+    | 文件                 | 描述                               |
+    |----------------------+------------------------------------|
+    | PG_VERSION           | 包含PostgreSQL主版本号             |
+    | pg_hba.conf          | 控制PostgreSQL客户端认证           |
+    | pg_indent.conf       | 控制PostgreSQL用户名映射           |
+    | postgresql.conf      | 保存数据库相关的配置参数           |
+    | postgresql.auto.conf | 存储使用ALTER SYSTEM修改的配置参数 |
+    | postmaster.opts      | 记录服务器上次启动的命令行选项     |
+    | base/                | 每个数据库对应的子目录都存储在些   |
+    | global/              | 数据库集簇范畴的表                 |
+    | pg_commit_ts/        | 事务提交的时间戳数据               |
+    | pg_clog/             | 事务提交状态数据                   |
+    | pg_dynshmem/         | 动态共享内存子系统中使用的文件     |
+    | pg_logical/          | 逻辑解码的状态数据                 |
+    | pg_multixact/        | 多事务状态数据                     |
+    | pg_notify/           | LISTEN/NOTIFY状态数据              |
+    | pg_repslot/          | 复制槽数据                         |
+    | pg_serial/           | 已提交的可串行化事务相关信息       |
+    | pg_snapshots/        | 导出快照                           |
+    | pg_stat/             | 统计子系统的永久文件               |
+    | pg_stat_tmp/         | 统计子系统的临时文件               |
+    | pg_subtrans/         | 子事务状态数据                     |
+    | pg_tblspc/           | 指向表空间的符号链接               |
+    | pg_twophase/         | 两阶段事务的状态文件               |
+    | pg_wal/              | WAL段文件                          |
+
+*** 进程管理
+    | 进程                 | 描述                                                        |
+    |----------------------+-------------------------------------------------------------|
+    | background writer    | 进程将shared buffer pool 中的脏数据写到磁盘，检查点总能触发 |
+    | checkpointer         | 检查点会触发产生这个进程                                    |
+    | autovacuum launcher  | 为vacuum process周期性的调用autovacuum work process         |
+    | wal writer           | 周期性的从wal buffer刷新数据到磁盘                          |
+    | statistics collector | 收集统计信息进程                                            |
+    | logging collector    | 将错误信息写入到日志                                        |
+    | archiver             | 将日志归档的进程                                            |
+
+** 系统表
+   | 表名                    | 用途                                   |
+   |-------------------------+----------------------------------------|
+   | pg_aggregate            | 聚集函数                               |
+   | pg_am                   | 关系访问方法                           |
+   | pg_amop                 | 访问方法操作符                         |
+   | pg_amproc               | 访问方法支持函数                       |
+   | pg_ttrdef               | 列默认值                               |
+   | pg_authid               | 表列(属性)                             |
+   | pg_auth_members         | 认证标识符成员关系                     |
+   | pg_cast                 | 转换(数据类型转换)                     |
+   | pg_class                | 表，索引，序列，视图                   |
+   | pg_collation            | 排序规则                               |
+   | pg_constraint           | 检查约束，唯一约束，主键约束，外键约束 |
+   | pg_conversion           | 编码转换信息                           |
+   | pg_database             | 本数据库集簇中数据库                   |
+   | pg_db_role_setting      | 每角色和每数据库中的设置               |
+   | pg_default_acl          | 对象精工的默认权限                     |
+   | pg_depend               | 数据库对象间的依赖                     |
+   | pg_description          | 数据库对象上的描述或注释               |
+   | pg_enum                 | 枚举标签和值定义                       |
+   | pg_event_trigger        | 事件触发器                             |
+   | pg_extension            | 已安装扩展                             |
+   | pg_foreign_data_wrapper | 外部数据库包装器定义                   |
+   | pg_foreign_server       | 外部服务器定义                         |
+   | pg_foreign_table        | 外部表信息                             |
+   | pg_index                | 索引信息                               |
+   | pg_inherits             | 表继承层次                             |
+   | pg_init_privs           | 对象初始特权                           |
+   | pg_language             | 编写函数的语言                         |
+   | pg_largeobject          | 大对象的数据页                         |
+   | pg_largeobject_metadata | 大对象的元数据                         |
+   | pg_namespace            | 模式                                   |
+   | pg_opclass              | 访问方法操作符类                       |
+   | pg_operator             | 操作符                                 |
+   | pg_opfamily             | 访问方法操作符类                       |
+   | pg_partitioned_table    | 表的分区键的信息                       |
+   | pg_pltemplate           | 过程语言的模板数据                     |
+   | pg_policy               | 行安全策略                             |
+   | pg_proc                 | 函数和过程                             |
+   | pg_publication          | 用于逻辑复制的发布                     |
+   | pg_publication_rel      | 发布映射的关系                         |
+   | pg_range                | 范围类型的信息                         |
+   | pg_replication_origin   | 已注册的复制源                         |
+   | pg_rewrite              | 查询重写规则                           |
+   | pg_seclabel             | 数据库对象上的安全标签                 |
+   | pg_sequence             | 有关序列的信息                         |
+   | pg_shdepend             | 共享对象上依赖                         |
+   | pg_shdescription        | 共享对象上的注释                       |
+   | pg_shseclable           | 共享数据库对象上的安全标签             |
+   | pg_statistic            | 规划器统计                             |
+   | pg_statistic_ext        | 扩展的规划器统计信息                   |
+   | pg_statistic_ext_data   | 扩展的规划器统计信息                   |
+   | pg_subscription         | 逻辑复制订阅                           |
+   | pg_subscription_rel     | 订阅的关系状态                         |
+   | pg_tablespace           | 本数据库集簇内的表空间                 |
+   | pg_transform            | 转换                                   |
+   | pg_trigger              | 触发器                                 |
+   | pg_ts_config            | 文本搜索配置                           |
+   | pg_ts_config_map        | 文本搜索配置的记号映射                 |
+   | pg_ts_dict              | 文本搜索字典                           |
+   | pg_ts_parser            | 文本搜索分析器                         |
+   | pg_ts_template          | 文本搜索模板                           |
+   | pg_type                 | 数据类型                               |
+   | pg_user_mapping         | 将用户映射到外部服务器                 |
+
+
+
+
+** 系统视图
+   | 视图名称                        | 用途                         |
+   |---------------------------------+------------------------------|
+   | pg_available_extensions         | 可用的扩展                   |
+   | pg_available_extension_versions | 所有版本的扩展               |
+   | pg_config                       | 编译时配置参数               |
+   | pg_cursors                      | 打开的游标                   |
+   | pg_file_settings                | 配置文件内容摘本             |
+   | pg_group                        | 数据库用户组                 |
+   | pg_hba_file_rules               | 客户端认证配置文件内容的摘要 |
+   | pg_indexes                      | 索引                         |
+   | pg_locks                        | 当前保持或者等待的锁         |
+   | pg_matviews                     | 物化视图                     |
+   | pg_policies                     | 策略                         |
+   | pg_prepared_statements          | 预备好的语句                 |
+   | pg_prepared_xacts               | 预备好的事务                 |
+   | pg_publication_tables           | publication和它们相关的表    |
+   | pg_replication_origin_status    | 复制槽信息                   |
+   | pg_roles                        | 数据库角色                   |
+   | pg_rules                        | 规则                         |
+   | pg_seclabels                    | 安全标签                     |
+   | pg_sequences                    | 序列                         |
+   | pg_settings                     | 参数设置                     |
+   | pg_shadow                       | 数据库用户                   |
+   | pg_stats                        | 规划器统计信息               |
+   | pg_stat_ext                     | 扩展的计划器统计信息         |
+   | pg_tables                       | 表格                         |
+   | pg_timezone_abbrevs             | 时区简写                     |
+   | pg_timezone_names               | 时区名字                     |
+   | pg_user                         | 数据库用户                   |
+   | pg_user_mappings                | 用户映射                     |
+   | pg_views                        | 视图                         |
+
+
+
 
