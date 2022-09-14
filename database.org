@@ -234,6 +234,53 @@
    | pg_user_mappings                | 用户映射                     |
    | pg_views                        | 视图                         |
 
-
+** 额外提供的模块
+   | 模块名             | 用途                                                       |
+   |--------------------+------------------------------------------------------------|
+   | adminpack          | 提供一些支持函数，例如服务器日志文件的远程管理等           |
+   | amcheck            | 提供的函数让用户能难关系结构的一致性。                     |
+   | auto_explain       | 自动记录慢速语句的查询执行计划                             |
+   | bloom              | 布鲁姆过滤器索引                                           |
+   | btree_gin          | 提供实现等价行为的GIN操作符                                |
+   | btree_gist         | 提供实现等价行为的GiST索引的操作符                         |
+   | citext             | 提供一种大小写不敏感的字符串类型                           |
+   | cube               | 提供一种数据类型cube来表示多维立方体                       |
+   | dblink             | 支持一个数据库会话中连接到其他PostgreSQL数据库的模块       |
+   | dict_int           | 附加全文搜索词典模板，控制整数的索引                       |
+   | dict_xsyn          | 将词替换为它们的同义词分组                                 |
+   | earthdistance      | 提供两种不同的方法来计算地球表面的大圆距离                 |
+   | file_fdw           | 提供外部数据包装器，用来访问服务器的文件系统中的数据       |
+   | fuzzystrmatch      | 提供多个函数来判断字符之间的相似性和距离                   |
+   | hstore             | 用来在一个单一PostgreSQL值中存储键值对                     |
+   | intagg             | 提供一个整数聚集器以及一个枚举器                           |
+   | intarray           | 提供了有用的函数操作符来操纵不含空值的整数数组             |
+   | isn                | 为国际产品标准提供数据类型                                 |
+   | lo                 | 提供管理大对象的支持，包含数据类型lo和触发器lo_manage      |
+   | ltree              | 用于表示存储在一个层次树状结构中的数据的标签以及搜索功能   |
+   | pageinspect        | 提供的函数可以从低层次观察数据库页面内容                   |
+   | passwordcheck      | create或alter设置用户时，它会检查用户口令                  |
+   | pg_buffercache     | 实时检查共享缓冲区                                         |
+   | pgcrypto           | 提供了密码函数                                             |
+   | pg_freespacemap    | 检查空闲空间映射，提供了pg_freespace函数                   |
+   | pg_prewarm         | 将关系数据载入到操作系统缓冲区或者PostgreSQL缓冲区         |
+   | pgrowlocks         | 提供一个函数显示一个指定表的行锁信息                       |
+   | pg_stat_statements | 追踪服务器所执行的所有SQL语句的执行统计信息                |
+   | pgstattuple        | 获得元组层的统计信息                                       |
+   | pg_trgm            | 用于决定基于trigram匹配的字母数字文本相似度的函数和操作符  |
+   | pg_visiblity       | 提供一种检查一个表的可见性映射以及页级别的可见性信息       |
+   | postgres_fdw       | 用来访问存储在外部PostgreSQL服务器中数据                   |
+   | seg                | 表示线段或浮点区间实现了一种数据类型seg                    |
+   | sepgsql            | 基于SELinux安全策略的支持基于标签强制访问控制模块          |
+   | spi                | 提供使用服务器编程接口和触发器的例子                       |
+   | sslinfo            | 提供当前客户端提供的SSL证书的有关信息                      |
+   | tablefunc          | 多个返回表的函数                                           |
+   | tcn                | 提供一个触发器函数，通知监听者有关它所附着的任意表上的改变 |
+   | test_decoding      | 一个逻辑解码输出插件的例子                                 |
+   | tsm_system_rows    | 提供了表采样方法SYSTEM_ROWS                                |
+   | tsm_system_time    | 提供了表采样方法SYSTEM_TIME                                |
+   | unaccent           | 一个文本搜索字典，能从词位中移除重音                       |
+   | uuid_ossp          | 产生通用唯一标识符                                         |
+   | xml2               | 提供XPATH查询和XSLT功能                                                    |
+   
 
 
