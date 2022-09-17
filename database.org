@@ -234,6 +234,52 @@
    | pg_user_mappings                | 用户映射                     |
    | pg_views                        | 视图                         |
 
+** 数据库临控视图
+   动态统计视图
+   | 视图名称                      | 说明                                                                  |
+   |-------------------------------+-----------------------------------------------------------------------|
+   | pg_stat_activity              | 每个服务器进程一行，显示与那个进程的当前活动相关信息                  |
+   | pg_stat_replication           | 每个WAL发送进程一个，显示关到该发送进程连接的后备服务器的复制统计信息 |
+   | pg_stat_wal_receiver          | 显示来自WAL接收器所连接服务器的有关该接收器的统计信息                 |
+   | pg_stat_subscription          | 每个订阅至少一行，显示有关该订阅的工作者信息                          |
+   | pg_stat_ssl                   | 每个连接一行，显示在这个连接上使用的SSL的信息                         |
+   | pg_stat_gssapi                | 每个连接有一行，显示关于GSSAPI验证和加密的信息                        |
+   | pg_stat_progress_analyze      | 显示每个ANALYZE的后端，显示当前的进度                                 |
+   | pg_stat_progress_create_index | 每个后台运行create index或reindex的后端都有一个，显示当前的进度       |
+   | pg_stat_progress_vacuum       | 每个运行VACUUM的后端一行，显示当前的进程                              |
+   | pg_stat_progress_cluster      | 每个运行着CLUSTER或VACUUM FULL的后端一行，显示当前的进度              |
+   | pg_stat_progress_basebackup   | 每个WAL发送者进程的行显示一个基础备份，显示当前进度                   |
+
+   已收集统计信息的视图
+   | 视图名称                    | 说明                                                                   |
+   |-----------------------------+------------------------------------------------------------------------|
+   | pg_stat_archiver            | 显示有关WAL归档进程活动的统计信息                                      |
+   | pg_stat_bgwriter            | 显示有关后台进程的活动的统计信息                                       |
+   | pg_stat_database            | 显示数据库范围的统计信息                                               |
+   | pg_stat_database_conflicts  | 显示数据库范围的统计信息，与后备服务器的恢复过程发生冲突而被取消的查询 |
+   | pg_stat_all_tables          | 当前数据库中的每个表，显示有关访问指定表的统计信息                     |
+   | pg_stat_sys_tables          | 只显示系统表                                                           |
+   | pg_stat_user_tables         | 只显示用户表                                                           |
+   | pt_stat_xact_all_tables     | 计数动作只在当前事务内发生                                             |
+   | pg_stat_xact_sys_tables     | 显示系统表的事务计数                                                   |
+   | pg_stat_xact_user_tables    | 显示用户表的事务计数                                                   |
+   | pg_stat_all_indexs          | 显示与访问指定索引有关的统计信息                                       |
+   | pg_stat_sys_indexes         | 只显示系统表上的索引                                                   |
+   | pg_stat_user_indexes        | 只显示用户表上的索引                                                   |
+   | pg_statio_all_tables        | 显示有关在指定表上I/O的统计信息                                        |
+   | pg_statio_sys_tables        | 只显示系统表                                                           |
+   | pg_statio_user_tables       | 只显示用户表                                                           |
+   | pg_statio_all_indexes       | 显示与指定索引上的I/O有关的统计信息                                    |
+   | pg_statio_sys_indexes       | 只显示系统表上的索引                                                   |
+   | pg_statio_user_indexes      | 只显示用户表的索引                                                     |
+   | pg_statio_all_sequences     | 显示与指定列上的I/O有关的统计信息                                      |
+   | pg_statio_sys_sequences     | 只显示系统序列                                                         |
+   | pg_statio_user_seqences     | 只显示用户序列                                                         |
+   | pg_stat_user_functions      | 显示与执行该函数有关的统计信息                                         |
+   | pg_stat_xact_user_functinos | 只显示在当前事务的该函数的有关信息                                     |
+   | pg_stat_slru                | 每个SLRU一行，显示操作的统计信息                                       |
+
+
 ** 额外提供的模块
    | 模块名             | 用途                                                       |
    |--------------------+------------------------------------------------------------|
