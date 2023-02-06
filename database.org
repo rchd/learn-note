@@ -28,6 +28,19 @@
    #+end_src
 
    打上断点，使用dir命令设置源码目录，即可开始调试
+   
+** postgresql hook相关函数
+   | 钩子函数           | 说明说明       |
+   |--------------------+----------------|
+   | ExecutorStart_hook | 执行器开始之前 |
+   | ExecutorRun_hook   | 执行器开始     |
+   | ExecutorEnd_hook   | 执行器结束之后 |
+   | planner_hook       | 规划器钩子函数 |
+   |                    |                |
+
+
+
+   
 
 ** postgresql相关的命令行工具
    客户端应用
@@ -93,7 +106,74 @@
    | tsearch    | 全文索引，倒排索引                                                          |
    | port       | 平台兼容性处理相关的函数我                                                  |
 
-  
+*** 重要函数
+    main/main.c/main 是postgres的主函数
+
+    SubPostmasterMain函数负责开启辅助功能的子进程
+    依调用
+    BackendRun -> PostgresMain
+    AuxiliaryProcessMain -> StartupProcessMain
+                         -> PgArchiverMain
+			 -> BackgroundWriterMain
+			 -> CheckpinterMain
+			 -> WalWriterMain
+			 -> WalReceiverMain
+    AutoVacLauncherMain
+    AutoVacWorkerMain
+    StartBackgroundWorker
+    SysLoggerMain
+    
+
+    PostmasterMain则是开启主进程监听端口
+    ServerLoop -> BackendStartup ->  BackendRun -> PostgreMain
+
+    PostgreMain -> ReadCommand 读取请求字符串，返回firstchar
+                -> firstchar为Q 执行exec_simple_query，执行一个查询
+
+    查询执行流程		
+    exec_simple_query -> pg_parse_query -> raw_parser -> scanner_init
+                                                      -> parser_init
+						      -> base_yyparse
+						      -> scanner_finish
+                      -> pg_analyze_and_rewrite_fixedparams -> parse_analyze_fixedparams -> transformTopLevelstmt
+		                                            -> pg_rewrite_query 
+		      -> pg_plan_queries -> pg_plan_query -> planner
+		      -> CreatePortal
+		      -> PortalStart -> CreateQueryDesc
+		                     -> ExecutorStart 
+		      -> PortalRun -> PortalRunSelect -> ExecutorRun 
+		                   -> PortalRunMulti -> ProcessQuery
+				                     -> PortalRunUtility -> ProcessUtility
+		      -> PortalDrop 
+    
+    规划器
+    planner -> standard_planner -> subquery_planner -> SS_process_ctes
+                                                    -> transform_MERGE_to_join
+						    -> replace_empty_jointree
+						    -> pull_up_sublinks
+						    -> prepocess_function_rtes
+						    -> pull_up_subquires
+						    -> flatten_simple_union_all
+						    -> preprocess_rowmarks
+						    -> preprocess_expressioin
+						    -> remove_useless_groupby_columns
+						    -> reduce_outer_joins
+						    -> remove_useless_result_rtes
+						    -> grouping_planner -> preprocess_limit
+						                        -> proprocess_grouping_sets
+									-> preprocess_groupclause
+									-> preprocess_targetlist
+									-> group_planner -> make_one_rel 
+						    -> SS_identify_outer_params
+						    -> fetch_upper_rel
+						    -> SS_charge_for_initplans
+						    -> set_cheapest 
+                                -> create_plan -> create_plan_recurse
+				               -> SS_attach_initplans 
+    
+   
+    
+
 *** postgresql数据库目录
     | 文件                 | 描述                               |
     |----------------------+------------------------------------|
@@ -329,4 +409,44 @@
    | xml2               | 提供XPATH查询和XSLT功能                                                    |
    
 
+** 分布式和集群
 
+   主从部署
+   
+   
+   分布式部署
+   使用ciuts插件进行分布式扩展
+   #+begin_src sh
+     git clone --depth=1
+     make install
+   #+end_src
+   设置preload_shared_library参数为citus
+   重启postgresql
+   #+begin_src sql
+     create extension citus;
+   #+end_src
+   即可完成
+
+   
+
+
+
+
+   
+* mariadb
+  
+* sqlite3
+  
+* redis
+  
+* clickhouse
+  
+* mongodb
+  
+* trino
+  
+* neo4j
+  
+* trino
+  
+* solr
