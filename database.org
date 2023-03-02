@@ -142,10 +142,10 @@
 		      -> PortalStart -> CreateQueryDesc
 		                     -> ExecutorStart 
 		      -> PortalRun -> PortalRunSelect -> ExecutorRun 
-		                   -> PortalRunMulti -> ProcessQuery
-				                     -> PortalRunUtility -> ProcessUtility
+		                   -> PortalRunMulti  -> ProcessQuery
+				                      -> PortalRunUtility -> ProcessUtility
 		      -> PortalDrop 
-    
+
     规划器
     planner -> standard_planner -> subquery_planner -> SS_process_ctes
                                                     -> transform_MERGE_to_join
@@ -171,7 +171,55 @@
                                 -> create_plan -> create_plan_recurse
 				               -> SS_attach_initplans 
     
-   
+
+  libpq对外开放协议
+  ServerLoop -> ConnCreate -> StreamConnection -> pg_setkeepalivesidle
+                                               -> pg_setkeepalivesinterval
+			     		       -> pg_setkeepalivescount
+					       -> pg_settcpusertimeout 
+
+             -> BackendStartup -> BackendInitialize -> pq_init
+                                                    -> CreateWaitEventSet
+				       		    -> AddWaitEventToSet
+                               -> BackendRun -> PostgresMian -> pq_comm_reset
+			                                     -> ReadCommand
+							     -> exec_simple_query -> BeginCommand
+							                          -> CreateDestReceiver
+							  			  -> EndCommand
+                  
+    主从复制
+    walsender
+    PostgreMain -> exec_replicatioin_command -> SnpBuildClearExportedSnapshot
+                                             -> replication_scanner_init
+					     -> replication_yyparse
+					     -> StartReplication -> WalSndLoop
+					                         -> EndReplicationCommand
+    walreceiver
+    main -> SubPostmasterMain -> AuxiliaryProcessMain -> WalReceiverMain -> walrcv_connect
+                                                                         -> walrcv_identify_system
+									 -> walrcv_create_slot
+									 -> walrcv_startstreaming
+									 -> walrcv_receive
+									 -> XLogWALRcvProcessMsg
+									 -> XLogWalRcvSendReply
+									 -> XLogWalRcvFlush
+									 -> walrcv_endstreaming 
+    walwriter
+    main -> SubPostmasterMain -> AuxiliaryProcessMain -> WalWriterMain -> XLogBackgroundFlush
+                                                                       -> XLOGFileClose
+
+    bgwriter
+    main -> SubPostmasterMain -> AuxiliaryProcessMain -> BackgroundWriterMain -> BgBufferSync -> SyncOneBuffer -> FlushBuffer
+                                                                                                               -> smgrwrite
+													       -> XLogFlush 
+													       
+    checkpointer
+    main -> SubPostmasterMain -> AuxiliaryProcessMain -> CheckPointerMain -> CreateCheckPoint -> CheckPointGuts
+                                                                                              -> XLogFlush
+											      -> SyncPostCheckPoint
+											      
+    archiver
+    main -> SubPostmasterMain -> AuxiliaryProcessMain -> PgArchiverMain -> pgarch_MainLoop -> pgarch_ArchiverCopyLoop
     
 
 *** postgresql数据库目录
@@ -434,6 +482,21 @@
 
    
 * mariadb
+  
+** 编译
+   #+begin_src sh
+     mkdir build && cd build
+     cmake ../
+     make -j 4 
+   #+end_src
+
+   调试
+   #+begin_src sh
+     mkdir build && cd build
+     cmake ../ -DBUILD_RELEASE_TYPE=Debug
+     make -j 4
+     cd ../ && gdb attach ./build/bin/mysqld
+   #+end_src
   
 * sqlite3
   
