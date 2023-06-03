@@ -847,12 +847,228 @@
 
   
 * redis
-  
+
+** 编译
+输入以下命令即可
+#+begin_src sh
+  make -j 4 && make install 
+#+end_src
+
+启动redis
+#+begin_src sh
+  cd src
+  ./redis-server /path/to/redis.conf
+#+end_src
+
+** 源码分析
+Redis根目录只包含这个README，调用src目录下真正的Makefile的Makefile，以及Redis和Sentinel的配
+置示例。你可以找到一些 shell 脚本，用来执行 Redis、Redis Cluster 和 Redis Sentinel 的单元测试，这些测试在
+tests 目录下实现。
+
+根目录下的重要目录
++ src包含Redis的相关实现，用C语言编写
++ tests包含了单元测试，由Tcl实现
++ deps 包含 Redis 使用的库。编译Redis所需的一切都在这个目录里；你的系统只需要提供libc，一个POSIX兼容
+  接口和一个C编译器。值得注意的是，deps包含jemalloc的副本，它是Linux下Redis的默认分配器。注意，在
+  deps下还有一些与Redis项目一起开始的东西，但其主仓库不是redis/redis。
+
+
+还有一些目录，但它们对我们的目标来说并不十分重要。我们将主要关注src，Redis的实现就在这里，探索每个文件里面有
+什么。暴露文件的顺序是合理的，以便逐步披露不同层次的复杂性。
+
+注意：最近Redis被重构了不少。函数名和文件名都发生了变化，所以你可能会发现这个文档更贴切地反映了不稳定分支的情
+况。例如，在 Redis 3.0 中，server.c 和 server.h 文件被命名为 redis.c 和 redis.h，但整体结构是一样的。请
+记住，所有的新开发和拉动请求都应该针对不稳定分支进行。
+
+*** server.h
+了解一个程序如何工作的最简单方法是了解它所使用的数据结构。因此，我们将从Redis的主头文件开始，也就是server.h。
+
+所有的服务器配置和一般来说所有的共享状态都被定义在一个名为server的全局结构中，其类型为struct redisServer。
+这个结构中的几个重要字段是：
+
+- server.db是一个Redis数据库一个数组，用来存储数据
+- server.commands用来存储命令的表格
+- server.clients 连接到服务器的客户端列表
+- server.master 一个特殊的客户端，如果实例是一个副本，它就是主客户端
+
+
+还有大量的其他字段。大多数字段都是直接在结构定义中注释的。
+
+另一个重要的 Redis 数据结构是定义一个客户端。过去它被称为 redisClient，现在只是 client。该结构有许多字段，这里
+我们只展示主要的字段：
+
+#+begin_src c
+  struct client{
+    int fd;
+    sds querybuf;
+    int argc;
+    robj **argv;
+    redisDb *db;
+    int flags;
+    list *reply:
+    // .... many other fields ...
+    char buf[PROTO_REPLY_CHUNK_BYTES];
+  }
+#+end_src
+
+定义一个连接的客户端的字段说明:
+
+- fd字段表示客户的socket文件描述符
+- argc和argv被填充为客户端正在执行的命令，以便实现特定Redis命令的函数能够读取参数。
+- querybuf积累来自客户端的请求，Redis服务器根据Redis协议对这些请求进行解析，并通过调用客户端正在执行的命令
+  的实现来执行。
+- reply和buf是动态和静态的缓冲区，用于积累服务器发送给客户端的回复。一旦文件描述符可写，这些缓冲区就会被增量
+  地写入套接字。
+
+正如你在上面的客户端结构中看到的，命令中的参数被描述为 robj 结构。下面是完整的 robj 结构，它定义了一个 Redis
+对象：
+#+begin_src c
+  struct redisObject{
+    unsigned type:4;
+    unsigned encoding:4;
+    unsigned lru:LRU_BITS;/* LRU time (relative ot global lru_clock or
+                           ,* LFU data (least significant 8 bits frequency
+                           ,* and most sigificant 16 bits access time). */
+    int refcount;
+    void *ptr;
+  };
+#+end_src
+
+基本上这个结构可以代表所有基本的Redis数据类型，如字符串、列表、集合、排序集合等等。有趣的是，它有一个类型字段，
+这样就有可能知道一个给定的对象有什么类型，还有一个refcount，这样同一个对象就可以在多个地方被引用而不需要多次分配。
+最后，ptr字段指向对象的实际表示，即使是同一类型的对象也可能有所不同，这取决于使用的编码。
+
+Redis对象在Redis内部被广泛使用，然而为了避免间接访问的开销，最近在很多地方我们只是使用没有被包裹在Redis对象
+内的普通动态字符串。
+
+*** server.c
+这是 Redis 服务器的入口点，main() 函数在这里被定义。以下是启动Redis服务器的最重要步骤。
+
+- initServerConfig() 设置server结构体的默认值
+- initServer() 分配操作所需的数据结构，设置监听套接字，等等。
+- aeMain() 启动事件循环，监听新的连接。
+
+有两个特殊的函数被事件循环周期性地调用：
+
+1. serverCron()被定期调用（根据server.hz频率），并执行必须不时进行的任务，如检查超时的客户端。
+2. beforeSleep()在每次事件循环启动时被调用，Redis提供了一些请求，并正在返回到事件循环中。
+
+在server.c中，你可以找到处理Redis服务器的其他重要事项的代码：
+
++ call()被用来在给定的客户端的上下文中调用一个给定的命令。
++ activeExpireCycle()处理通过EXPIRE命令设置了生存时间的key的驱逐问题。
++ performEvictions()是在应该执行新的写命令但根据maxmemory指令Redis已经没有内存的情况下调用。
++ 全局变量redisCommandTable定义了所有的Redis命令，指定了命令的名称、实现命令的函数、需要的参数数以及每
+  个命令的其他属性。
+
+
+*** commands.c
+该文件由 utils/generate-command-code.py 自动生成，其内容基于 src/commands 文件夹中的 JSON 文件。这些文
+件是关于Redis命令的唯一来源，以及关于它们的所有元数据。这些JSON文件并不是为了让任何人直接使用，而是通过
+COMMAND命令获得元数据。
+
+*** networking.c
+这个文件定义了所有的I/O功能，包括客户端、主节点和复制节点（在Redis中只是特殊的客户端）：
++ createClient()分配并初始化一个新的客户端。
++ addReply*()系列函数被命令实现所使用，以便将数据附加到客户端结构中，这些数据将作为执行给定命令的回复传送给客
+  户端。
++ writeToClient()将输出缓冲区中等待的数据传输给客户端，并由可写事件处理程序sendReplyToClient()调用。
++ readQueryFromClient()是可读事件处理程序，将从客户端读取的数据累积到查询缓冲区。
++ processInputBuffer()是一个入口点，以便根据Redis协议解析客户端的查询缓冲区。一旦命令准备好被处理，它就
+  调用server.c中定义的processCommand()，以便实际执行命令。
++ freeClient()将一个客户端去掉，断开连接并删除。
+
+
+*** aof.c 和rdb.c
+正如你从名字中可以猜到的，这些文件实现了Redis的RDB和AOF持久化。Redis使用基于fork()系统调用的持久性
+模型，以创建一个与Redis主进程相同（共享）内存内容的进程。这个二级进程将内存的内容转储到磁盘上。这被rdb.c
+用来在磁盘上创建快照，被aof.c用来在append only文件过大时执行AOF重写。
+
+aof.c里面的实现有额外的函数，以便实现一个API，允许命令在客户端执行时将新的命令附加到AOF文件中。
+
+server.c中定义的call()函数负责调用函数，这些函数反过来将命令写进AOF。
+
+*** db.c
+某些Redis命令对特定的数据类型进行操作；其他的是通用的。通用命令的例子是DEL和EXPIRE。它们对键进行操作，
+而不是对它们的值进行具体操作。所有这些通用命令都在db.c中定义。
+
+此外，db.c实现了一个API，以便在Redis数据集上执行某些操作而不直接访问内部数据结构。
+
+db.c中最重要的函数，在许多命令的实现中都会用到：
++ lookupKeyRead()和lookupKeyWrite()用于获取与给定键相关的值的指针，如果该键不存在，则为NULL。
++ dbAdd()和它的高级对应函数setKey()在Redis数据库中创建一个新的键。
++ dbDelete()删除一个键和其相关的值。
++ emptyDb()删除整个单一数据库或所有定义的数据库。
+
+文件的其余部分实现了暴露给客户端的通用命令。
+
+*** object.c
+定义 Redis 对象的 robj 结构已经描述过了。在object.c中，有所有在基本层面上操作Redis对象的函数，如分配新
+对象、处理引用计数等函数。这个文件中值得注意的函数：
++ incrRefCount()和decrRefCount()被用来增加或减少一个对象的引用计数。当它下降到0时，该对象最终被释放。
++ createObject()分配了一个新的对象。还有一些专门的函数来分配具有特定内容的字符串对象，如
+  createStringObjectFromLongLong()和类似的函数。
+
+这个文件还实现了OBJECT命令。
+
+*** replication.c
+这是 Redis 中最复杂的文件之一，建议在熟悉了代码库的其他部分后再去接触它。在这个文件中，有Redis的主节点和副本
+角色的实现。
+
+这个文件中最重要的一个函数是replicationFeedSlaves()，它向代表连接到主节点的复制实例的客户端写命令，这样复制
+节点就可以得到客户端执行的写操作：这样他们的数据集就会与主节点的数据集保持同步。
+
+该文件还实现了SYNC和PSYNC命令，用于执行主站和复制站之间的第一次同步，或在断开连接后继续复制。
+
+*** script
+脚本功能由三个单元组成
++ script.c - 脚本与Redis的整合（命令的执行，设置复制/响应，...）。
++ script_lua.c - 负责执行 Lua 代码，使用 script.c 从 Lua 代码中与 Redis 互动。
++ function_lua.c - 包含 Lua 引擎的实现，使用 script_lua.c 来执行 Lua 代码。
++ functions.c - 包含 Redis 函数的实现（FUNCTION 命令），如果它要调用的函数需要 Lua 引擎，则使用
+  functions_lua.c。
++ eval.c - 包含 eval 的实现，使用 script_lua.c 来调用 Lua 代码。
+
+
+*** 其他C文件
+
++ t_hash.c, t_list.c, t_set.c, t_string.c, t_zset.c 和 t_stream.c 包含 Redis 数据类型的实现。它们既
+  实现了访问给定数据类型的API，又实现了这些数据类型的客户端命令实现。
++ ae.c实现了Redis的事件循环，它是一个自包含的库，很容易阅读和理解。
++ sds.c是Redis的字符串库，查看https://github.com/antirez/sds，了解更多信息。
++ anet.c是一个库，与内核暴露的原始接口相比，它以更简单的方式使用POSIX网络。
++ dict.c是一个非阻塞式哈希表的实现，它以递增的方式重载。
++ cluster.c 实现了 Redis 集群。可能只有在非常熟悉Redis代码库的其他部分之后，才会有机会阅读。如果你想阅读
+  cluster.c，请确保阅读Redis Cluster规范。
+
+
+*** Redis命令的剖析
+#+begin_src c
+  void foobarCommand(client *c){
+    printf("%s", c->argv[1]->ptr); /* Do something with the argument. */
+    addReply(c, shared.ok); /* Reply something to the client. */
+  }
+#+end_src
+
+命令函数由一个JSON文件引用，连同其元数据，详见上文描述的 commands.c。命令标志记录在server.h中
+redisCommand结构上方的注释中。其他细节，请参考COMMAND命令。https://redis.io/commands/command/
+
+在命令以某种方式操作后，它向客户端返回一个回复，通常使用addReply()或在networking.c中定义的类似函数。
+
+Redis 源代码中有大量的命令实现，可以作为实际命令实现的例子（例如 pingCommand）。编写一些玩具命令可以作为熟悉
+代码库的一个很好的练习。
+
+
+
+
+
+
+
+
 * clickhouse
   
 * mongodb
   
-* trino
   
 * neo4j
   
