@@ -1,0 +1,887 @@
+
+* hash索引
+
+** 概览
+散列索引提供了通过特定索引键快速查找元组ID(TID)的能力。粗略地说，它只是一个存储在磁盘上的哈希表。散列索引所支持的
+唯一操作是通过平等条件进行搜索。
+
+当一个值被插入到一个索引中时，索引键的哈希函数被计算出来。在PostgreSQL中，哈希函数返回32位或64位的整数；这
+些值的几个最低位被用作相应的桶的编号。键的TID和哈希代码被添加到选择的桶中。密钥本身并不存储在索引中，因为处理小的
+固定长度的值更方便。
+
+一个索引的哈希表是动态扩展的。集群的最小数量是两个。随着索引元组数量的增加，其中一个桶会被拆成两个。这个操作多用了一
+个哈希代码的位，所以元素只在分割后的两个桶之间重新分配；哈希表的其他桶的组成保持不变。
+
+索引搜索操作会计算索引键的哈希函数和相应的桶号。在所有桶的内容中，搜索将只返回那些与键的哈希代码相对应的TID。由于
+桶中的元素是按键的哈希代码排序的，二进制搜索可以相当有效地返回匹配的TID。
+
+由于键没有存储在哈希表中，索引访问方法可能因为哈希碰撞而返回多余的TID。因此，索引引擎必须重新检查由访问方法获取的
+所有结果。由于同样的原因，不支持仅有索引的扫描。
+** 页面布局
+
+与普通的哈希表不同，哈希索引是存储在磁盘上的。因此，所有的数据必须被排列成页，最好是使索引操作（搜索、插入、删除）需
+要访问尽可能少的页。
+
+一个哈希索引有以下四种页面
+
++ 元页－提供索引的目录
++ 桶页－索引的主要页面
++ 溢出页－当前主桶页不能容纳所有的元素时使用的附加页
++ 位图页－包含位数组的页，用于跟踪已经释放并可重复使用的溢出页
+
+可以使用pageinspect扩展来查看索引页面
+
+创建一个空的表
+
+#+begin_src sql
+  create extension pageinspect;
+  create table t(n integer);
+  analyze t;
+  create index on t using hash(n);
+#+end_src
+
+对表进行了分析，所以创建的索引将具有尽可能小的尺寸；否则，将根据表包含10个页面的假设来选择桶的数量。索引包含四
+个页面：元页面、两个桶页面和一个位图页面（一次性创建，供将来使用）：
+
+#+begin_src sql
+  select page, hash_page_type(get_raw_page('t_n_idx', page))
+  from generate_series(0, 3) page;
+#+end_src
+
+[[./images/hySCnE.png]]
+
+元页包含所有关于索引的控制信息。我们目前只对几个值感兴趣：
+
+#+begin_src sql
+  select ntuples, ffactor, maxbucket
+  from hash_metapage_info(get_raw_page('t_n_idx', 0));
+#+end_src
+
+每个桶的估计行数显示在ffactor字段。这个值是根据块的大小和fillfactor存储参数值计算的。通过绝对均匀的数据分布
+和没有哈希碰撞，你可以使用一个更高的fillfactor值，但在现实生活中的数据库，它增加了页面溢出的风险。
+
+对于散列索引来说，最糟糕的情况是数据分布有很大的偏斜，当一个键重复多次时。由于散列函数将返回一个相同的值，所有的数据
+都将被放入同一个桶中，增加桶的数量将无济于事。
+
+现在索引是空的，如ntuples字段所示。让我们通过插入多条具有相同索引键值的行来引起一个桶状页溢出。一个溢出的页面出
+现在索引中：
+
+
+#+begin_src sql
+  insert into t(n)
+  select 0 from generate_series(1, 500);
+  select page, hash_page_type(get_raw_page('t_n_idx', page))
+  from generate_series(0, 4) page;
+#+end_src
+
+[[./images/RSwyo0.png]]
+
+对所有页面的综合统计显示，桶0是空的，而所有的值都被放入桶1：其中一些位于主页面，而那些不适合它的值可以在溢出页面
+找到。
+
+#+begin_src sql
+  select page, live_items, free_size, hasho_bucket
+  from (values (1), (2), (4)) p(page),
+  hash_page_stats(get_raw_page('t_n_idx', page));
+#+end_src
+
+很明显，如果一个相同的桶的元素分布在几个页面上，性能会受到影响。如果数据分布均匀，散列索引显示出最好的结果。
+
+现在让我们来看看一个桶是如何被分割的。当索引中的行数超过可用桶的估计ffactor值时，它就会发生。这里我们有两个桶，
+ffactor是307，所以当第615行被插入到索引中时，它就会发生：
+
+#+begin_src sql
+  select ntuples, ffactor, maxbucket, ovflpoint
+  from hash_metapage_info(get_raw_page('t_n_idx', 0));
+  insert into t(n)
+  select n from generate_series(1, 115) n;
+  select nutples, ffactor, maxbucket, ovflpoint
+  from hash_metapage_info(get_raw_page('t_n_idx', 0));
+#+end_src
+
+最大bucket值已经增加到两个：现在我们有三个bucket，编号从0到2。 但是，尽管我们只增加了一个bucket，页面
+的数量却增加了一倍：
+
+#+begin_src sql
+  select page, hash_page_type(get_raw_page('t_n_idx', page))
+  from generate_series(0, 6) page;
+#+end_src
+
+[[./images/tNA8od.png]]
+
+其中一个新页面被桶2使用，而另一个保持空闲，一旦出现就会被桶3使用。
+
+
+
+#+begin_src sql
+  select page, live_items, free_size, hasho_bucket
+  from (values(1), (2), (4), (5)) p(page),
+  hash_page_stats(get_raw_page('t_n_idx', page));
+#+end_src
+
+因此，从操作系统的角度来看，哈希指数是呈井喷式增长的，尽管从逻辑的角度来看，哈希表显示的是逐步增长。
+
+为了在一定程度上平衡这种增长，并避免一次分配太多的页面，从第十次增加开始，页面将分四批平均分配，而不是一次全部分配。
+
+元页的另外两个字段，实际上是位掩码，提供了关于bucket地址的细节：
+
+#+begin_src sql
+  select maxbucket, highmask::bit(4), lowmask::bit(4)
+  from hash_metapage_info(get_raw_page('t_n_idx' , 0));
+#+end_src
+
+一个桶号是由对应于高掩码的哈希码位定义的。但如果收到的桶号不存在（超过了maxbucket），就会取低掩码位。1 在这种特
+殊情况下，我们取两个最低位，这样就有了0到3的值；但如果我们得到3，我们就只取一个最低位，也就是用桶1而不是
+桶3。
+
+每次大小翻倍时，新的bucket页被分配为一个连续的chunk，而溢出页和位图页根据需要被插入这些片段之间。元页在备用数
+组中保留了插入每个块的页数，这让我们有机会根据桶的数量用简单的算术来计算其主页的数量。
+
+在这个特殊的案例中，第一次增加后插入了两个页面（一个位图页和一个溢出页），但第二次增加后还没有发生新的增加：
+
+#+begin_src sql
+  select spares[2], spares[3]
+  from hash_metapage_info(get_raw_page('t_n_idx', 0));
+#+end_src
+
+元页还存储了一个指向位图页的指针数组：
+
+#+begin_src sql
+  select mapp[1]
+  from hash_metapage_info(get_raw_page('t_n_idx', 0));
+#+end_src
+
+[[./images/xr92tr.png]]
+
+当指向死元组的指针被移除时，索引页内的空间被释放出来。这发生在修剪页面的过程中（这是由试图将一个元素插入到一个完全
+填充的页面中所引发的）1，或者是在进行常规回收的时候。
+
+然而，散列索引不能缩减：一旦分配，索引页将不会返回到操作系统。主页面被永久地分配给它们的桶，即使它们根本不包含任何
+元素；被清除的溢出页面在位图中被跟踪，可以被重新使用（可能被另一个桶使用）。减少索引的物理尺寸的唯一方法是使用
+REINDEX或VACCUM FULL命令重建它
+
+查询计划中没有显示索引类型：
+
+#+begin_src sql
+  create index on flights using hash(flight_no);
+  explain (costs off)
+  select * from flights where flight_no = 'PG0001';
+#+end_src
+
+** 操作类
+
+在Postgre 10之前，哈希索引是没有记录的，也就是说，它们既没有对故障的保护，也没有复制，因此，不建议使用它们。但
+即使如此，它们也有自己的价值。事情是这样的，散列算法被广泛使用（特别是执行散列连接和分组），系统必须知道哪种散列函数
+可以用于某种数据类型。然而，这种对应关系不是静态的：它不能被一劳永逸地定义，因为Postgre 10允许在运行中添加新的数
+据类型。因此，它是由散列索引和特定数据类型的运算器类来维护的。散列函数本身由该类的支持函数来表示：
+
+#+begin_src sql
+  select opfname as opfamily_name,
+  amproc::regproc as opfamily_procedure
+  from pg_am am
+  join pg_opfamily opf on opfmethod=am.oid
+  join pg_amproc amproc on amprocfamily=opf.oid
+  where amname='hash'
+  and amprocnum=1
+  order by opfamily_name, opfamily_procedure;
+#+end_src
+
+这些函数返回32位整数。尽管它们没有被记录下来，但它们可以用来计算相应类型的值的哈希代码。
+
+例如，text_ops系列使用hashtext函数：
+
+#+begin_src sql
+  select hashtext('one'), hashtext('two');
+#+end_src
+
+散列索引的运算符类只提供等于运算符：
+
+#+begin_src sql
+  select opfname as opfamily_name
+  left(amopopr::regoperator::text, 20) as opfamily_operator
+  from pg_am am
+  join pg_opfamily opf on opfmethod=am.oid
+  join pg_amop amop on amopfamily=opf.oid
+  where amname='hash'
+  order by opfamily_name, opfamily_operator;
+#+end_src
+
+
+** 属性
+
+让我们看一下哈希访问方法赋予系统的索引级属性
+
+访问方法属性
+
+#+begin_src sql
+  select a.amname, p.name, pg_indexam_has_property(a.oid, p.name)
+  from pg_am a, unnest(array[
+  'can_order', 'can_unique', 'can_multi_col',
+  'can_exclude', 'can_include'
+  ])p(name)
+  where a.amname = 'hash';
+#+end_src
+
+很明显，哈希索引不能用于行排序：哈希函数或多或少地随机混合了数据。
+
+唯一性约束也不被支持。然而，哈希索引可以执行排除性约束，由于唯一支持的函数是等于，这种排除性达到了唯一性的含义：
+
+#+begin_src sql
+  alter table aircrafts_data
+  add constraint unique_range exclude using hash(range with =);
+  insert into aircrafts_data
+  values('744', '{"ru":"Boeing 747-400"}', 11100);
+#+end_src
+
+多列索引和额外的INCLUDE列也不被支持。
+
+索引级属性
+
+#+begin_src sql
+  select p.name, pg_index_has_property('flights_flight_no_idx', p.name)
+  from unnest(array[
+  'clusterable', 'index_scan', 'bitmap_scan', 'backward_scan'
+  ]) p(name);
+#+end_src
+
+散列索引同时支持常规的索引扫描和位图扫描。
+
+不支持通过哈希索引进行表的聚类。这很符合逻辑，因为很难想象为什么可能需要根据哈希函数值对堆数据进行物理排序。
+
+列级属性
+
+#+begin_src sql
+  select p.name,
+  pg_index_column_has_property('flights_flight_no_idx', 1, p.name)
+  from unnest(arrary[
+  'asc', 'desc', 'nulls_first', 'nulls_last', 'orderable',
+  'distance_orderable', 'returnable', 'search_array', 'search_nulls'
+  ]) p(name);
+#+end_src
+
+由于散列函数不保留值的顺序，所有与排序有关的属性都不适用于散列索引。
+
+散列索引不能参与仅有索引的扫描，因为它不存储索引键，需要堆访问。
+
+散列索引不支持NULL值，因为等于操作对它们不适用。
+
+对数组中的元素的搜索也没有实现。
+
+
+
+* B-tree索引
+
+** 概览
+B树（实现为btree访问方法）是一种数据结构，它可以使你从树的根部往下走，快速找到树的叶子节点中的所需元素。为了使
+搜索路径能够被明确地确定，所有的树元素必须是有序的。B树是为有序数数据类型设计的，其数值可以被比较和排序。
+以下是代码上建立索引的示意图，内部节点是水平的矩形；叶子节点是垂直排列的。
+
+[[./images/1nM4AH.png]]
+
+每个树节点包含几个元素，这些元素由一个索引键和一个指针组成。内部节点元素引用下一级的节点；叶子节点元素引用堆图元
+（图示中没有显示这些引用）。
+
+B树具有以下重要特性：
++ 它们是平衡的，这意味着一棵树的所有叶子结点都位于相同的深度。因此，它们保证所有数值的搜索时间相等。
++ 在这个过程中，每个节点都有大量的分支，也就是说，每个节点都包含许多元素，通常是数百个（图中显示的是三元素节点，只
+  是为了清晰起见）。因此，B树的深度总是很小，即使是非常大的表。
+  #+begin_comment
+  我们不能绝对肯定地说这种结构的名称中的字母B代表什么。平衡型和灌木型都同样适合。令人惊讶的是，你经常可以看到它被
+  解释为二进制，这当然是不正确的。
+  #+end_comment
++ 索引中的数据是按升序或降序排序的，在每个节点内和同一级别的所有节点中都是如此。对等节点被绑定到一个双向的列表中，因
+  此可以通过简单地扫描列表来获得一个有序的数据集，而不必每次都从根部开始。
+
+
+** 搜索和插入
+*** 等值搜索
+让我们来看看我们如何通过条件 "indexedcolumn = expression "在树中搜索一个值。我们将尝试找到KJA机场
+
+搜索从根节点开始，访问方法必须确定要下降到哪个子节点。它选择Ki键，对于Ki⩽表达式<Ki+1是满足的。
+
+根节点包含键AER和OVB。 条件AER⩽ KJA < OVB成立，所以我们需要下降到有AER键的元素所引用的子节点。
+
+[[./images/jQgP3H.png]]
+
+
+这个过程是递归重复的，直到我们到达包含所需元组ID的叶节点。在这种特殊情况下，子节点满足条件DME⩽ KJA < KZN，
+所以我们必须下降到有DME键的元素所引用的叶节点。
+
+你可以注意到，树的内部节点中最左边的键是多余的：要选择根的子节点，只要满足条件KJA < OVB就可以了。B树并不存储这
+样的键，所以在接下来的插图中，我将把相应的元素留空。
+
+叶子节点中的所需元素可以通过二进制搜索快速找到。
+
+然而，搜索过程并不像它看起来那么简单。必须考虑到，索引中数据的排序顺序可以是升序，如上图所示，也可以是降序。即使是
+一个唯一的索引也可以有几个匹配的值，而所有这些值都必须被返回。此外，可能会有很多重复的数据，以至于它们不适合一个节
+点，所以邻近的叶子节点也要被处理。
+
+由于一个索引可以包含非唯一的值，将其顺序称为非降序而不是升序（非升序而不是降序）会更准确。但我将坚持使用一个更简单
+的术语。此外，元组ID是索引键的一部分，这让我们认为索引条目是唯一的，即使这些值实际上是相同的。
+
+除此之外，在搜索过程中，其他进程可能会修改数据，页面可能会被分割成两个，树状结构可能会改变。所有的算法都是为了尽可能
+地减少这些并发操作之间的争夺，避免过多的锁，但我们在这里不打算讨论这些技术问题。
+
+*** 不等值搜索
+如果按条件 "索引列⩽表达式"（或 "索引列⩾表达式"）进行搜索，我们必须首先在索引中搜索满足平等条件的值，然后按要求的
+方向遍历其叶子节点，直到到达树的末端。
+
+这张图说明了搜索小于或等于DME的机场代码。
+
+[[./images/V61w6w.png]]
+
+对于小于和大于运算符，过程是相同的，只是必须排除第一个发现的值。
+
+*** 范围搜索
+
+当按范围 "expression1 ⩽ 索引列 ⩽ expression2 "搜索时，我们必须首先找到expression1，然后沿正确方向遍历叶
+子节点，直到找到expression2。这张图说明了在LED和ROV之间（含）搜索的过程。
+
+[[./images/wgP1TQ.png]]
+
+
+*** 插入
+新元素的插入位置是由键的顺序明确定义的。例如，如果你在表中插入RTW机场代码（萨拉托夫），新元素将出现在最后一个
+叶子节点，在ROV和SGC之间。
+
+但是，如果叶子节点没有足够的空间容纳新的元素呢？例如（假设一个节点最多可以容纳三个元素），如果我们插入TJM机场代
+码，最后一个叶子节点将被过度填充。在这种情况下，节点会被分成两个，旧节点的一些元素被移到新节点中，而新的子节点的
+指针会被添加到父节点中。很明显，父节点也会被填满。然后它也被分割成两个节点，以此类推。如果要拆分根节点，则在产生
+的节点上方再创建一个节点，成为树的新根。在这种情况下，树的深度会增加一级。
+
+在这个例子中，TJM机场代码的插入导致了两个节点的分裂；由此产生的新节点在下图中被突出显示。为了确保任何节点都能被
+拆分，双向列表绑定了所有级别的节点，而不仅仅是最低级别的节点。
+
+[[./images/Mkersy.png]]
+
+所描述的插入和拆分程序保证了树保持平衡，由于一个节点可以容纳的元素数量通常相当大，所以树的深度很少增加。
+
+问题是，一旦被分割，节点就不能被合并在一起，即使它们在清理回收后只包含很少的元素。这个限制不是与树形数据结构本身有
+关，而是与它的Postgre实现有关。因此，如果在尝试插入时，节点被证明是满的，访问方法首先尝试修剪多余的数据，以清
+除一些空间，避免额外的分裂。
+
+** 页布局
+B树的每个节点需要一个页面。该页的大小定义了节点的容量。
+
+由于页面的分割，树的根部在不同的时间可以由不同的页面来代表。但是搜索算法必须总是从根开始扫描。它在零索引页（称为
+metapage）中找到当前根页的ID。metapage还包含一些其他的元数据。
+
+[[./images/Zikz1R.png]]
+
+索引页中的数据布局与我们到目前为止所看到的有点不同。所有的页面，除了每一级的最右边，都包含一个额外的 "高键"，它保
+证不比这一页的任何键小。在上图中，高键被突出显示。
+
+让我们使用pageinspect扩展来看看一个建立在六位数的预订参考上的真实索引的一个页面。metapage列出了根页面ID和
+树的深度（级别编号从叶子节点开始，以0为基础）：
+
+#+begin_src sql
+  select root, level
+  from bt_metap('bookings_pkey')
+#+end_src
+
+存储在索引项中的键被显示为字节序列，这其实并不方便：
+
+#+begin_src sql
+  select data
+  from bt_page_items('bookings_pkey', 290)
+  where itemoffset=2;
+#+end_src
+
+为了破译这些值，我们将不得不写一个特设的函数。它不支持所有的平台，也可能对某些特定的场景不起作用，但它对本章的例子
+来说是可行的：
+
+#+begin_src sql
+  create function data_to_text(data text)
+  returns text
+  as $$
+  declare
+  raw bytea := ('\x' || replace(data, ' ', ''))::bytea;
+  pos integer := 0;
+  len integer;
+  res text := '';
+  begin
+  while(octet_length(raw) > pos)
+  loop
+  len := (get_byte(raw, pos)-3)/2;
+  exit when len<=0;
+  if pos>0 then
+  res := res || ', ';
+  end if;
+  res := res || (
+  select string_agg( chr(get_byte(raw, i)), '')
+  from generate_series(pos+1, pos+len) i
+  );
+  pos := pos+len+1;
+  end loop;
+  return res;
+  end;
+  $$ LANGUAGE plpgsql
+#+end_src
+
+现在我们可以看一下根页面的内容了：
+
+#+begin_src sql
+  select itemoffset, ctid, data_to_text(data)
+  from bt_page_items('bookings_pkey', 5135);
+#+end_src
+
+正如我所说的，第一个条目不包含键。ctid列提供了指向子页面的链接。
+
+需要在booking查找E2D725.在这个例子中，必须选择19到页5135
+
+#+begin_src sql
+  select itemoffset, ctid, data_to_text(data)
+  from bt_page_items('bookings_pkey', 5135);
+#+end_src
+
+本页的第一个条目包含了高调，这可能看起来有点出乎意料。从逻辑上讲，它应该被放在页面的末尾，但从实现的角度来看，把它
+放在开头更方便，以避免每次页面内容发生变化时移动它。这里我们选择条目3，然后下到页面11919。
+
+#+begin_src sql
+  select itemoffset, ctid, data_to_text(data)
+  from bt_page_items('bookings_pkey', 5133);
+#+end_src
+
+它是索引的一个叶子页。第一个条目是高键；所有其他条目都指向堆元组
+
+这是bookings元组数据
+
+#+begin_src sql
+  select * from bookings
+  where ctid='(11919, 77)'
+#+end_src
+
+这是bookings表中搜索，低层次执行的操作
+
+#+begin_src sql
+  explain (costs off)
+  select * from bookings
+  where book_ref='E2D725';
+#+end_src
+
+重复数据删除
+
+非唯一的索引可能包含很多重复的键，这些键指向不同的堆元组。由于非唯一的键会出现不止一次，因此会占用很多空间，重复的
+键会被折叠成一个索引条目，其中包含键和相应元组ID的列表。在某些情况下，这个程序（被称为重复数据删除）可以大大
+减少索引的大小。
+
+然而，由于MVCC的原因，唯一索引也可能包含重复的内容：一个索引会保留对表行所有版本的引用。HOT更新的机制可以帮助
+你回收因引用过时的、通常是很短的行版本而导致的索引膨胀，但有时它可能并不适用。在这种情况下，重复数据删除可以争取一
+些时间来删除多余的堆元组，并避免额外的页面分割。
+
+为了避免在重复数据删除没有带来直接好处的情况下浪费资源，只有在叶子页没有足够的空间来容纳一个更多的元组时才会进行折
+叠。然后页面修剪和重复数据删除可以释放一些空间，并防止不希望的页面分割。然而，如果重复的情况很少，你可以通过关闭
+deduplicate_items存储参数来停用重复数据删除功能。
+
+一些索引不支持重复数据删除。主要的限制是，键的相等必须通过简单的二进制比较它们的内部表示来检查。到目前为止，并非
+所有的数据类型都可以通过这种方式进行比较。例如，浮点数（浮点数和双精度）对零有两种不同的表示。任意精度的数字
+（numeric）可以用不同的尺度表示一个相同的数字，而jsonb类型可以使用这样的数字。如果你使用非确定性排序4，允许
+相同的符号由不同的字节序列来表示，那么文本类型也不可能进行重复数据删除（标准排序是确定性的）。
+
+此外，对于复合类型、范围和数组，以及用INCLUDE子句声明的索引，目前不支持重复数据删除。
+
+要检查一个特定的索引是否可以使用重复数据删除，你可以看一下其metapage中的allequalimage字段：
+
+#+begin_src sql 
+  create index on tickets(book_ref);
+  select allequalimage from bt_metap('tickets_book_ref_idx');
+#+end_src
+
+在这种情况下，重复数据删除得到了支持。而事实上，我们可以看到，其中一个叶子页既包含有单一元组ID( htid)的索引条目，
+也包含有IDS(tids)的列表：
+
+#+begin_src sql
+  select itemoffset, htid, left(tids::text, 27) tids,
+  data_to_text(data) as data
+  from bt_page_items('tickets_book_ref_idx', 1)
+  where itemoffset > 1;
+#+end_src
+
+内部索引条目的存储
+
+重复数据删除能够在索引的叶子页中容纳更多的条目。但是，即使叶子页构成了索引的大部分，在内部页中进行的数据压缩以防止额
+外的分裂也同样重要，因为搜索效率直接取决于树的深度。
+
+内部索引条目包含索引键，但是它们的值只用来确定搜索时要下到的子树。在多列索引中，通常取第一个关键属性（或几个第一属
+性）就足够了。其他属性可以被截断以节省页面空间。这种后缀截断发生在一个叶子页被分割，而内部页必须容纳一个新的指针的
+时候。
+
+#+begin_comment
+  理论上，我们甚至可以更进一步，只保留属性的有意义的部分，例如，一行的前几个符号足以区分子树。但是现在还没有实现：
+  一个索引条目要么包含整个属性，要么完全排除这个属性。
+#+end_comment
+
+例如，这里是建立在机票表上的索引的根页面的几个条目，包含booking引用的passenger_name列：
+
+#+begin_src sql
+  create index tickets_bref_name_idx
+  on tickets(book_ref, passenger_name);
+  select itemoffset, ctid, data_to_text(data)
+  from bt_page_items('tickets_bref_name_idx', 229)
+  where itemoffset between 8 and 13;
+#+end_src
+
+我们可以看到，一些索引条目没有第二个属性。
+
+当然，叶子页必须保留所有的键属性和INCLUDE列值（如果有的话）。否则，就不可能进行仅有索引的扫描了。唯一的例外是
+高键；它们可以被部分保留。
+
+** 操作类
+
+比较语义
+
+除了散列值之外，系统还必须知道如何对各种类型的值进行排序，包括自定义的值。这对于排序、分组、合并连接和其他一些操作来
+说是不可缺少的。而就像散列的情况一样，特定数据类型的比较运算符是由运算符类定义的。
+
+操作符类允许我们从名称中抽象出来（如>、<、=），甚至可以提供几种方法来排列同一类型的值。
+
+下面是必须在btree方法的任何运算符类中定义的强制性比较运算符（所示为bool_ops系列）：
+
+#+begin_src sql
+  select amopopr::regoperator as opfamily_operator,
+  amopstrategy
+  from pg_am am
+  join pg_opfamily opf on opfmethod=am.oid
+  join pg_amop amop on amopfamily=opf.oid
+  where amname='btree' and opfname='bool_ops'
+  order by amopstrategy;
+#+end_src
+
+这五个比较运算符中的每一个都对应于一个策略，这就定义了它们的语义：
+
+1. 小于
+2. 小于或等于
+3. 等于
+4. 大于或等于
+5. 大于
+
+一个B-树操作符类还包括几个支持函数。3 第一个必须返回1，如果它的第一个参数大于第二个参数，-1，如果它小于第二个参
+数，0，如果参数相等。其他支持函数是可选的，但它们可以提高访问方法的性能。
+
+为了更好地理解这一机制，我们可以定义一个具有非默认排序的新数据类型。文档中给出了一个关于复数的例子，1但它是用C语
+言写的。幸运的是，B-树操作符类也可以用解释语言来实现，所以我将利用它，做一个尽可能简单的例子（即使是明知效率低下）。
+
+让我们为信息单元定义一个新的复合类型：
+
+#+begin_src sql
+  create type capacity_unit as enum (
+   'B', 'kB', 'MB','GB', 'TB','PB'
+   );
+   create type capacity as (
+   amount integer,
+   unit capacity_unit
+   );
+#+end_src
+
+现在创建一个带有新类型的列的表，并用随机值填充它：
+
+#+begin_src sql
+  create table test as
+  select ((random()*1023)::integer, u.unit)::capacity as cap
+  from generate_series(1,100),
+     unnest(enum_range(NULL::capacity_units)) as u(unit);
+#+end_src
+
+默认情况下，复合类型的值是按词汇表顺序排序的，这与这种特定情况下的自然顺序不一样：
+
+#+begin_src sql
+  select * from test order by cap;
+#+end_src
+
+现在让我们开始创建我们的操作者类。我们将首先定义一个将体积转换为字节的函数：
+
+#+begin_src sql
+  create function capacity_to_bytes(a capacity) returns numeric
+  as $$
+  select a.amount::numeric *
+  1024::numeric ^ (array_position(enum_range(a.unit), a.unit) -1 );
+  $$ language sql strict immutable;
+  select capacity_to_bytes((1, kB)::capacity);
+#+end_src
+
+为该数据类型创建一个操作者函数
+
+#+begin_src sql
+  create function capacity_cmp(a capacity, b capacity)
+  returns integer
+  as $$
+  select sign(capacity_to_bytes(a)-capacity_to_bytes(b));
+  $$ language sql strict immutable;
+#+end_src
+
+现在，使用这个支持函数来定义比较运算符是很容易的。我故意使用奇特的名字来证明它们可以是任意的：
+
+#+begin_src sql
+  create function capacity_lt(a capacity, b capacity) returns boolean
+  as $$
+  begin
+  return capacity_cmp(a,b)<0;
+  end;
+  $$ language plpgsql immutable strict;
+
+  create operator #<# (
+  leftarg=capacity,
+  rightarg=capacity,
+  function=capacity_lt
+  );
+#+end_src
+
+其他四个运算符的定义与此类似。
+
+#+begin_src sql
+  create function capacity_le(a capacity, b capacity) returns boolean
+  as $$
+  begin
+  return capacity_cmp(a,b) <= 0;
+  end;
+  $$  language plpgsql immutable strict;
+  create operator #<=# (
+  leftarg=capacity,
+  rightarg=capacity,
+  function=capacity_le
+  );
+#+end_src
+
+#+begin_src sql
+  create function capaity_eq(a capacity, b capacity) returns boolean
+  as $$
+  begin
+  return capacity_cmp(a,b) = 0;
+  end;
+  $$ language plpgsql immutable strict;
+  create operator #=#(
+  leftarg=capacity,
+  rightarg=capacity,
+  function=capacity_eq,
+  merges -- can be used in merge joins
+  );
+#+end_src
+
+#+begin_src sql
+  create function capacity_ge(a capacity, b capacity) returns boolean
+  as $$
+  begin
+  return capacity_cmp(a, b) >= 0;
+  end;
+  $$ language plpgsql immutable strict;
+  create operator #>=#(
+  leftarg=capacity,
+  rightarg=capacity,
+  function=capacity_ge
+  );
+#+end_src
+
+#+begin_src sql
+  create function capacity_gt(a capacity, b capacity) returns boolean
+  as $$
+  begin
+  return capacity_cmp(a,b) > 0;
+  end;
+  $$ language plpgsql immutable strict;
+  create operator #>#(
+  leftarg=capacity,
+  rightarg=capacity,
+  function=capacity_gt
+  );
+#+end_src
+
+在这个阶段，我们已经可以进行比较:
+
+#+begin_src sql
+  select (1, 'MB')::capacity #># (512, 'KB')::capacity
+#+end_src
+
+一旦操作者类被创建，排序也将按预期开始工作：
+
+#+begin_src sql
+  create operator class capacity_ops
+  default for type capacity -- to be used by default
+  using btree as
+  operator 1 #<#,
+  operator 2 #<=#,
+  operator 3 #=#,
+  operator 4 #>=#,
+  operator 5 #>#,
+  function 1 capacity_cmp(capacity, capacity);
+  select * from test order by cap;
+#+end_src
+
+当一个新的索引被创建时，我们的操作者类被默认使用，这个索引以正确的顺序返回结果：
+
+#+begin_src sql
+  create index on test(cap);
+  select * from test where cap #<# (100, 'B')::capacity
+  order by cap;
+  explain (consts off) select *
+  from test where cap #<# (100, 'B')::capacity order by cap;
+#+end_src
+
+在平等运算符声明中指定的MERGE子句可以对该数据类型进行合并连接。
+
+多列索引和排序
+
+让我们仔细看看多列索引的排序问题。
+
+首先，在声明索引时，选择最佳的列序是非常重要的：页面内的数据排序将从第一列开始，然后转到第二列，以此类推。多列索引
+只有在所提供的过滤条件从第一列开始跨越一个连续的序列时才能保证高效的搜索：第一列、前两列、第一列和第三列之间的范围，
+等等。其他类型的条件只能用于过滤掉根据其他标准获取的多余的值。
+
+下面是在tickets表上创建的索引的第一叶页中的索引条目顺序，其中包括tickets引用的乘客姓名：
+
+#+begin_src sql
+  select itemoffset, data_to_text(data)
+  from bt_page_items('tickets_bref_name_idx', 1)
+  where itemoffset > 1;
+#+end_src
+
+在这种情况下，只有通过订票信息和乘客姓名，或仅通过订票信息，才能有效地搜索到票。
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets
+  where book_ref = '000010';
+#+end_src
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets
+  where book_ref='000010' and passenger_name='LYUDMILA BOGDANOVA';
+#+end_src
+
+但如果我们决定寻找一个乘客的名字，我们必须扫描所有的行：
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets
+  where passenger_name='LYUDMILA BOGDANOVA';
+#+end_src
+
+即使规划器选择执行索引扫描，所有的索引条目仍然要被遍历。不幸的是，规划器不会显示条件实际上只用于过滤结果。
+
+#+begin_comment
+如果第一列没有太多不同的值v1, v2, ... vn，那么在相应的子树上执行几次就会有好处，实际上就是用一系列的搜索条件
+"col2 = value "来代替一次搜索：col1 = v1 and col2 = value col1 = v2 and col2 = value ⋯ col1 = vn
+and col2 = value 这种类型的索引访问被称为跳过扫描，但是它还没有实现。
+#+end_comment
+
+反之亦然，如果在乘客姓名和订票号码上创建索引，它将更适合通过乘客姓名单独查询，或者同时查询乘客姓名和订票参考：
+
+#+begin_src sql
+  create index tickets_name_bref_idx
+  on tickets(passenger_name, book_ref);
+  select itemoffset, data_to_text(data)
+  from bt_page_items('tickets_name_bref_idx', 1)
+  where itemoffset > 1;
+  explain (costs off) select * from tickets
+  where passenger_name='LYUDMILA BOGDANOVA';
+#+end_src
+
+除了列的顺序之外，在创建新的索引时，你还应该注意排序顺序。默认情况下，数值是按升序排序的（ASC），但如果需要的话，你
+可以把它倒过来（DESC）。如果一个索引是在单列上建立的，这并不重要，因为它可以在任何方向上被扫描。但是在一个多列索引
+中，顺序就变得很重要了。
+
+我们新创建的索引可以用来检索按两列升序或降序排序的数据：
+
+#+begin_src sql
+  explain(costs off) select *
+  from tickets
+  order by passenger_name, book_ref;
+  explain (costs off) select *
+  from tickets order by passenger_name desc, book_ref desc;
+#+end_src
+
+但是，如果需要同时按一列升序排序和按另一列降序排序，这个索引就不能马上返回数据。在这种情况下，索引提供的是部分排序
+的数据，必须按第二个属性进一步排序：
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets order by passenger_name asc, book_ref desc;
+#+end_src
+
+NULL值的位置也会影响到使用索引进行排序的能力。默认情况下，NULL值在排序时被认为比普通值 "大"，也就是说，如果排序
+顺序是升序，它们就位于树的右侧，如果排序顺序是降序，它们就位于左侧。NULL值的位置可以通过NULL LAST和NULL
+FIRST子句来改变。
+
+在下一个例子中，索引不满足ORDER BY子句，所以必须对结果进行排序：
+
+#+begin_src sql
+  explain (costs off) select *
+  form tickets order by passenger_name nulls first, book_ref desc;
+#+end_src
+
+但是，如果我们创建一个遵循所需顺序的索引，它将被使用：
+
+#+begin_src sql
+  create index tickets_name_bref_idx2
+  on tickets(passenger_name nulls first, book_ref desc);
+  explain (costs off) select *
+  from tickets order by passenger_name nulls first, book_ref desc;
+#+end_src
+
+** 属性
+让我们来看看B树的接口属性。
+
+访问方法属性
+
+#+begin_src sql
+  select a.amname, p.name, pg_indexam_has_property(a.oid, p.name)
+  from pg_am a, unnest(array[
+  'can_order', 'can_unique', 'can_multi_col',
+  'can_exclude', 'can_include']) p(name)
+  where a.amname='btree';
+#+end_src
+
+B树可以对数据进行排序并确保其唯一性。它是唯一具有这种特性的访问方法。
+
+许多访问方法都支持多列索引，但由于B树中的值是有序的，所以你必须密切注意索引中各列的顺序。
+
+从形式上看，支持排除式约束，但它们仅限于平等条件，这使得它们类似于唯一约束。使用成熟的唯一约束更为可取。
+
+B树索引也可以用额外的不参与搜索的INCLUDE列来扩展。
+
+索引级的属性
+
+#+begin_src sql
+  select p.name, pg_index_has_property('flights_pkey', p.name)
+  from unnest(array[
+  'clusterable', 'index_scan', 'bitmap_scan', 'backward_scan'
+  ])p(name)
+#+end_src
+
+B树索引可用于集群化。
+
+索引扫描和位图扫描都被支持。由于叶子页被绑定成一个双向的列表，一个索引也可以被反向遍历，这将导致反向的排序顺序：
+
+#+begin_src sql
+  explain (costs off) select *
+  from bookings order by book_ref desc;
+#+end_src
+
+列级属性
+
+#+begin_src sql
+  select p.name
+  pg_index_column_has_property('flight_pkey', 1, p.name)
+  from unnest(array[
+  'asc', 'desc', 'nulls_first', 'nulls_last', 'orderable',
+  'distance_orderable', 'returnable', 'search_array', 'search_nulls'
+  ])p(name);
+#+end_src
+
+ORDERABLE 属性表示存储在 B 树中的数据是有序的，而前四个属性（ASC 和 DESC、NULLS FIRST 和 NULLS LAST）定义
+了特定列中的实际顺序。在这个例子中，列值是按升序排序的，NULL值列在最后。
+
+SEARCH NULLS 属性指示是否可以搜索 NULL 值。
+
+B树不支持排序运算符（DISTANCE ORDERABLE），尽管已经试图实现它们。
+
+B-树支持在一个数组中搜索多个元素（SEARCH ARRAY属性），并且可以在不访问堆的情况下返回结果数据（RETURNABLE）。
+
+
+
+* GiST
+
+** 概要
+
+
+
