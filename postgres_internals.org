@@ -882,6 +882,716 @@ B-树支持在一个数组中搜索多个元素（SEARCH ARRAY属性），并且
 * GiST
 
 ** 概要
+GiST(广义搜索树)是一种访问方法，它实际上是平衡搜索树的广义化，适用于支持值的相对定位的数据类型。B-树的适用性仅限于
+允许比较操作的序数类型（但为此类类型提供的支持极为高效）。至于GiST，它的操作符类允许为数据在树中的分布定义任意的标
+准。GiST索引可以容纳空间数据的R树、集合的RD树以及任何数据类型（包括文本和图像）的签名树。
+
+得益于可扩展性，你可以通过实现索引引擎的接口，在 PostgreSQL 中从头开始创建一个新的访问方法。然而，除了设计索引逻
+辑，您还必须定义页面布局、有效的锁定策略和WAL支持。这一切都需要强大的编程能力和大量的实施工作。GiST简化了这一任
+务，解决了所有底层技术问题，并为搜索算法提供了基础。要在新的数据类型中使用GiST方法，只需添加一个新的运算符类，其
+中包括十几个支持函数。与为B树提供的琐碎的操作符类不同，这样的类包含了大部分的索引逻辑。在这方面，GiST可以被视为
+构建新访问方法的框架。
+
+一般来说，属于叶子节点的每个条目（叶子条目）都包含一个谓词（逻辑条件）和一个堆元组 ID。索引关键字必须满足谓词的要
+求；至于关键字本身是否属于该条目，则无关紧要。
+
+内叶中的每个条目（内条目）也包含一个谓词和一个指向子节点的引用；子子树的所有索引数据都必须满足这个谓词。换句话说，内
+部条目的谓词是其所有子条目谓词的联合。GiST的这一重要特性为B树的简单排序提供了服务。
+
+GiST树搜索依赖于一致性函数，这是运算符类定义的支持函数之一。
+
+一致性函数在索引条目上调用，以确定该条目谓词是否与搜索条件（"索引列运算符表达式"）"一致"。对于内条目，它显示我们是
+否必须进入相应的子树；对于叶条目，它检查其索引键是否满足条件。
+
+搜索从根节点开始，这是典型的树形搜索。一致性函数决定了哪些子节点必须遍历，哪些可以跳过。与B树不同，GiST索引可能
+有多个这样的节点。由一致性函数选择的叶节点条目将作为结果返回。
+
+搜索总是深度优先的：算法试图尽快进入叶页。因此，它可以立即开始返回结果，如果用户只需要得到前几行，这就非常有意义了。
+
+要在 GiST树中插入一个新值，不可能使用一致性函数，因为我们需要选择一个节点作为下行节点。
+
+就像在 B 树中一样，被选中的节点可能没有空闲空间，从而导致拆分。这一操作还需要两个函数，其中一个在新旧节点之间分配条
+目；另一个形成两个谓词的联合，以更新父节点的谓词。
+
+随着新值的不断增加，现有的谓词也在不断扩充，通常只有在拆分页面或重建整个索引时才会缩小谓词的范围。因此，GiST索引的
+频繁更新会导致其性能下降。
+
+由于所有这些理论讨论可能显得过于空泛，而且确切的逻辑大多取决于特定的运算符类，因此我将提供几个具体的例子。
+
+** 积分R树
+
+第一个示例涉及平面上点（或其他几何图形）的索引。常规的B树不能用于这种数据类型，因为没有为点定义比较运算符。显然，
+我们可以自己实现这样的运算符，但几何图形需要索引支持完全不同的运算。我将只介绍其中的两种：搜索特定区域内的对象和最近
+邻搜索。
+
+B-树在平面上绘制矩形，这些矩形必须覆盖所有索引点。索引项存储了边界框，谓词可定义如下：点位于此边界框内。
+
+B型树的根节点包含几个大矩形（也可能重叠）。子节点包含与其父节点相匹配的较小矩形，它们共同覆盖所有底层点。
+
+叶节点应包含索引点本身，但GiST要求所有条目具有相同的数据类型；因此，叶条目也用矩形表示，矩形被简单地简化为点。
+
+为了更直观地展示这种结构，让我们来看一看在机场坐标上建立的三层 B 树。在这个示例中，我将演示数据库中的机场表扩展到了
+五千行。此外，我还降低了填充因子值，以使树更深；默认值将为我们提供一个单层树。
+
+#+begin_src sql
+  create table airports_big as
+  select * from airports_big;
+  copy airports_big from
+  '/home/student/internals/airports/extra_airports.copy';
+  create index airports_gist_idx on airports_big
+  using gist(coordinates) with (fillfactor=10);
+#+end_src
+
+在上层，所有的点都包含在几个（部分重叠的）边界框中：
+
+[[./images/kKZ3ML.png]]
+
+在下一层，大矩形被分割成小矩形：
+
+[[./images/Poc8It.png]]
 
 
+最后，在树的内层，每个边界框包含的点数与单页所能容纳的点数相同：
 
+[[./images/zboFkn.png]]
+
+
+该索引使用point_ops运算符类，这是唯一可用的点运算符类。
+
+矩形和任何其他几何图形都可以用同样的方式进行索引，但索引必须存储对象的边界框，而不是对象本身。
+
+页面布局
+
+可以使用pageinspect扩展来研究GiST页面。
+
+与B树索引不同，GiST没有元页，零页总是树的根。如果根页面被拆分，旧的根页面将被移至一个单独的页面，而新的根页面将
+取而代之。
+
+以下是根页面的内容：
+
+#+begin_src sql
+  select ctid, keys
+  from gist_page_items(
+   get_raw_page('airports_gist_idx', 0), 'airports_gist_idx'
+   );
+#+end_src
+
+
+这四行对应于第一幅图中上层的四个矩形。遗憾的是，这里的键是以点的形式显示的（这对叶页来说是合理的），而不是以矩形的形
+式显示的（这对内页来说更合理）。但我们可以随时获取原始数据并自行解释。
+
+#+begin_comment
+  要提取更详细的信息，可以使用gevel扩展，它不包含在标准的PostgreSQL发行版中。
+#+end_comment
+
+操作类
+
+下面的查询返回实现树的搜索和插入操作逻辑的支持函数列表：
+
+#+begin_src sql
+  select amprocnum, amproc::regproc
+  from pg_am am
+  join pg_opclass opc on opcmethod=am.oid
+  join pg_amproc amop on amprocfamily=opcfamily
+  where amname='gist'
+  and opcname='point_ops'
+  order by amprocnum;
+#+end_src
+
+
+上面已经列出了必须具备的功能：
+
+1. 在搜索过程中用于遍历树的一致性函数
+2. union函数合并矩形
+3. penalty函数，用于在插入条目时选择下行子树
+4. picksplit函数，用于在页面分割后在新页面之间分配条目
+5. same函数检查两个键是否相等
+
+point_ops运算符类包括以下运算符：
+
+#+begin_src sql
+  select amopopr::regoperator, amopstrategy as st, oprcode::regproc,
+  left(obj_description(opr.oid, 'pg_operator'), 19) descrioption
+  from pg_am am
+  join pg_opclass opc on opcmethod = am.oid
+  join pg_amop amop on amopfamily = opcfaimly
+  join pg_operator opr on opr.oid = amopopr
+  where amname = 'gist'
+  and opcname = 'point_ops'
+  order by amopstrategy;
+#+end_src
+
+运算符名称通常不会告诉我们太多关于运算符的语义，因此该查询也会显示底层函数的名称及其描述。所有运算符都以这种或那种
+方式处理几何图形的相对位置（左侧、右侧、上方、下方、包含、被包含）以及它们之间的距离。
+
+与 B 树相比，GiST 提供了更多的策略。有些策略编号是几种索引1 的共用编号，而有些则是通过公式计算得出的（例如，28、
+48和68实际上代表了同一种策略：矩形、多边形和圆形都包含这种策略）。此外，GiST还支持一些过时的运算符名称
+（<<| 和 |>>）。
+
+操作符类可能只实现部分可用策略。例如，点的运算器类不支持包含策略，但是在为具有可测量面积的几何体定义的类（box_ops、
+poly_ops 和 circle_ops）中可以使用包含策略。
+
+容器元素的搜索
+
+一个典型的查询可以通过索引加快速度，返回指定区域内的所有点。
+
+例如，我们可以找到所有距离莫斯科市中心1度以内的机场：
+
+#+begin_src sql
+  select airport_code, airport_name->>'en'
+  from airports_big
+  where coordinates <@ '<(37.622513, 55.753220), 1.0>'::circle;
+
+  expalin (costs off) select airport_code
+  from airports_big
+  where coordinates <@ '<(37.622513, 55.753220), 1.0>'::circle;
+#+end_src
+
+我们可以通过下图中的一个微不足道的例子来详细了解这个运算符：
+
+[[./images/h0GqE7.png]]
+
+
+如果以这种方式选择边界框，索引结构将如下所示：
+
+[[./images/anbOi7.png]]
+
+包含运算符 <@ 确定特定点是否位于指定的矩形内。如果索引项的矩形与该矩形有公共点，则该操作符的一致性函数返回 "yes"。
+这意味着，对于叶节点条目（存储简化为点的矩形），该函数确定点是否包含在指定的矩形中。
+
+例如，让我们找出矩形(1,2)-(4,7)的内点，如下图所示：
+
+[[./images/Hka1hm.png]]
+
+
+[[./images/F4qXea.png]]
+
+
+搜索从根节点开始。边界框与(0,0)-(3,4)重叠，但与(5,3)-(9,9)不重叠。这意味着我们不必进入第二个子树。
+
+在下一层，边界框与 (0,3)-(3,4) 重叠，并触及 (0,0)-(3,2) ，因此我们必须检查这两个子树。
+
+一旦我们到达叶节点，我们只需遍历其包含的所有点，并返回满足一致性函数的点。
+
+B树搜索总是选择一个子节点。然而，GiST搜索可能需要扫描多个子树，特别是当它们的边界框重叠时。
+
+最近邻搜索
+
+索引支持的大多数操作符（如前面示例中的=或<@）通常被称为搜索操作符，因为它们定义了查询中的搜索条件。这些操作符是谓词，
+也就是说，它们返回一个逻辑值。
+
+但是还有一组排序操作符，它们返回参数之间的距离。此类操作符在ORDER BY子句中使用，通常由具有DISTANCE ORDERABLE
+属性的索引支持，它能够快速查找指定数量的近邻。这种类型的搜索被称为k-NN或k-近邻搜索。
+
+例如，我们可以找到离科斯特罗马最近的10个机场：
+
+#+begin_src sql
+  select airport_code, airport_name->>'en'
+  from airports_big
+  order by coordinates <-> '(40.926780, 57.767943)'::point
+  limit 10;
+
+  explain (costs off) select airport_code
+  from airports_big
+  order by coordinates <-> '(40.926780, 57.767943)'::point
+  limit 5;
+#+end_src
+
+由于索引扫描会逐个返回结果，并且可以随时停止，因此可以很快找到几个首值。
+
+#+begin_comment
+ 如果没有索引支持，很难实现高效搜索。我们必须找到特定区域内出现的所有点，然后逐步扩大该区域，直到返回所需的结果数。
+ 这将需要多次索引扫描，更不用说选择原始区域大小及其增量的问题了。
+#+end_comment
+
+您可以在系统目录中看到运算符类型（"s "表示搜索，"o "表示排序运算符）：
+
+#+begin_src sql 
+        select amopopr::regoperator, amoppurpose, amopstrategy 
+      from pg_am am 
+      join pg_opclass opc on opcmethod=am.oid 
+      join pg_amop amop on amopfamily=opcfamily 
+      where amname='gist' 
+      and opcname='point_ops'  
+  order by amopstrategy;
+#+end_src
+
+为了支持这种查询，操作符类必须定义一个额外的支持函数：它是距离函数，在索引条目上调用它来计算从存储在这个条目中的值
+到其他值的距离。
+
+对于表示索引值的叶元素，该函数必须返回与该值的距离。在点的情况下，它是一个常规的欧几里得距离，等于
+#+begin_export latex
+\sqrt((x_{2}-x_{1})^{2}-(y_{2}-y_{1})^{2}
+#+end_export
+
+对于一个内部元素，函数必须返回它与其子叶元素之间所有可能距离的最小值。由于扫描所有子元素的成本很高，函数可以乐观地
+低估距离（牺牲效率），但绝不能返回更大的值--这会影响搜索的正确性。
+
+因此，对于由边界框表示的内部元素，点到点的距离可以从常规数学意义上理解：要么是点到矩形之间的最小距离，要么如果点在
+矩形内部则距离为零。这个值很容易计算，不需要遍历矩形的所有子点，并且保证不大于到这些点中任何一点的距离。
+
+让我们考虑搜索点(6,8)的三个近邻的算法：
+
+[[./images/AO2UAo.png]]
+
+
+搜索从根节点开始，根节点包含两个边界框。从指定点到矩形 从指定点到矩形(0,0)-(3,4)的距离为到矩形角(3.4)的距离，等于
+5.o。到(5,3)-(9,9)的距离为 0.0。这里所有的值都四舍五入到小数点后第一位；这样的精度在本例中就足够了。对于本例来说，
+这样的精度已经足够了）。
+
+我们再次选择右侧子树，进入包含三个点的叶节点：距离为 2.0 的 (6,6)，距离为 2.2 的 (8,9)，以及距离为 3.2 的
+(9,7)。
+
+[[./images/xXOaiY.png]]
+
+因此，我们得到了前两个点：(6,6) 和 (8,9)。但是到这个节点的第三个点的距离大于到矩形(5,3)-(8,5)的距离。
+
+因此，现在我们必须进入包含两个点的左侧子节点。到点 (8,5) 的距离是 3.6，而到点 (5,3) 的距离是 5.1。事实证明，前
+一个子节点中的点(9,7)比左侧子树的任何一个节点都更靠近点(6,8)，因此我们可以将其作为第三个结果返回。
+
+[[./images/UenfK8.png]]
+
+本例说明了内部条目的距离函数必须满足的要求。由于矩形(5,3)-(8,5)的距离减小（从3.6减小到3.0），多扫描了一个节
+点，因此搜索效率下降；但是算法本身仍然是正确的。
+
+插入操作
+
+当一个新的键插入到B树中时，该键所使用的节点由penalty函数决定：边界框的大小必须尽可能小。
+
+例如，点(4,7)将被添加到矩形(5,3)-(9,9)中，因为其面积仅增加 6 个单位，而矩形(0,0)-(3,4)的面积将增加 12 个单位。
+在下（叶）层，按照同样的逻辑，该点将添加到矩形(6,6)-(9,9)中。
+[[./images/sdy7bb.png]]
+
+
+假设一个页面最多包含三个元素，则必须将其一分为二，并在新的页面之间分配元素。在这个例子中，结果似乎是显而易见的，但在
+一般情况下，数据分配任务并不那么简单。首先，picksplit函数试图最小化边界框之间的重叠，目的是获得更小的矩形和页面之
+间点的均匀分布。
+
+[[./images/QpjdZO.png]]
+
+
+排他性约束
+
+GiST索引也可用于排除约束中。
+
+排除约束保证任意两个堆元组的指定字段在某些操作符的意义上不相互匹配。必须满足以下条件：
+
++ 排除约束必须由索引方法（CAN Exclude属性）支持。
++ 操作符必须属于该索引方法的操作符类。
++ 运算符必须是交换的，即 "a运算符b = b运算符a "的条件必须为真。
+
+对于上面提到的哈希树和 btree 访问方法，唯一合适的操作符是 equal to。它实际上将一个排除约束变成了唯一约束，这并不
+是特别有用。
+
+GiST方法有两种更适用的策略：
+
++ 重叠：&&运算符
++ djacency: -|- 运算符 (为区间定义)
+
+为了尝试一下，让我们创建一个约束条件，禁止机场之间距离太近。这个条件可以表述为：以机场坐标为圆心的特定半径的圆不能
+重叠：
+
+#+begin_src sql
+  alter table aiports_data add exclude
+  using gist (circle(coordinates, 0.2) with &&);
+  insert into aiports_data(
+  aiport_code, airport_name, city, coordinates, timezone
+  ) values (
+   'ZIA', '{}', '{"en":"Moscow"}', point(38.1517, 55.5533),
+   'Europe/Moscow'
+   );
+#+end_src
+
+当定义排除约束时，会自动添加一个用于执行该约束的索引。这里是在表达式上建立的GiST索引。
+
+让我们来看一个更复杂的例子。假设我们需要允许机场之间的距离很近，但前提是它们必须属于同一个城市。一个可能的解决方案
+是定义一个新的完整性约束，它可以表述如下：如果圆的中心位于机场坐标处，并且相应的城市名称不同，则禁止存在圆相交(&&)
+的行对(!=)。
+
+由于没有文本数据类型的操作符类，尝试创建这样的约束会导致错误：
+
+#+begin_src sql
+  alter table aiports_data
+  drop constraint aiports_data_circle_excl;
+  alter table aiports_data add exclude using gist(
+  circle(coordinates, 0.2) with && ,
+          (city->>'en') with !=
+          );
+#+end_src
+
+然而，GiST 确实提供了诸如 strictly left of、 strictly right of 和 same 等策略，这些策略也可以应用于常规的
+序数数据类型，例如数字或文本字符串。btree_gist扩展专门用于实现GiST对通常用于B树的操作的支持：
+
+#+begin_src sql
+  create extension btree_gist;
+  alter table aiports_data add exclude using gist(
+   circle(coordinates, 0.2) with &&,
+       (city->>'en') with !=
+       );
+#+end_src
+
+约束条件已创建。现在我们不能添加属于同名城镇的茹科夫斯基机场，因为莫斯科机场太近了：
+
+#+begin_src sql
+  insert into aiports_data(
+  airport_code, aiport_name, city, coordinates, timezone
+  )values (
+  'ZIA', '{}', '{"en":"Zhukovskey"}', point(38.1517, 55.5533),
+  'Europe/Moscow');
+#+end_src
+
+但是，如果我们指定莫斯科为该机场的城市，我们就可以做到这一点：
+
+#+begin_src sql
+  insert into aiports_data(
+  aiport_code, aiport_name, city, coodrinates, timezone
+  ) values (
+  'ZIA', '{}', '{"en":"Moscow"}', point(38.1517, 55.5533),
+  'Europe/Moscow');
+#+end_src
+
+需要记住的是，尽管 GiST 支持大于、小于和等于操作，但 B 树在这方面的效率要高得多，尤其是在访问数值范围时。因此，只
+有当GiST索引确实是出于其他合理的原因时，使用上面的btree_gist扩展才是有意义的。
+
+属性
+
+访问方法属性，GiST方法有如下属性
+
+#+begin_src sql
+  select a.amname, p.name, pg_indexam_has_property(a.oid, p.name)
+  from pg_am a, unnest(array[
+  'can_order', 'can_unique', 'can_multi_col',
+  'can_exclude', 'can_include'
+  ]) p(name)
+  where a.amname='gist';
+#+end_src
+
+不支持唯一约束和排序。
+
+GiST索引可以创建额外的INCLUDE列
+
+我们知道，我们可以在多个列上建立索引，也可以在完整性约束中使用索引。
+
+索引级属性 这些属性在索引级别上定义：
+
+#+begin_src sql
+  select p.name, pg_index_has_property('airports_gist_idx', p.name)
+  from unnest(array[
+  'clusterable', 'index_scan', 'bitmap_scan', 'backward_scan'
+  ])p(name);
+#+end_src
+
+GiST索引可用于聚类。
+
+在数据检索方法方面，支持常规（逐行）索引扫描和位图扫描。但是，不允许对GiST索引进行后向扫描。
+
+列级属性
+
+#+begin_src sql
+  select p.name,
+  pg_index_column_has_property('airports_gist_idx', 1, p.name)
+  from unnest(array[
+  'orderable', 'search_array', 'search_nulls'
+  ])p(name);
+#+end_src
+
+禁用所有与排序相关的属性。
+
+NULL值是允许的，但是GiST在处理NULL值时并不有效。我们假定NULL值不会增加边界框；这样的值会被插入到随机子
+树中，因此必须在整棵树中进行搜索。
+
+然而，有几个列级属性确实取决于特定的操作符类：
+
+#+begin_src sql
+  select p.name,
+  pg_index_column_has_property('airports_gist_idx', 1, p.name)
+  from unnest(array[
+  'returnable', 'distance_orderable'
+  ])p(name);
+#+end_src
+
+由于叶节点保留完整的索引键，因此允许只对索引进行扫描。
+
+如上所述，该操作符类为近邻搜索提供了距离操作符。到NULL值的距离被认为是NULL；这样的值最后返回（类似于B树中的
+NULLS LAST子句）。
+
+但是，对于范围类型（表示线段，即线性几何图形，而不是等值几何图形），没有距离运算符，因此对于为此类类型建立的索引，
+该属性是不同的：
+
+#+begin_src sql
+  create table reservations(during tsrange);
+  create index on reservations using gist(during)
+
+  select p.name,
+  pg_index_column_has_property('reservations_during_idx', 1, p.name)
+  from unnest(array[
+  'returnable', 'distance_orderable'
+  ]) p(name);
+#+end_src
+
+** 用于全文搜索的RD树
+
+关于全文搜索
+
+全文搜索的目的是从所提供的文档集中选择与搜索查询相匹配的文档。
+
+要进行搜索，需要将文档转换为 tsvector 类型，其中包含词目及其在文档中的位置。词目是转换成适合搜索的格式的单词。默
+认情况下，所有单词都被归一化为小写，并截去词尾：
+
+#+begin_src sql
+  set default_text_search_config = english;
+  select to_tsvector(
+   'No one can tell me, nobody knows, ' ||
+   'Where the wind comes from, where the wind goes.'
+   );
+#+end_src
+
+所谓的停顿词（如 "the "或 "from"）会被过滤掉：因为它们出现的频率太高，搜索无法返回任何有意义的结果。当然，所有这
+些转换都是可配置的。
+
+搜索查询用另一种类型来表示：tsquery。任何查询都包括一个或多个由逻辑连接词绑定的词素：& (AND)、| (OR)、! (NOT)。
+您还可以使用括号定义运算符优先级。
+
+#+begin_src sql
+  select to_tsquery('wind & (comes | goes)');
+#+end_src
+
+用于全文搜索的唯一操作符是匹配操作符 @@：
+
+#+begin_src sql
+  select amopopr::regoperator, oprcode::regproc, amopstrategy
+  from pg_am am
+  join pg_opclass opc on opcmethod=am.oid
+  join pg_amop amop on amopfamily=opcfamily
+  join pg_operator opr on opr.oid=amopopr
+  where amname='gist'
+  and opcname='tsvector_ops'
+  order by amoostrategy;
+#+end_src
+
+该操作符决定文档是否满足查询要求。下面是一个示例：
+
+#+begin_src sql
+  select to_tsvector('Where the wind comes from, where the wind goes')
+  @@ to_tsvector('wind & coming');
+#+end_src
+
+这绝不是对全文搜索的详尽描述，但这些信息应足以让我们了解索引编制的基本原理。
+
+为了快速工作，全文搜索必须有索引支持。由于被索引的不是文档本身，而是 tsvector 值，因此你有两种选择：要么在表达式
+上建立索引并执行类型转换，要么为 tsvector 类型添加一个单独的列并为该列建立索引。第一种方法的好处是不会浪费任何空间
+来存储 tsvector 值，而实际上并不需要这些值。但它比第二种方法慢，因为索引引擎必须重新检查访问方法返回的所有堆元组。
+这意味着，每重新检查一行，tsvector 值都要重新计算一次，而我们很快就会看到，GiST会重新检查所有的行。
+
+让我们举一个简单的例子。我们要创建一个双列表：第一列存储文档，第二列存储 tsvector 值。我们可以使用触发器来更新第二
+列 ，但更方便的做法是简单地将这一列声明为已生成：
+
+#+begin_src sql
+  create table ts(
+   doc text,
+   doc_tsv tsvecotr generated always as (
+    to_tsvector('pg_catalog.english', doc)
+    )stored
+    );
+    create index ts_gist_idx on ts
+    using gist(doc_tsv);
+#+end_src
+
+#+begin_comment
+ 在上面的示例中，我使用了带有单参数的 to_tsvector 函数，并设置了 english default_text_search_config 参数
+ 来定义全文搜索配置。这个函数的波动类别是 STABLE，因为它隐式地依赖于参数值。但在这里，我应用了另一种明确定义配置
+ 的变量；这种变量是 IMMUTABLE 的，可以在生成表达式中使用。
+#+end_comment
+
+插入一些行
+#+begin_src sql
+  insert into ts(doc)
+  values
+  ('Old MacDonald had a farm'),
+  ('And on his farm he had some cows'),
+  ('Here a moo, there a moo'),
+  ('Everywhere a moo moo'),
+  ('Old Macdonald had a farm'),
+  ('And on his farm he had some chicks'),
+  ('Here a cluck, there a cluck'),
+  ('Everywhere a cluck cluck'),
+  ('Old Macdonald had a farm'),
+  ('And on his farm he had some pigs'),
+  ('here an oink, there an oink'),
+  ('Everywhere an oink oink')
+  return doc_tsv;
+#+end_src
+
+因此，R 树对于索引文档毫无用处，因为边界框的概念对它们毫无意义。因此，我们使用了 RD 树（俄罗斯娃娃）的改进版。这种
+树使用边界集来代替边界框，即包含其子集所有元素的集合。在全文检索中，这种集合包含文档的词目，但在一般情况下，边界集合
+可以是任意的。
+
+在索引条目中表示边界集有几种方法。最简单的方法是枚举集合的所有元素。
+
+它可能是这样的
+
+[[./images/vzJXK6.png]]
+
+要找到满足 DOC_TSV @@ TO_TSQUERY('cow')条件的文档，我们需要深入到已知子条目包含 "cow"词素的节点。
+
+这种表示法的问题显而易见。文档中的词目数量可能非常庞大，而页面大小却有限。即使每份特定的文档单独来看没有太多不同的
+词目，但在树的上层，它们的联合集仍然可能太大。
+
+[[./images/juU0GL.png]]
+
+全文搜索使用另一种解决方案，即更紧凑的签名树。使用过 Bloom 过滤器的人应该对这种方法不陌生。
+
+每个词素都可以用它的签名来表示：一个特定长度的比特串，其中只有一个比特被置 1。
+
+文档的签名是对该文档中所有词条的签名进行比特 OR 运算的结果。
+
+| Suppose we have        | chick                              | 1000000 |
+| assigned the following | cluck                              | 0001000 |
+| signatures to our      | cow                                | 0000010 |
+| lexemes:               | everywher                          | 0010000 |
+|                        | farm                               | 0000100 |
+|                        | macdonald                          | 0100000 |
+|                        | moo                                | 0000100 |
+|                        | oink                               | 0000010 |
+|                        | old                                | 0000001 |
+|                        | pig                                | 0010000 |
+| Then the documents'    | Old MacDonald had a farm           | 0100101 |
+| signatures will be as  | And on his farm he had some cows   | 0000110 |
+| follows:               | Here a moo, there a moo            | 0000100 |
+|                        | Everywhere a moo moo               | 0010100 |
+|                        | And on his farm he had some chicks | 1000100 |
+|                        | Here a cluck, there a cluck        | 0001000 |
+|                        | Everywhere a cluck cluck           | 0011000 |
+|                        | And on his farm he had some pigs   | 0010100 |
+|                        | Here an oink, there an oink        | 0000010 |
+|                        | Everywhere an oink oink            | 0010010 |
+
+索引树可以这样表示
+
+[[./images/5hTISQ.png]]
+
+这种方法的优点显而易见：索引条目大小相同，而且相当小，因此索引相当紧凑。但也有一些缺点。首先，不可能只执行索引扫描，
+因为索引不再存储索引键，每个返回的 TID 都必须由表重新检查。准确性也会受到影响：索引可能会返回许多误报，这些误报必
+须在重新检查时过滤掉。
+
+让我们再来看看 DIC_TSV @@ TO_TSQYERT(‘cows')条件。查询签名的计算方法与文档签名的计算方法相同；在本例中，查询
+签名等于 0000010。一致性函数1必须找到所有在签名中设置了相同位的子节点：
+
+[[./images/cj13sM.png]]
+
+与前面的例子相比，由于存在假阳性命中，这里需要扫描更多的节点。由于签名的容量是有限的，所以在一个大的词集中必然会有
+一些词具有相同的签名。在本例中，"cow "和 "oink "就是这样的词素。这意味着同一个签名可以匹配不同的文档；在这里，查
+询的签名对应三个文档。
+
+假阳性会降低索引的效率，但丝毫不会影响索引的正确性：因为假阴性是可以保证排除的，所以所需的值不会被漏掉。
+
+显然，签名的大小实际上更大。默认情况下，签名大小为 124 字节（992bits），因此发生碰撞的概率远低于本例。如果需要，
+可以使用操作符类参数将签名大小进一步增加到 2000 字节左右：
+
+#+begin_src sql
+  create index ... using gist(column tsvector_ops(siglen = size ));
+#+end_src
+
+此外，如果值足够小（比页面的十六分之一小一点，一个标准页面大约需要 500 字节），tsvector_ops 运算符类保存在索引叶
+页中的是 tsvector 值本身，而不是它们的签名。
+
+为了了解索引是如何在真实数据上运行的，我们可以使用 pgsql-hackers 邮件列表存档。它包含 356125 封电子邮件及其发
+送日期、主题、作者姓名和正文。
+
+让我们添加一个 tsvector 类型的列并建立一个索引。在这里，我将三个值（主题、作者和正文）合并为一个向量，以显示文件
+可以动态生成，而不必存储在单列中。
+
+#+begin_src sql
+  alter table mail_messages add column tsv tsvector
+  generated always as ( to_tsvector(
+  'pg_catalog.english', subject || ' ' || author || ' ' || body_plain
+  )) stored;
+#+end_src
+
+#+begin_src sql
+  create index mail_gist_idx on mail_message using gist(tsv);
+  select pg_size_pertty(pg_relation_size('mail_gist_idx'));
+#+end_src
+
+在填充列的过程中，由于词的大小，一定数量的大词被过滤掉了。但索引一旦准备就绪，就可以用于搜索查询：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select *
+  from mail_messages
+  where tsv @@ to_tsquery('magic & value');
+#+end_src
+
+除了满足条件的 898 条记录外，访问方法还返回了 7859 条记录，这些记录将在之后的重新检查中被过滤掉。如果我们增加签名
+容量，准确性（以及索引效率）将会提高，但索引大小也会增加：
+
+#+begin_src sql
+  drop index mail_message_tsv_idx;
+  create index on mail_messages
+  using gist(tsv tsvector_ops(siglen=248));
+
+  select pg_size_pretty(pg_relation_size('mail_message_tsv_idx'));
+
+  explain (analyze, costs off, timing off, summary off)
+  select *
+  from mail_message
+  where tsv @@ to_tsquery('magic & value');
+#+end_src
+
+属性
+
+我已经介绍了访问方法属性，其中大部分属性对所有操作符类都是一样的。但以下两个列级属性值得一提：
+
+#+begin_src sql
+  select p.name
+  pg_index_column_has_property('mail_messages_tsv_idx', 1, p.name)
+  from unnest(array[
+      'returnable', 'distance_orderable'
+      ])p(name);
+#+end_src
+
+现在只扫描索引是不可能的，因为无法从其签名恢复原始值。在这种特殊情况下完全没问题：tsvector 值只用于搜索，而我们需
+要检索文档本身。
+
+tsvector_ops类的排序运算符也没有定义。
+
+** 其他数据类型
+
+我只考虑了两个最突出的例子。它们表明，尽管 GiST 方法是基于平衡树的，但由于不同运算符类中有不同的支持函数实现，它可
+以用于各种数据类型。当我们谈论 GiST 索引时，我们必须始终指定操作符类，因为它对索引属性至关重要。
+
+以下是 GiST 访问方法目前支持的其他几种数据类型。
+
+1. 几何数据类型
+   除了点之外，GiST 还可以索引其他几何对象：矩形、圆形、多边形。所有这些对象都可以用它们的边界框来表示。
+   cube扩展添加了表示多维立方体的同名数据类型。它们使用带有相应维度边框的 R 树进行索引。
+2. 范围类型
+   PostgreSQL 提供了几种内置的数字和时间范围类型，如 int4range 和 tstzrange。自定义范围类型可使用 CREATE
+   TYPE AS RANGE 命令来定义。
+   GiST 通过 range_ops 运算符类支持任何范围类型，包括标准范围和自定义范围。对于索引，采用的是一维 R 树：在这种
+   情况下，边界框会转换为边界段。
+   也支持多范围类型；它们依赖于 multirange_ops 类。边界范围包括作为多范围值一部分的所有范围。
+   seg 扩展为区间提供了同名数据类型，其边界定义特别精确。它不被视为区间类型，但实际上是，因此它的索引方式与区间类
+   型完全相同。
+3. 序数类型
+   让我们再次回顾一下 btree_gist 扩展：它为 GiST 方法提供了操作符类，以支持各种序数数据类型，这些数据类型通常由
+   B 树建立索引。当其中一列的数据类型不受 B 树支持时，此类操作符类可用于建立多列索引。
+4. 网络地址类型
+   inet 数据类型内置 GiST 支持，可通过 inet_ops 操作符类实现。
+5. 整型数组
+   intarray 扩展扩展了整数数组的功能，为其添加了 GiST 支持。有两类操作符。对于小数组，你可以使用 gist__int_ops
+   它实现了 RD 树，在索引项中完整地表示了键。对于大型数组，可以使用基于 gist__bigint_ops 运算符类的 RD-tree
+   来实现更紧凑但不太精确的签名。
+   #+begin_comment
+      运算符类名称中多余的下划线属于基本类型数组的名称。例如，除了更常用的 int4[] 符号外，整数数组还可以表示为
+      _int4。但没有 _int 和 _bigint 类型。
+   #+end_comment
+6. Ltree
+   ltree 扩展为带有标签的树状结构添加了同名数据类型。GiST 支持通过签名 RD-trees 提供，RD-trees 使用
+   gist_ltree_ops 运算符类处理 ltree 值，使用 gist__ltree_ops 运算符类处理 ltree 类型的数组。
+7. 键值对存储
+   hstore 扩展提供了用于存储键值对的 hstore 数据类型。gist_hstore_ops 运算符类基于签名 RD 树实现了索引支持。
+8. Trigrams
+   pg_trgm 扩展添加了 gist_trgm_ops 类，该类实现了对比较文本字符串和通配符搜索的索引支持。
+
+   
