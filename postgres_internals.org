@@ -1,6 +1,13 @@
 
-* hash索引
+
+
+
+
+
+
+
 
+* hash索引
 ** 概览
 散列索引提供了通过特定索引键快速查找元组ID(TID)的能力。粗略地说，它只是一个存储在磁盘上的哈希表。散列索引所支持的
 唯一操作是通过平等条件进行搜索。
@@ -1594,4 +1601,598 @@ tsvector_ops类的排序运算符也没有定义。
 8. Trigrams
    pg_trgm 扩展添加了 gist_trgm_ops 类，该类实现了对比较文本字符串和通配符搜索的索引支持。
 
-   
+* GIN
+
+** 简介
+根据其作者的解释，GIN 代表的是一种烈性和不畏艰险的精神，而不是一种酒精饮料。但也有一种正式的解释：这个缩写被扩展为
+"Generalized Inverted Index"。
+
+GIN 访问方法专为表示由独立元素组成的非原子值的数据类型而设计（例如，在全文检索中，文档由词条组成）。GiST 将值作为
+一个整体进行索引，而 GIN 则不同，它只对其元素进行索引；每个元素都会映射到包含它的所有值。
+
+我们可以把这种方法比作一本书的索引，它包括所有重要的术语，并列出所有提到这些术语的页面。为了方便使用，索引必须按字
+母顺序排列，否则就无法快速浏览。类似地，GIN 依靠的是复合值的所有元素都可以排序这一事实；它的主要数据结构是 B 树。
+
+GIN 元素树的实现没有普通 B 树那么复杂：它被设计为包含多次重复的小元素集。
+
+这一假设得出了两个重要结论：
++ 一个元素只能在索引中存储一次。
+  每个元素都被映射到一个 TID 列表中，该列表被称为 "posting list"。如果列表较短，则会与元素一起存储；较长的列表
+  会被移到单独的过posting tree中，posting tree实际上是一棵 B 树。就像元素树一样，发布列表也是排序的；从用
+  户的角度来看，这并不重要，但有助于加快数据访问速度和减少索引大小。
+
++ 删除树上的元素毫无意义。
+  即使某个元素的 TID 列表是空的，同一元素也有可能作为其他值的一部分再次出现。
+
+因此，索引是一棵元素树，其叶条目与平面列表或 TID 树绑定。
+
+与 GiST 和 SP-GiST 访问方法一样，GIN 也可以通过操作符类的简化接口来索引各种数据类型。此类操作符通常会检查索引的
+复合值是否与特定元素集相匹配（就像 @@ 操作符会检查文档是否满足全文搜索查询一样）。
+
+要为特定数据类型建立索引，GIN 方法必须能够将复合值分割成元素，对这些元素进行排序，并检查找到的值是否满足查询要求。
+这些操作由操作符类的支持函数实现。
+
+** 全文搜索索引
+
+GIN 主要用于加速全文检索，因此我将继续举例说明 GiST 索引。 正如你所猜测的，这里的复合值就是文档，而这些值的元素就
+是词条。
+
+让我们在 "Old MacDonald "表上建立一个 GIN 索引：
+
+#+begin_src sql
+  create index ts_gin_dx on ts using gin(doc_tsv);
+#+end_src
+
+该指数的可能结构如下所示。与前面的插图不同，这里我提供了实际的 TID 值（灰色背景显示），因为它们对于理解算法非常重
+要。这些值表明堆元组具有以下 ID：
+
+#+begin_src sql
+  select ctid, * from ts;
+#+end_src
+
+[[./images/tLm8IB.png]]
+
+请注意这里与普通 B 树索引的一些不同之处。B 树内部节点最左边的键是空的，因为它们实际上是多余的；而在 GIN 索引中，
+它们根本不会被存储。因此，对子节点的引用也会被转移。两种索引都使用高键，但在 GIN 索引中，高键位于其合法的最右侧位
+置。B 树中的同级节点被绑定到一个双向列表中；而 GIN 使用的是单向列表，因为树的遍历始终只有一个方向。
+
+在这个理论性的例子中，除了 "farm "这个词素外，所有的posting list都适合常规页面。这个词素在多达六个文档中出现，
+因此其 ID 被移到了一个单独的树中。
+
+页面布局
+
+GIN 页面布局与 B 树非常相似。我们可以使用 pageinspect 扩展来窥探索引。让我们在存储 pgsql-hackers 邮件列表电
+子邮件的表上创建一个 GIN 索引：
+
+#+begin_src sql
+  create index mail_gin_idx on mail_messages using gin(tsv);
+#+end_src
+
+零页（元页）包含基本统计数据，如元素和其他类型页面的数量：
+
+#+begin_src sql
+  select * from gin_metapage_info(get_raw_page('mail_gin_idx', 0));
+#+end_src
+
+GIN 使用索引页的特殊空间；例如，该空间存储定义页类型的位：
+
+#+begin_src sql
+  select flags, count(*)
+  from generate_series(0, 22956) as p,
+  gin_page_opaque_info(get_raw_page('mail_gin_idx', p))
+  group by flags
+  order by 2;
+#+end_src
+
+带有元属性的页面当然是元页面。带 data 属性的页面属于posting list，而不带 data 属性的页面则与元素树有关。叶子
+页面带有 leaf 属性。
+
+在下一个示例中，另一个 pageinspect 函数会返回存储在树的叶子页中的 TID 信息。这样一棵树的每个条目实际上都是一个
+小的 TID 列表，而不是单个 TID：
+
+#+begin_src sql
+  select left(tids::text, 60) || '...' tids
+  from gin_leafpage_items(get_raw_page('mail_gin_idx', 24));
+#+end_src
+
+posting list是有序的，因此可以对其进行压缩（这也是同名属性的由来）。它们存储的不是 6 字节的 TID，而是与前一个
+值的差值，差值用可变的字节数表示：1 差值越小，数据占用的空间就越小。
+
+操作类
+
+下面是 GIN 运算符类的支持函数列表：
+
+#+begin_src sql
+  select amprocnum, amproc::regproc
+  from pg_am am
+  join pg_opclass opc on opcmethod=am.oid
+  join pg_amproc amop on amprocfamily=opfamily
+  where amname='gin'
+  and opcname='tsvector_ops'
+  order by amprocnum;
+#+end_src
+
+第一个支持函数比较两个元素（本例中为两个词素）。如果词条是由 B-tree 支持的常规 SQL 类型表示的，那么 GIN 会自动
+使用 B-tree 运算符类中定义的比较运算符。
+
+第五个（可选）函数用于部分搜索，检查索引元素是否与搜索关键字部分匹配。在这种特殊情况下，部分搜索包括通过前缀搜索词
+目。例如，查询 "c: *"对应于所有以字母 "c "开头的词目。
+
+第二个函数从文档中提取词条，而第三个函数则从搜索查询中提取词条。使用不同的函数是合理的，因为至少文档和查询是由不同
+的数据类型表示的，即 tsvector 和 tsquery。此外，搜索查询的函数决定了搜索的执行方式。如果查询要求文档包含特定词
+素，那么搜索将仅限于至少包含查询中指定的一个词素的文档。如果没有这样的条件（例如，如果您需要不包含特定词素的文档），
+则必须扫描所有文档--当然，这样做的成本要高得多。
+
+#+begin_comment
+ 如果查询包含任何其他搜索关键字，则首先按这些关键字扫描索引，然后重新检查这些中间结果。因此，无需全面扫描索引。
+#+end_comment
+
+第四和第六个函数是一致性函数，用于确定找到的文档是否满足搜索查询。作为输入，第四个函数获取查询中指定的词目在文档中
+出现的确切信息。第六个函数是在不确定的情况下运行的，可以在尚不清楚某些词目是否出现在文档中时调用。操作符类不必同时
+实现这两个功能：只需提供其中一个即可，但在这种情况下搜索效率可能会受到影响。
+
+tsvector_ops 运算符类只支持一种与搜索查询匹配文档的运算符： @@，它也包含在 GiST 运算符类中。
+
+搜索
+
+让我们来看看 "everywhere | oink "查询的搜索算法，其中两个词项由 OR 运算符连接。首先，支持函数从 tsquery 类型
+的搜索字符串中提取词条 "everywher "和 "oink"（搜索键）。
+
+由于查询要求包含特定的词目，因此至少包含一个查询关键字的文档的 TID 会被绑定到一个列表中。为此，与每个搜索关键字相
+对应的 TID 会在词条树中被搜索，并被添加到一个公共列表中。索引中存储的所有 TID 都是有序的，因此可以将多个有序的
+TID 流合并为一个索引。
+
+请注意，此时键是否通过 AND、OR 或任何其他运算符组合并不重要：搜索引擎处理的是键列表，对搜索查询语义一无所知。
+
+[[./images/T7HZte.png]]
+
+找到的每个与文档相对应的 TID 都要经过一致性函数的检查。正是该功能解释了搜索查询，并只留下满足查询的 TID（或至少可
+能满足查询的 TID，且必须由表格重新检查）。
+
+在这种特殊情况下，一致性函数会保留所有 TID：
+
+| TID   | "everywher" | "oink" | consistency function |
+|-------+-------------+--------+----------------------|
+| (0,4) | ✓           | -      | ✓                    |
+| (1,4) | ✓           | -      | ✓                    |
+| (2,3) | -           | ✓      | ✓                    |
+| (2,4) | ✓           | ✓      | ✓                    |
+|-------+-------------+--------+----------------------|
+
+搜索查询可以包含前缀，而不是普通词素。如果应用程序用户在搜索字段中输入单词的首字母，并希望立即得到搜索结果，那么前
+缀就非常有用。例如，"pig： *查询将匹配所有包含以 "pig "开头的词素的文档：在这里，我们得到了 "pigs"，如果老麦克
+唐纳在他的农场里饲养了鸽子，我们也会得到 "pigeons"。
+
+这种部分搜索使用一个特殊的支持函数将索引词目与搜索关键字进行匹配；除了前缀匹配外，该函数还可以实现其他部分搜索逻辑。
+
+常用词和罕见词
+
+如果搜索的词条在文档中多次出现，创建的 TID 列表就会变得很长，这当然是低效的。幸运的是，如果查询中也包含一些罕见词
+目，这种情况通常可以避免。
+
+让我们来看看 "farm & cluck "查询。cluck "词素出现了两次，而 "farm "词素则出现了六次。我们没有将这两个词素同等
+对待，也没有根据它们建立完整的 TID 列表，而是将罕见的 "cluck "词素视为必选词素，而将出现频率较高的 "farm "词素
+视为可选词素，因为很明显（考虑到查询语义），带有 "farm "词素的文档只有同时包含 "cluck "词素才能满足查询。
+
+因此，我们通过索引扫描确定了第一个包含 "cluck "的文档，其 TID 为 (1,3)。然后，我们必须找出该文档是否也包含
+"farm "词素，但可以跳过所有 TID 小于 (1,3) 的文档。由于频繁出现的词素很可能与许多 TID 相对应，它们很有可能被存
+储在单独的树中，因此有些页面也可以跳过。在本例中，在 "farm "词条树中的搜索从 (1,3) 开始。
+
+随后的强制词素值将重复这一过程。
+
+显然，这种优化也可以应用于涉及两个以上词性的更复杂搜索场景。该算法按词目出现频率的顺序排列词目，并将其逐一添加到必
+选词目列表中，当剩余词目无法保证文档满足查询要求时，算法就会停止。
+
+例如，我们来看看查询 "farm & ( cluck | chick )"。出现频率最低的词素是 "chick"；它被立即添加到必选词素列表中。
+为了检查其他词素是否可以被视为可选词素，一致性函数对必选词素取 false，对所有其他词素取 true。函数返回 true AND
+(true OR false) = true，这意味着其余词素是 "自给自足 "的，它们中至少有一个必须成为必选词素。
+
+下一个出现频率最低的词素（"cluck"）被添加到列表中，现在一致性函数返回 true AND (false OR false) = false。
+因此，"chick "和 "cluck "词素成为必选词素，而 "farm "仍然是可选词素。
+
+[[./images/rc63ga.png]]
+
+
+posting list 的长度为三，因为必填词目出现了三次：
+
+| TID   | "chick" | "cluck" | "farm" | consistency function |
+|-------+---------+---------+--------+----------------------|
+| (1,2) | ✓       | -       | ✓      | ✓                    |
+| (1,3) | -       | ✓       | -      | -                    |
+| (1,4) | -       | ✓       | -      | -                    |
+|-------+---------+---------+--------+----------------------|
+
+因此，如果知道词素频率，就可以用最有效的方式合并词素树，从罕见词素开始，跳过那些肯定是多余的频繁词素的页面范围。这
+样可以减少调用一致性函数的次数。
+
+为了确保这种优化确实有效，让我们查询一下 pgsql-hackers 档案。我们需要指定两个词目，一个常见词目和一个罕见词目：
+
+#+begin_src sql
+  select word, ndoc
+  from ts_stat('select tsv frm mail_messages')
+  where word in ('wrote', 'tattoo');
+#+end_src
+
+事实证明，确实存在一份同时包含这两份内容的文件：
+
+#+begin_src sql
+  \timing on
+  select count(*) from mail_messages
+  where tsv @@ to_tsquery('wrote & tattoo');
+#+end_src
+
+该查询的执行速度几乎与搜索单词 "tattoo "一样快：
+
+#+begin_src sql
+  select count(*) from mail_messages
+  where tsv @@ to_tsquery('tatoo')'
+#+end_src
+
+但是，如果我们要找的是 "wrote "这个单词，搜索时间会更长：
+
+#+begin_src sql
+  select count(*) from mail_messages
+  where tsv @@ to_tsquery('wrote');
+#+end_src
+
+插入
+
+GIN 索引不能包含重复内容；如果要添加的元素已经存在于索引中，其 TID 只需添加到已存在元素的posting list或树状
+结构中即可。posting list是索引条目中的一部分，它不能占用页面中过多的空间，因此如果超出了分配的空间，列表就会变
+成树状。
+
+当一个新元素（或新 TID）被添加到树中时，可能会出现页面溢出；在这种情况下，页面会被一分为二，元素会在它们之间重新
+分配。
+
+但是，每个文档通常都包含许多需要索引的词目。因此，即使我们只创建或修改了一个文档，索引树仍然会经历大量的修改。这
+就是 GIN 更新相当缓慢的原因。
+
+下图显示了在表中插入 TID 为 (4,1) 的 "Everywhere clucks, moos, and oinks "行后树的状态。扩展了 "cluk"、
+"moo "和 "oink "的词条列表；"everywher "的词条列表超过了最大值，被分割成一棵独立的树。
+
+不过，如果一次更新索引以纳入与多个文档相关的更改，那么与连续更改相比，总工作量可能会减少，因为这些文档可能包含一些
+共同词目。
+
+这一优化由 fastupdate 存储参数控制。延迟的索引更新会累积到一个无序的待定列表中，该列表实际存储在元素树之外的单独
+列表页中。该列表的最大大小由 4MB gin_pending_list_limit 参数或同名索引存储参数确定。
+
+[[./images/vqGXad.png]]
+
+默认情况下，这种延迟更新是启用的，但你应该记住，它们会减慢搜索速度：除了树本身，还必须扫描整个无序词条列表。此外，
+插入时间的可预测性也会降低，因为任何变化都可能导致溢出，从而引发昂贵的合并过程。在索引抽真空过程中，合并也可以异步
+进行，这在一定程度上缩短了合并时间。
+
+创建新索引 时，元素也是分批添加的，而不是逐个添加，因为这样速度太慢。所有更改不会被保存到磁盘上的无序列表中，而是累
+积到一个 64MB 的 maintenance_work_mem 内存块中，一旦该内存块没有可用空间，就会被转移到索引中。为这一操作分配的
+内存越多，建立索引的速度就越快。
+
+本章提供的示例证明，就搜索精度而言，GIN 优于 GiST 签名树。因此，GIN 通常被用于全文检索。不过，如果数据更新频繁，
+GIN 更新速度慢的问题可能会使 GiST 更受青睐。
+
+限制结果集大小
+
+GIN 访问方法总是以位图的形式返回结果，不可能逐个获取 TID。换句话说，支持 BITMAP SCAN 属性，但不支持 INDEX SCAN
+属性。
+
+造成这种限制的原因是延迟更新的无序列表。在索引访问的情况下，该列表会被扫描以建立一个位图，然后用树的数据更新该位图。
+如果在搜索过程中无序列表与树合并（作为索引更新的结果或在抽真空过程中），一个相同的值可能会返回两次，这是不可接受的。
+但对于位图来说，这不会造成任何问题：相同的位只会被设置两次。
+
+因此，使用 LIMIT 子句和 GIN 索引的效率并不高，因为位图仍需全部建立，这在总成本中占了相当大的比例：
+
+#+begin_src sql
+  expalin select * from mail_messages
+  where tsv @@ to_tsquery('hacker')
+  limit 1000;
+#+end_src
+
+因此，GIN 方法提供了一个特殊功能，可以限制索引扫描所返回结果的数量。该限制由 gin_fuzzy_search_limit 参数施加，
+默认情况下该参数处于关闭状态。如果启用该参数，索引访问方法将随机跳过某些值，以获得大致指定的行数（因此被称为 "模
+糊"）：
+
+#+begin_src sql
+  set gin_fuzzy_search_limit=1000;
+  select count(*)
+  from mail_messages
+  where tsv @@ to_tsquery('hacker');
+#+end_src
+
+#+begin_src sql
+  select count(*)
+  from mail_messages
+  where tsv @@ to_tsquery('hacker');
+#+end_src
+
+
+#+begin_src sql
+  reset gin_fuzzy_search_limig;
+#+end_src
+
+请注意，这些查询中没有 LIMIT 子句。这是使用索引扫描和堆扫描获取不同数据的唯一合法方式。规划器对 GIN 索引的这种行
+为一无所知，因此在估算成本时不会考虑该参数值。
+
+属性
+
+gin 访问方法的所有属性在所有级别上都是相同的，它们并不依赖于特定的操作符类别。
+
+访问方法属性
+
+#+begin_src sql
+  select a.amname, p.name, pg_indexam_has_property(a.oid, p.name)
+  from pg_am a, unnest(array[
+  'can_order', 'can_unique', 'can_multi_col',
+  'can_exclude', 'can_include'
+  ])p(name)
+  where a.amname='gin';
+#+end_src
+
+GIN 既不支持排序，也不支持唯一约束。
+
+支持多列索引，但值得一提的是，其列的顺序并不重要。与普通的 B 树不同，多列 GIN 索引不存储复合键，而是用相应的列编
+号扩展独立的元素。
+
+由于 INDEX SCAN 属性不可用，因此无法支持排除限制。
+
+GIN 不支持额外的 INCLUDE 列。这类列在这里没有太大意义，因为几乎不可能使用 GIN 索引作为覆盖：它只包含索引值的单独
+元素，而索引值本身存储在表中。
+
+索引级属性
+
+#+begin_src sql
+  select p.name, pg_index_has_property('mail_gin_idx', p.name)
+  from unnest(array[
+  'clusterable', 'index_scan', 'bitmap_scan', 'backwoard_scan'
+  ])p(name);
+#+end_src
+
+不支持逐个获取结果：索引访问总是返回一个位图。
+
+出于同样的原因，使用 GIN 索引对表重新排序也是没有意义的：位图总是与表中数据的物理布局相对应，不管它是什么。
+
+不支持后向扫描：该功能适用于常规索引扫描，不适用于位图扫描。
+
+列级属性
+
+#+begin_src sql
+  select p.name,
+  pg_index_column_has_property('mail_gin_idx', 1, p.name)
+  from unnest(array[
+  'orderable', 'search_array', 'search_nulls',
+  'returnable', 'distance_orderable'
+  ])p(name);
+#+end_src
+
+列级属性都不可用：既不能排序（原因显而易见），也不能使用索引作为覆盖（因为文档本身并不存储在索引中）。也不支持 NULL
+（对于非原子类型的元素没有意义）。
+
+GIN的限制和RUM指数
+
+尽管 GIN 功能强大，但它仍无法解决全文检索的所有难题。尽管tsvector 类型确实能指示词目位置，但这些信息并不能进入
+索引。因此，GIN 无法用于加快短语搜索，因为短语搜索需要考虑词素的邻近性。此外，搜索引擎通常按照相关性（不管这个词是
+什么意思）来返回结果，由于 GIN 不支持排序运算符，因此唯一的解决方案就是为每一行结果计算排序函数，这当然会非常慢。
+
+RUM 访问方法（它的名字让我们怀疑开发人员对 GIN 真正含义的诚意）解决了这些缺点。
+
+这种访问方法是作为扩展提供的；您可以从 PGDG 软件库中下载相应的软件包，或者获取源代码本身。
+
+RUM 基于 GIN，但两者有两个主要区别。首先，RUM 不提供延迟更新，因此除了位图扫描外，它还支持常规的索引扫描，并实现
+了排序操作符。其次，RUM 索引键可以扩展附加信息。这一功能在某种程度上类似于 INCLUDE 列，但在这里，附加信息被绑定
+到特定的键上。在全文搜索中，RUM 运算符类可将词素出现映射到其在文档中的位置，从而加快短语搜索和结果排序。
+
+这种方法的缺点是更新速度较慢，索引规模较大。此外，由于RUM访问方法是作为扩展提供的，它依赖于通用 WAL 机制，这比
+内置日志更慢，而且会产生更大的 WAL。
+
+** Trigrams
+
+pg_trgm 扩展可以通过比较重合的三个字母序列（trigrams）的数量来评估词语的相似性。单词相似性可与全文搜索一起使用，
+即使要搜索的单词在输入时有错别字，也能返回一些结果。
+
+gin_trgm_ops 运算符类实现了文本字符串索引。为了找出文本值中的元素，它提取各种三字母子串，而不是单词或词目（只考
+虑字母和数字，其他字符忽略不计）。在索引中，三字符串表示为整数。需要注意的是，对于UTF-8 编码中需要 2 至 4 个字节
+的非拉丁字符，这种表示法无法解码原始符号。
+
+#+begin_src sql
+  create extension pg_trgm;
+  select unnest(show_trgm('macdonald')),
+         unnest(show_trgm('McDonald'));
+#+end_src
+
+该类支持精确和模糊比较字符串和单词的操作符。
+
+#+begin_src sql
+  select amopopr::regoperator, oprcode::regproc
+  from pg_am am
+  join pg_opclass opc on opcmethod=am.oid
+  join pg_amop amop on amopfamily=opcfamily
+  join pg_operator opr on opr.oid=amopopr
+  where amname='gin'
+  and opcname='gin_trgm_ops'
+  order by amopstrategy;
+#+end_src
+
+为了进行模糊比较，我们可以将字符串之间的距离定义为共同卦数与查询字符串中卦数之比。但如前所述，GIN 不支持排序操作
+符，因此该类中的所有操作符都必须是布尔型的。因此，对于执行模糊比较策略的 %、%> 和 %>> 操作符，如果计算出的距离不
+超过定义的阈值，一致性函数就会返回 true。
+
+对于 = 和 LIKE 操作符，一致性函数要求值包含查询字符串中的所有三元组。根据正则表达式匹配文档需要进行更复杂的检查。
+
+无论如何，trigram搜索总是模糊的，搜索结果必须重新检查。
+
+**  索引数组
+
+GIN 还支持数组数据类型。通过在数组元素上建立 GIN 索引，可以快速确定一个数组是否与另一个数组重叠或包含在另一个数组
+中：
+
+#+begin_src sql
+  select amopopr::regoperator, oprcode::regproc, amopstrategy
+  from pg_am am
+  join pg_opclass opc on opcmethod=am.oid
+  join pg_amop amop on amopfamily=opcfamily
+  join pg_operator opr on opr.oid=amopopr
+  where amname='gin'
+  and opcname='array_ops'
+  order by amopstrategy;
+#+end_src
+
+以演示数据库中显示航班信息的路线视图为例。Days_of_week 列是一个数组，包含一周中执行航班的天数。要建立索引，我们首
+先要将视图实体化：
+
+#+begin_src sql
+  create table routes_tbl as select * from routes;
+  create index on routes_tbl using gin(days_of_week);
+#+end_src
+
+让我们使用创建的索引来选择在周二、周四和周日起飞的航班。我关闭了顺序扫描；否则，计划器不会为这样一个小表使用索引：
+
+#+begin_src sql
+  set enable_seqscan=off;
+  explain (costs off) select * from routes_tbl
+  where days_of_week=array[2,4,7];
+#+end_src
+
+原来，这样的航班共有 11 次：
+
+#+begin_src sql
+  select flight_no, departure_airport, arrival_aiport,
+  days_of_week
+  from routes_tbl
+  where days_of_week = array[2,4,7];
+#+end_src
+
+建立的索引只包含七个元素：从 1 到 7 的整数，代表一周的天数。
+
+查询的执行与之前展示的全文检索非常相似。在这种特殊情况下，搜索查询由普通数组而非特殊数据类型表示；我们假定索引数组
+必须包含所有指定元素。这里的一个重要区别是，相等条件还要求索引数组不包含其他元素。一致性函数通过策略编号知道了这一
+要求，但它无法验证是否存在不需要的元素，因此它要求索引引擎通过表格重新检查结果：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select * from routes_tbl
+  where days_of_week=array[2,4,7];
+#+end_src
+
+使用附加列扩展 GIN 索引可能很有用。例如，为了搜索每周二、周四和周日从莫斯科起飞的航班，索引缺少 departure_city
+列。但常规标量数据类型没有操作符类：
+
+#+begin_src sql
+  create index on routes_tbl using gin(days_of_week, departure_city);
+#+end_src
+
+这种情况可以通过 btree_gin 扩展来解决。它添加了 GIN 运算符类，通过将标量值表示为包含单个元素的复合值来模拟常规的
+B 树处理。
+
+#+begin_src sql
+  create extension btree_gin;
+  create index on routes_tbl using gin(days_of_week, departure_city);
+  explain (costs off)
+  select * from routes_tbl
+  where days_of_week = array[2,4,7]
+  and departure_city='Moscow';
+  reset enable_seqscan;
+#+end_src
+
+关于 btree_gist 的评论也适用于 btree_gin：在进行比较操作时，B 树的效率要高得多，因此只有在真正需要 GIN 索引时，
+才有必要使用 btree_gin 扩展。例如，通过小于或小于等于条件进行的搜索可以在 B 树中通过后向扫描执行，但在 GIN 中则
+不行。
+
+
+** 索引JSON
+
+jsonb_ops 操作符类是默认的操作符类。原始 JSON 文档中的所有键、值和数组元素都会转换成索引项。它能加快检查是否包含
+JSON 值 (@>)、是否存在键 (?、?| 和 ?&) 或是否与 JSON 路径匹配 (@? 和 @@) 的查询速度：
+
+#+begin_src sql
+  select amopopr::regoperator, oprcode::regproc, amopstrategy
+  from pg_am am
+  join pg_opclass opc on opcmethod=am.oid
+  join pg_amop amop on amopfamily=opcfamily
+  join pg_operator opr on opr.oid=amopopr
+  where amname='gin'
+  and opcname='jsonb_ops'
+  order by amopstrategy;
+#+end_src
+
+让我们把路由视图中的几行转换成 JSON 格式：
+
+#+begin_src sql
+  create table routes_jsonb as
+  select to_jsonb(t) route
+  from (
+  select departure_aiport_name, arrival_airport_name, days_of_week
+  from routes
+  order by flight_no
+  limit 4
+  );
+  select ctid, jsonb_pretty(route) from routes_jsonb;
+#+end_src
+
+#+begin_src sql
+  create index on routes_jsonb using gin(route);
+#+end_src
+
+创建的索引如下所示：
+
+[[./images/AWQKPK.png]]
+
+让我们考虑一个带条件路由 @> '{"days_of_week"： [6]}'，它会选择包含指定路径（即周六执行的航班）的 JSON 文档。
+
+支持函数从搜索查询的 JSON 值中提取搜索键： 支持函数从搜索查询的值中提取搜索关键字："days_of_week "和 "6"。
+对于包含策略，该函数要求所有搜索键都可用，但结果仍需由表格重新检查：从索引的角度来看，指定路径也可以对应于类似
+{"days_of_week"： [2], "foo"： [6]}.
+
+jsonb_path_ops操作类
+
+第二个类名为 jsonb_path_ops，包含的操作符较少：
+
+#+begin_src sql
+  select amopopr::regoperator, oprcode::regproc, amopstrategy
+  from pg_am am
+  join pg_opclass opc on opcmethod=am.oid
+  join pg_amop amop on amopfamily=opcfamily
+  join pg_operator opr on opr.oid=amopopr
+  where amname='gin'
+  and opcname='jsonb_path_ops'
+  order by amopstrategy;
+#+end_src
+
+如果使用该类，索引将包含从文档根指向所有值和所有数组元素的路径，而不是孤立的 JSON 片段。这将使搜索更精确、更高效，
+但对于使用独立键而非路径表示的参数的操作，速度不会提高。
+
+由于路径可能相当长，因此真正被索引的不是路径本身，而是其哈希值。
+
+让我们使用该操作符类为同一个表创建一个索引：
+
+#+begin_src sql
+  create index on routes_jsonb using gin(route jsonb_path_ops);
+#+end_src
+
+创建的索引可以用以下树形结构表示：
+
+[[./images/iE6aBN.png]]
+
+
+当执行具有相同条件路由 @> '{"days_of_week"： [6]}"时，支持函数提取的是整个路径 "days_of_week, 6"，而不是其
+单独的组成部分。这样就能立即在元素树中找到两个匹配文档的 TID。
+
+显然，这些条目将由一致性函数进行检查，然后由索引引擎重新检查（例如，排除哈希碰撞）。但是，通过树进行搜索的效率要高
+得多，因此，如果 jsonb_path_ops 类的运算符提供的索引支持足以满足查询的需要，那么选择 jsonb_path_ops 类是有道
+理的。
+
+
+** 索引其他数据类型
+
+还通过扩展为以下数据类型提供 GIN 支持：
+
++ 整型数组intarray 扩展为整数数组添加了 gin__int_ops 操作符类。它与标准的 array_ops 运算符类非常相似，但它支持
+  匹配运算符 @@，可将文档与搜索查询进行匹配。
++ 键值存储 hstore 扩展实现了键值对的存储，并提供了 gin_hstore_ops 运算符类。键和值都有索引。
++ JSON查询语言 外部 jsquery 扩展为 JSON 提供了自己的查询语言和 GIN 索引支持。
+
+#+begin_comment
+ 在采用 SQL:2016 标准并在 PostgreSQL 中实现 SQL/JSON 查询语言后，标准内置功能似乎是更好的选择。
+#+end_comment
+
+
+
+
+
