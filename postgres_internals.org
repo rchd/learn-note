@@ -475,6 +475,651 @@ plane准备语句已经执行过一次。在接下来的三次执行之后，服
 响应所产生的通信开销就越少。但是，随着批量大小的增加，这些优势就变得不那么明显了：虽然逐条获取记录和批量获取 10 条
 记录之间的差异可能很大，但如果比较 100 条和 1000 条记录的批量，差异就不那么明显了。
 
+* 统计数据
+
+** 基本的统计数据
+基本的表相关数据存储在catalog目录的pg_class包含如下数据
+
++ 表中所有元组数(reltuples)
++ 表大小，以页为单位(relpages)
++ 在可见性中标记的页数量(relallvisible)
+
+
+flights表的在pg_class中的数据
+  
+#+begin_src sql
+  select reltuples, relpages, relallvisible
+  from pg_class where relname='flights';
+#+end_src
+
+如果查询不附加任何过滤条件，则以 reltuples 值作为估计的Cardinality
+
+#+begin_src sql
+  explain select * from flights;
+#+end_src
+
+在手动和自动的表格分析过程中都会收集统计数据。此外，由于基本统计数据至关重要，因此在进行其他一些操作（VACCUM FULL
+和 CLUSTER、CREATE INDEX 和 REINDEX）时也会计算这些数据，并在抽清理时进行完善。
+
+为便于分析，将对 300×100 default_statistics_target 随机行进行采样。建立特定精度的统计数据所需的样本大小与分
+析数据量的关系不大，因此不考虑表的大小。
+
+取样行是从相同数量（300 × default_statistics_target）的随机页中抽取的。显然，如果表格本身较小，读取的页数可能
+较少，被选中进行分析的行数也较少。
+
+在大型表格中，统计数据收集并不包括所有行，因此估计值可能与实际值有偏差。这很正常：如果数据不断变化，统计数据无论如
+何也不可能一直准确。通常一个数量级的精确度就足以选择一个合适的计划。
+
+让我们创建一个禁用autovacuum的flights副本，以便控制自动分析的启动时间：
+
+#+begin_src sql
+  create table flights_copy(like flights)
+  with (autovacuum_enable = false);
+#+end_src
+
+目前数据的表的统计
+
+#+begin_src sql
+  select reltuples, relpages, relallvisible
+  from pg_class where relname='flights_copy';
+#+end_src
+
+reltuples = -1 的值用于区分尚未分析的表和没有任何行的真正空表。
+
+在创建表格后，很可能会立即向表中插入一些行。因此，在不了解当前情况的情况下，规划器假设表包含 10 页：
+
+#+begin_src sql
+  explain select * from flights_copy;
+#+end_src
+
+行数是根据单行的大小估算的，在计划中显示为宽度。行宽通常是在分析过程中计算出的平均值，但由于尚未收集统计数据，这里
+只是根据列数据类型进行近似估算。
+
+现在，让我们从flights表中复制数据并进行分析：
+
+#+begin_src sql
+  insert into flights_copy select * from flights;
+  analyze flights_copy;
+#+end_src
+
+收集的统计数据反映了实际行数（表的大小足够小，分析仪可以收集所有数据的统计数据）：
+
+#+begin_src sql
+  select reltuples, relpages, relallvisible
+  from pg_class where relname='flights_copy';
+#+end_src
+
+relallvisible 值用于估算仅索引扫描的成本。该值由 VACUUM 更新：
+
+#+begin_src sql
+  vaccum flights_copy;
+  select relallvisible from pg_class where relname='flights_copy';
+#+end_src
+
+现在，让我们在不更新统计信息的情况下将记录数增加一倍，并检查查询计划中的Cardinality估计值：
+
+#+begin_src sql
+  insert into flights_copy select * from flights;
+  select count(*) from flights_copy;
+  explain select * from flights_copy;
+#+end_src
+
+尽管 pg_class 数据已经过时，但估算结果仍然是准确的：
+
+#+begin_src sql
+  select reltuples, relpages
+  from pg_class where relname='flights_copy';
+#+end_src
+
+由于文件大小比 relpages 增加了一倍，规划器会在假设数据密度不变的情况下调整估计的行数：
+
+#+begin_src sql
+  select reltuples *
+  (pg_relation_size('flights_copy') / 8192) / relpages as tuples
+  from pg_class where relname='flights_copy';
+#+end_src
+
+当然，这种调整不一定总能奏效（例如，如果我们删除一些行，估计结果将保持不变），但在某些情况下，它可以让规划器坚持到
+重大变化触发下一次分析运行。
+
+** NULL 值
+虽然理论家们对 NULL 值嗤之以鼻，但它在关系数据库中仍然发挥着重要作用：它提供了一种方便的方法来反映一个未知或不存在
+的值。
+
+然而，特殊的价值需要特殊的处理方法。除了理论上的不一致性，我们还必须考虑多种实际挑战。常规的布尔逻辑被三值逻辑所取
+代，因此 NOT IN 的表现出乎意料。不清楚 NULL 值应被视为大于还是小于常规值（因此在排序时使用了 NULLS FIRST 和
+NULL LAST 子句）。聚合函数是否必须考虑 NULL 值，这一点也不太清楚。严格来说，NULL 值根本就不是值，因此规划器需要
+额外的信息来处理它们。
+
+除了在表级别收集最简单的基本统计信息外，分析器还收集关系中每一列的统计信息。这些数据存储在系统目录的 pg_statistic
+表中，但也可以通过 pg_stats 视图访问，该视图以更方便的格式提供这些信息。
+
+NULL值比例属于列级统计；在分析过程中计算得出，显示为 null_frac 属性。
+
+例如，在搜索尚未起飞的航班时，我们可以依赖于其起飞时间未定义：
+
+#+begin_src sql
+  explain select * from flights where actual_departure is null;
+#+end_src
+
+为了估算结果，规划器会将总行数乘以 NULL 值的比例：
+
+#+begin_src sql
+  select round(reltuples * s.null_frac) as rows
+  from pg_class
+  join pg_stats s on s.tablename=relname
+  where s.tablename='flights'
+  and s.attname='actual_departure';
+#+end_src
+
+下面是实际行数：
+
+#+begin_src sql
+  select count(*) from flights where actual_departure is null;
+#+end_src
+
+** 不重复值
+pg_stats 视图的 n_distinct 字段显示列中不同值的数量。
+
+如果 n_distinct 为负数，其绝对值表示列中唯一值的比例，而不是实际的列数。例如，-1 表示所有列中的值都是唯一的，而
+-3 则表示每个值平均出现在三行中。如果估计的唯一值数量超过总行数的 10%，分析器就会使用分数；在这种情况下，进一步的
+数据更新不太可能改变这一比例。
+
+[[./images/rWsuJI.png]]
+
+如果预期数据分布均匀，则使用不同值的数量来代替。例如，在估算 "列 = 表达式 "条件的Cardinality数时，如果表达式
+的确切值在规划阶段未知，规划器就会假设表达式可以以相同概率取任意列值：
+
+#+begin_src sql
+  explain select *
+  from flights
+  where depatrue_airport=(
+  select airport_code from aiprots where city='Saint Petersburg'
+  );
+#+end_src
+
+在这里，InitPlan 节点只执行一次，计算值将用于主计划。
+
+#+begin_src sql
+  select round(reltuples / s.n_distinct) as rows
+  from pg_class
+  join pg_stat s on s.tablename=relname
+  where s.tablename='flights'
+  and s.attname='departure_airport';
+#+end_src
+
+如果估计的不同值数量不正确（因为分析的行数有限），则可以在列级覆盖：
+
+#+begin_src sql
+  alter table ...
+      alter column ...
+      set (n_distinct = ...);
+#+end_src
+
+如果所有数据总是均匀分布，那么这些信息（加上最小值和最大值）就足够了。然而，对于非均匀分布（这在实践中更为常见），
+这种估计是不准确的：
+
+#+begin_src sql
+  select min(cnt), round(avg(cnt)) avg, max(cnt)
+  from (
+  select depature_airport, count(*) cnt
+  from flights
+  group by depature_airport
+  )t;
+#+end_src
+
+** most_common_vals值
+如果数据分布不均匀，则会根据最常见值 (MVC) 及其频率的统计数据对估算进行微调。pg_stats 视图会在 most_common_vals
+和 most_common_freqs 字段中分别显示这些数组。
+
+以下是有关各类飞机的此类统计数据的示例：
+
+[[./images/roYhLU.png]]
+
+#+begin_src sql
+  select most_common_vals as mcv,
+  left(most_common_freqs::text, 60) || '...' as mcf
+  from pg_stats
+  where tablename='flights' and attname='aircraft_code' \gx
+#+end_src
+
+要估算 "列 = 值 "条件的选择性，只需在 most_common_vals 数组中找到该值，并从具有相同索引的 most_common_freqs
+数组元素中提取其频率即可：
+
+#+begin_src sql
+  explain select * from flights where aircraft_code = '733';
+#+end_src
+
+#+begin_src sql
+  select round(reltuples * s.most_common_freqs[
+  array_position((s.most_common_vals::text::text[]), '733')
+  ])
+  from pg_class
+  join pg_stat s on s.tablename=relname
+  where s.tablename='flights'
+  and s.attname='aircraft_code';
+#+end_src
+
+显然，这种估算将接近实际值：
+
+#+begin_src sql
+  select count(*) from flights where aircraft_code='733';
+#+end_src
+
+MCV 列表还用于估算不等式条件的选择性。例如，"列 < 值 "这样的条件要求分析器在 most_common_vals 中搜索所有小于目
+标值的值，并求和 most_common_freqs 中列出的相应频率。
+
+当独立值不多时，MCV 统计效果最佳。数组的最大大小由 default_statistics_target 参数定义，该参数还限制了为分析目
+的而随机抽样的行数。
+
+在某些情况下，可以增加默认参数值，从而扩大 MCV 列表并提高估算的准确性。您可以在列级别上这样做：
+
+#+begin_src sql
+  alter table ...
+     alter column ...
+     set statistics ...;
+#+end_src
+
+样本量也会增加，但仅限于指定的表格。
+
+由于 MCV 数组存储的是实际值，因此可能会占用大量空间。为了控制 pg_statistic 的大小，避免给计划器增加无用功，大于
+1 KB 的值将被排除在分析和统计之外。不过，由于这些大值很可能是唯一的，因此无论如何，它们都不可能进入
+most_common_vals。
+
+** 柱状图
+
+如果差异值过多，无法存储在数组中，PostgreSQL 会使用直方图。在这种情况下，数值会分布在直方图的几个桶中。桶的数量也
+受 default_statistics_target 参数的限制。
+
+水桶宽度的选择方式是让每个水桶都能获得大致相同数量的数值（这一特性在图表中体现为大阴影矩形的面积相等）。包含在 MCV
+列表中的值不计算在内。因此，每个水桶中数值的累积频率等于 $$ \frac{1}{number of buckets} $$
+
+直方图以桶边界值数组的形式存储在 pg_stats 视图的 histogram_bounds 字段中：
+
+#+begin_src sql
+  select left(histogram_bounds::text, 60) || '...' as hist_bounds
+  from pg_stats s
+  where s.tablename='boarding_passes' and s.attname='seat_no';
+#+end_src
+
+结合 MCV 列表，直方图可用于估算大于和小于条件的选择性等操作。例如，我们来看看为后排签发的登机牌数量：
+
+[[./images/HQf3Es.png]]
+
+#+begin_src sql
+  explain select * from boarding_passes where seat_no > '30B';
+#+end_src
+
+我有意选择了位于两个直方图桶边界上的座位号。
+
+该条件的选择性将以 N 个桶的数量来估算，其中 N 是容纳满足条件的值（即位于指定值右侧的值）的桶的数量。还必须考虑到
+MCV 不包括在直方图中。
+
+顺便提一下，直方图中也不会出现 NULL 值，但 seat_no 列中无论如何也不会包含此类值：
+
+#+begin_src sql
+  select s.null_frac from pg_stats s
+  where s.tablename='boarding_passes' and s.attname='seat_no';
+#+end_src
+
+首先，让我们找出满足条件的 MCV 分数：
+
+#+begin_src sql
+  select sum(s.most_common_freqs[
+  array_position((s.most_common_vals::text::text[]), v)
+  ])
+  from pg_stats s, unnest(s.most_common_vals::text::[]) v
+  where s.tablename='boarding_passes' and s.attname='seat_no'
+  and v> '30B';
+#+end_src
+
+MCV 的总体份额（被柱状图忽略）为
+
+#+begin_src sql
+  select sum(s.most_common_freqs[
+  array_position((s.most_common_vals::text::text[]), v)
+  ])
+  from pg_stats s, unnest(s.most_common_vals::text::text[]) v
+  where s.tablename='boarding_passes' and s.attname='seat_no';
+#+end_src
+
+由于符合指定条件的值正好占 𝑁 个桶（可能有 100 个桶），我们可以得到以下估计值：
+
+#+begin_src sql
+  select round(reltuples *(
+  0.21226657 -- MCV share
+  +(1-0.67816657-0)*(51/100.0) -- histogram share
+  ))
+  from pg_class
+  where relname='boarding_passes';
+#+end_src
+
+[[./images/RiqJUz.png]]
+
+在非边界值的一般情况下，规划器采用线性插值，以考虑到包含目标值的桶的部分。
+
+这是后排座椅的实际数量：
+
+#+begin_src sql
+  select count(*) from boarding_passes where seat_no>'30B';
+#+end_src
+
+随着 default_statistics_target 值的增加，估算精度可能会提高，但正如我们的示例所示，即使列中包含许多唯一值，直
+方图与 MCV 列表相结合通常也能得到很好的结果：
+
+#+begin_src sql
+  select n_distinct from pg_stats
+  where tablename='boarding_passes' and attname='seat_no';
+#+end_src
+
+只有当提高估算精度能带来更好的规划时，提高估算精度才有意义。不假思索地增加 default_statistics_target 值可能会
+减慢规划和分析速度，却不会带来任何好处。也就是说，降低该参数值（降为零）可能会导致错误的计划选择，尽管这样做确实会
+加快规划和分析速度。这种节省通常是不合理的。
+
+** 非标量数据类型的统计数据
+
+对于非标量数据类型，PostgreSQL 不仅可以收集值分布的统计数据，还可以收集用于构建这些值的元素分布的统计数据。当你查
+询不符合第一正则表达式的列时，它可以提高规划的准确性。
+
++ most_common_elems 和 most_common_elem_freqs 数组显示最常见的元素列表及其使用频率。
+  收集的这些统计数据将用于估算数组和 tsvector 数据类型操作的选择性。
++ elem_count_histogram 数组显示数值中不同元素数量的直方图。
+  收集的这些数据仅用于估算阵列操作的选择性。
++ 对于范围类型，PostgreSQL 会为范围长度和范围的上下限建立分布直方图。这些直方图用于估计对这些类型进行各种操作的选
+  择性，但 pg_stats 视图不会显示它们。
+
+  还为多范围数据类型收集了类似的统计数据。
+
+
+** 平均字段宽度
+
+pg_stats 视图的 avg_width 字段显示了存储在列中的值的平均大小。当然，对于整数或 char(3) 等类型，这个大小总是相
+同的，但对于长度可变的数据类型（如文本），每一列的大小可能会有很大差异：
+
+#+begin_src sql
+  select attname, avg_width from pg_stats
+  where (tablename, attname) in (values
+  ('tickets', 'passenger_name'), ('ticket_flights', 'fare_conditions')
+  );
+#+end_src
+
+该统计量用于估算排序或散列等操作所需的内存量。
+
+** 相关性
+
+pg_stats 视图的相关性字段显示数据的物理顺序与比较操作定义的逻辑顺序之间的相关性。如果数值严格按照升序存储，其相关
+性将接近 1；如果按照降序排列，其相关性将接近-1。磁盘上的数据分布越混乱，相关性就越接近零。
+
+#+begin_src sql
+  select attname, correlation
+  from pg_stats where tablename='airports_data'
+  order by abs(correlation) desc;
+#+end_src
+
+请注意，坐标列不收集此统计量：点类型未定义小于和大于运算符。
+
+相关性用于估算索引扫描的成本。
+
+** 表达式统计
+
+只有当比较操作的左侧或右侧部分指向列本身，且不包含任何表达式时，才能使用列级统计。例如，规划器无法预测计算列的函数
+会如何影响统计量，因此对于 "函数调用 = 常量 "这样的条件，选择性总是估计为 0.5%。
+
+#+begin_src sql
+  eplain select * from flights
+  where extract(
+  month from schedule_depature at time zone 'Europe/Moscow'
+  )=1;
+#+end_src
+
+规划者对函数的语义一无所知，即使是标准函数也是如此。我们的常识表明，1 月份执行的航班约占航班总数的
+$$ \frac{1}{12} $$，比预测值高出一个数量级。
+
+为了改进估计，我们必须收集表达式统计数据，而不是依赖列级统计数据。有两种方法可以做到这一点。
+
+扩展表达式统计
+
+第一个选项是使用扩展表达式统计。默认情况下不会收集此类统计数据；必须通过运行 CREATE STATISITCS 命令手动创建相应
+的数据库对象：
+
+#+begin_src sql
+  create statistics flights_expr on (extract(
+  month from scheduled_depature at time zone 'Europe/Moscow'
+  ))
+  from flights;
+#+end_src
+
+一旦收集到数据，估算的准确性就会提高：
+
+#+begin_src sql
+  analyze flights;
+  explain select * from flights
+  where extract(
+  month from scheduled_depature at time zone 'Europe/Moscow'
+  )=1;
+#+end_src
+
+要应用收集的统计数据，查询必须以与 CREATE STATISTICS 命令完全相同的形式指定表达式。
+
+可通过运行 ALTER STATISTICS 命令单独调整扩展统计数据的大小限制。例如
+
+#+begin_src sql
+  alter statistics flights_expr set statistics 42;
+#+end_src
+
+与扩展统计相关的所有元数据都存储在系统目录的 pg_statistic_ext 表中，而收集的数据本身则存储在名为
+pg_statistic_ext_data 的单独表中。这种分离用于对敏感信息实施访问控制。
+
+可在单独的视图中以更方便的格式显示特定用户可用的扩展表达式统计数据：
+
+#+begin_src sql
+  select left(expr, 50) || '...' as expr,
+  null_frac, avg_width, n_distinct,
+  most_comm_vals as mcv,
+  left(most_comm_freqs::text, 50) || '...' as mcf,
+  from pg_stats_ext_exprs
+  where statistics_name='flights_expr' \gx
+#+end_src
+
+表达式索引统计
+
+另一种改进Cardinality的方法是使用为表达式索引收集的特殊统计数据；这些统计数据会在创建此类索引时自动收集，就像
+为表所做的那样。如果真的需要索引，这种方法会非常方便。
+
+#+begin_src sql
+  drop statistics flights_expr;
+  create index on flights(extract(
+  month from scheduled_departure at time zone 'Europe/Moscow'
+  ));
+
+  analyze flights;
+
+  explain select * from flights
+  where extract(
+  month from scheduled_departure at time zone 'Europe/Moscow'
+  )=1;
+#+end_src
+
+表达式索引统计信息的存储方式与表统计信息的存储方式相同。例如，在查询 pg_stats 时，将索引名称指定为 tablename，
+就可以获得不同值的数量：
+
+#+begin_src sql
+  select n_distinct from pg_stats
+  where tablename='flights_extract_idx';
+#+end_src
+
+您可以使用 ALTER INDEX 命令调整索引相关统计信息的准确性。如果不知道与索引表达式相对应的列名，则必须先找到它。例如
+
+#+begin_src sql
+  select attname from pg_attribute
+  where attrelid='flgihts_extract_idx'::regclass;
+
+  alter index flights_extract_idx
+  alter column extract set statistics 42;
+#+end_src
+
+** 多元统计
+还可以收集跨多个表列的多元统计。前提条件是，必须使用 CREATE STATISTICS 命令手动创建相应的扩展统计量。
+
+PostgreSQL 实现了三种多元统计。
+
+列之间的功能依赖关系
+
+如果一列中的数值（完全或部分）依赖于另一列中的数值，而筛选条件又包括这两列，那么Cardnality将被低估。
+
+让我们考虑一个有两个过滤条件的查询：
+
+#+begin_src sql
+  select count(*) from flights
+  where flight_no='PG0007' and departure_airport='VKO';
+#+end_src
+
+其价值被大大低估了：
+
+#+begin_src sql
+  explain select * from flights
+  where flight_no='PG0007' and departure_airport='VKO';
+#+end_src
+
+这是一个众所周知的相关谓词问题。规划器假定谓词之间互不相关，因此整体选择性是根据逻辑 AND 组合的过滤条件选择性的乘
+积来估算的。上面的计划清楚地说明了这个问题：一旦位图堆扫描节点根据 departure_airport 列上的条件对结果进行过滤，
+位图索引扫描节点对 flight_no 列上条件的估计值就会大大降低。
+
+然而，我们知道机场是由航班号明确定义的：第二个条件实际上是多余的（当然，除非机场名称有误）。在这种情况下，我们可以
+通过对功能依赖性进行扩展统计来改进估算。
+
+让我们对两列之间的功能依赖性进行扩展统计：
+
+#+begin_src sql
+  create statistics flights_dep(dependencies)
+  on flight_no, departure_airport from flights;
+  #+end_src
+
+下一次分析运行将收集这一统计数据，从而改进估算结果：
+
+#+begin_src sql
+  analyze flights;
+  explain select * from flights
+  where flight_no='PG0007'
+  and departure_airport='VKO';
+#+end_src
+
+收集到的统计数据存储在系统目录中，可以像这样访问：
+
+#+begin_src sql
+  select dependencies
+  from pg_stats_ext where statistics_name='flights_dep';
+#+end_src
+
+这里的 2 和 5 是存储在 pg_attribute 表中的列号，而相应的值则定义了功能依赖程度：从 0（无依赖）到 1（第二列中的
+值完全依赖于第一列中的值）。
+
+多元差异值数量
+
+对存储在不同列中的值的唯一组合数进行统计，可改进对多列执行 GROUP BY 操作的Cardinality估计。
+
+例如，这里估计的出发机场和到达机场的可能对数是机场总数的平方；但实际值要小得多，因为并非所有对数都有直达航班：
+
+#+begin_src sql
+  select count(*)
+  from (
+  select distinct departure_airport, arrival_airport from flights
+  ) t;
+#+end_src
+
+#+begin_src sql
+  explain select distinct departure_airport, arrival_airport
+  from flights;
+#+end_src
+
+让我们定义并收集一个关于不同值的扩展统计量：
+
+#+begin_src sql
+  create statistics flights_nd(ndistinct)
+  on departure_airport, arrival_airport from flights;
+  analyze flights;
+#+end_src
+
+Cardinality估计值就会提高
+
+#+begin_src sql
+  explain select distinct departure_airport, arrival_airport
+  from flights;
+#+end_src
+
+您可以在系统目录中查看收集到的统计数据：
+
+#+begin_src sql
+  select n_distinct
+  from pg_stats_ext where statistics_name='flights_nd';
+#+end_src
+
+多元 MCV 列表
+
+如果数值的分布不均匀，那么仅仅依靠功能依赖性可能是不够的，因为估算的准确性在很大程度上取决于特定的数值对。例如，规划
+器低估了从谢列梅捷沃机场起飞的波音 737 航班数量：
+
+#+begin_src sql
+  select count(*) from flights
+  where departure_airport='SVO' and aircraft_code='733';
+#+end_src
+
+#+begin_src sql
+  explain select * from flights
+  where departure_airport='SVO' and aircraft_code='733';
+#+end_src
+
+在这种情况下，可以通过收集多元 MCV 列表的统计数据来改进估算：
+
+#+begin_src sql
+  create statistics flights_mcv(mcv)
+  on departure_airport, aircraft_code from flights;
+  analyze flights;
+#+end_src
+
+新的Cardinality估算更加准确
+
+#+begin_src sql
+  explain select * from flights
+  where departure_airport='SVO' and aircraft_code='733';
+#+end_src
+
+为获得这一估计值，规划器依赖于系统目录中存储的频率值：
+
+#+begin_src sql
+  select values, frequency
+  from pg_statistic_ext stx
+  join pg_statistic_ext_data stxd on std.oid=stxd.stdoid,
+  pg_mcv_list_items(stxdmcv) m
+  where stxname='flights_mcv'
+  and values='{SVO, 733}';
+#+end_src
+
+与普通 MCV 列表一样，多变量列表可容纳 100 个 default_statistics_target 值（如果在列级别也设置了该参数，则使
+用其最大值）。
+
+如果需要，还可以更改列表的大小，就像扩展表达式统计一样：
+
+#+begin_src sql
+  alter statistics ... set statistics ...;
+#+end_src
+
+在所有这些示例中，我只使用了两列，但您也可以收集更多列的多元统计数据。
+
+要在一个对象中结合多种类型的统计信息，可以在其定义中提供这些类型的逗号分隔列表。如果没有指定类型，PostgreSQL 将为
+指定列收集所有可能类型的统计数据。
+
+除实际列名外，多元统计还可以使用任意表达式，就像表达式统计一样。
+
+
+
+
+
+
+
+
+
+
 
 
 
