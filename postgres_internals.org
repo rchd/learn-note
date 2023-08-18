@@ -1112,6 +1112,521 @@ Cardinality估计值就会提高
 除实际列名外，多元统计还可以使用任意表达式，就像表达式统计一样。
 
 
+* 表访问方法
+
+** 可插拔式存储引擎
+
+PostgreSQL 所使用的数据布局并不是唯一可行的，也不是适用于所有负载类型的最佳 布局。根据可扩展性的理念，PostgreSQL
+允许创建和插入各种表访问方法（可插拔存储引擎），但目前只有一种方法是开箱即用的：
+
+#+begin_src sql
+  select amname, amhandler from pg_am where amtype='t';
+#+end_src
+
+创建表格时，可以指定要使用的引擎（CREATE TABLE ... USING）；否则，将使用堆 default_table_access_method 参
+数中列出的默认引擎。
+
+为使 PostgreSQL 内核能以相同方式与各种引擎协同工作，表访问方法必须实现一个特殊接口。amhandler 列中指定的函数会
+返回接口结构，其中包含核心所需的所有信息。
+
+所有表格访问方法都可以使用以下核心组件：
+
++ 事务管理器，包括 ACID 和快照隔离支持
++ 缓冲区管理
++ I/O子系统
++ TOAST
++ 优化器和执行器
++ 索引支持
+
+这些部件始终由存储引擎支配，即使没有全部使用它们。
+
+反过来，存储引擎也是这样定义的
+
++ 元组格式和数据结构
++ 表扫描实现和代价估计
++ insert,update,delete的实现和锁操作
++ 可见性规则
++ 自动回收和分析处理
+
+从历史上看，PostgreSQL 使用的是单一的内置数据存储，没有任何适当的编程接口，因此现在很难设计出既考虑到标准引擎的所
+有特性又不干扰其他方法的好方法。
+
+#+begin_comment
+例如，目前还不清楚如何处理 WAL。新的访问方法可能需要记录它们自己的操作，而内核并不知道这些操作。现有的通用 WAL 机
+制通常是个糟糕的选择，因为它会带来过多的开销。你可以添加另一个接口来处理新类型的 WAL 条目，但这样一来，崩溃恢复将依
+赖于外部代码，这是非常不可取的。目前唯一可行的解决方案就是为每个特定引擎的内核打补丁。
+#+end_comment
+
+因此，我没有刻意严格区分表访问方法和核心。本书前几部分所描述的许多特性在形式上都属于堆访问方法，而不是核心本身。这种
+方法很可能一直是PostgreSQL的终极标准引擎，而其他方法将填补各自的空白，以应对特定负载类型的挑战。
+
+在目前正在开发的所有新型存储引擎中，我想提及以下几种：
+
++ Zheap 的目的是防止表格臃肿。它实现了就地行更新，并将与 MVCC 相关的历史数据移至单独的撤销存储区。这种引擎对涉及
+  频繁数据更新的负载非常有用。
+
+  对于 Oracle 用户来说，Zheap 体系结构似乎并不陌生，不过它也有一些细微差别（例如，索引访问方法的接口不允许创建具
+  有自己版本的索引）。
++ Zedstore 实现列式存储，这在 OLAP 查询中可能是最有效的。
+
+  存储数据的结构是元组 ID 的 B 树；每一列都存储在与主 B 树相关联的自己的 B 树中。将来有可能在一棵 B 树中存储多
+  列数据，从而实现混合存储。
+
+** 顺序扫描
+
+存储引擎定义表数据的物理布局，并提供访问表数据的方法。唯一支持的方法是顺序扫描，即全文读取表fork的文件（或多个文
+件）。在每个读取页面中，都会检查每个元组的可见性；不满足查询要求的元组会被过滤掉。
+
+[[./images/lCbMtr.png]]
+
+扫描进程会经过缓冲缓存；为确保大表不会剔除有用数据，会使用一个小尺寸的缓冲环。其他正在扫描同一张表的进程会加入这个
+缓冲环，从而避免了额外的磁盘读取；这种扫描被称为同步扫描。因此，扫描不必总是从文件的起始位置开始。
+
+顺序扫描是读取整个表或其中最佳部分的最有效方法。换句话说，当选择性较低时，顺序扫描的价值最大。(如果选择性高，即查询
+只需选择几行，则最好使用索引）。
+
+代码估算
+
+在查询执行计划中，顺序扫描由 Seq Scan 节点表示：
+
+#+begin_src sql
+  explain select *
+  from flights;
+#+end_src
+
+估计行数作为基本统计数据的一部分提供：
+
+#+begin_src sql
+  select reltuples from pg_class where relname='flights';
+#+end_src
+
+在估算成本时，优化器会考虑以下两个因素：磁盘 I/O 和 CPU 资源。
+
+I/O 成本的计算方法是，将表中的页数与读取单个页面的成本相乘，假定页面是按顺序读取的。当缓冲区管理器请求读取一个页面
+时，操作系统实际上会从磁盘读取更多数据，因此在操作系统缓存中很可能会出现多个后续页面。因此，使用顺序扫描读取单个页
+面的成本（规划器估计为 seq_page_cost）低于随机访问成本（由 random_page_cost 值定义）。
+
+默认设置对 HDD 运行良好；如果使用 SSD，则应大幅降低 random_page_cost 值（seq_page_cost 参数通常保持不变，作
+为参考值）。由于这些参数之间的最佳比例取决于硬件，因此通常在表空间级别进行设置（ALTER TABLESPACE ... SET）。
+
+#+begin_src sql
+  select relpages,
+  current_setting('seq_page_cost') as seq_page_cost,
+  relpages * current_setting('seq_page_cost')::real as total
+  from pg_class where relname='flights';
+#+end_src
+
+这些计算清楚地显示了不及时抽真空导致表膨胀的后果：表的fork越大，需要扫描的页数就越多，而不管其中包含的活图组数有
+多少。
+
+CPU 资源估算包括处理每个元组的成本（规划器估算为  cpu_tuple_cost）:
+
+#+begin_src sql
+  select reltuples,
+  current_setting('cpu_tuple_cost') as cpu_tuple_cost,
+  reltuples * current_setting('cpu_tuple_cost')::real as total
+  from pg_class where relname='flights';
+#+end_src
+
+这两个估算值的总和就是计划的总成本。启动成本为零，因为顺序扫描没有先决条件。
+
+如果需要对扫描的表进行过滤，则应用的过滤条件会出现在 Seq Scan 节点过滤部分的计划中。估计的行数取决于这些条件的选
+择性，而成本估计包括相关的计算费用。
+
+EXPLAIN ANALYZE 命令同时显示实际返回的行数和已过滤掉的行数：
+
+#+begin_src sql
+  explain (analyze, timing off, summary off)
+  select * from flights
+  where status='Scheduled';
+#+end_src
+
+让我们来看看一个使用聚合的更复杂的执行计划：
+
+#+begin_src sql
+  explain select count(*) from seats;
+#+end_src
+
+该计划由两个节点组成：计算count函数的上层节点（Aggregate）从扫描表的下层节点（Sequ Scan）提取数据。
+
+聚合节点的启动成本包括聚合本身：如果不从下层节点获取所有记录，就不可能返回第一行（在本例中是唯一的一行）。聚合成本
+是根据每个输入行的条件操作执行成本（按 cpu_operator_cost 估算）估算的：
+
+#+begin_src sql
+  select reltuples,
+  current_setting('cpu_operator_cost') as cpu_operator_cost,
+  round((
+  reltuples * current_setting('cpu_operator_cost')::real
+  )::numeric, 2) as cpu_cost
+  from pg_class where relname='seats';
+#+end_src
+
+收到的估算值将加到 Seq Scan 节点的总成本中。
+
+聚合节点的总成本还包括处理要返回的记录的成本，估计为 cpu_tuple_cost：
+
+#+begin_src sql
+  with t(cput_cost) as (
+  select round((
+  reltuples * current_setting('cpu_operator_cost')::real
+  )::numeric, 2)
+  from pg_class where relname='seats'
+  )
+  select 21.39 + t.cput_cost as startup_cost,
+  round((
+  21.39+t.cpu_cost+
+  1*current_setting('cpu_tuple_cost')::real
+  )::numeric, 2) as total_cost
+  from t;
+#+end_src
+
+[[./images/1lJUGc.png]]
+
+** 并行计划
+
+PostgreSQL 支持并行查询执行。执行查询的领导进程（通过 postmaster）会产生多个工作进程，同时执行计划的同一个并行
+部分。执行查询的领导进程（通过 postmaster）会催生多个工作进程，这些工作进程会同时执行计划中的同一个并行部分，并将
+结果传递给领导进程，领导进程会将这些结果放在 Gather2 节点中。在不接受数据时，领导进程也可以参与计划并行部分的执行
+
+如果需要，可以关闭 parallel_leader_participation 参数，禁止领导者进程参与并行计划的执行。
+
+[[./images/ZKyoaD.png]]
+
+当然，启动这些进程并在它们之间发送数据并不是免费的，因此到目前为止，并非所有查询都应并行化。
+
+此外，即使允许并行执行，也并非计划的所有部分都能同时处理。有些操作只能由领导者以顺序模式单独执行。
+
+#+begin_comment
+ PostgreSQL 不支持并行计划执行的另一种方法，即由多个工作进程执行数据处理，这些工作进程实际上形成了一条流水线（粗
+ 略地说，每个计划节点都由一个单独的进程执行）；PostgreSQL 开发人员认为这种机制效率低下。
+#+end_comment
+
+** 并行顺序扫描
+
+Parallel Seq Scan 节点是为并行处理而设计的节点之一，它可执行并行顺序扫描。
+
+这个名字听起来有点争议（到底是顺序扫描还是并行扫描？如果我们看一下文件访问，表页是按照简单顺序扫描的顺序读取的。不
+过，这一操作是由多个并发进程执行的。为了避免重复扫描同一个页面，执行器通过共享内存同步这些进程。
+
+这里的一个微妙之处在于，操作系统无法获得典型的顺序扫描的全貌，相反，它看到的是几个执行随机读取的进程。因此，通常能
+加快顺序扫描速度的数据预取变得毫无用处。为了尽量减少这种令人不快的影响，PostgreSQL 为每个进程分配的读取页面不只是
+一个，而是多个连续的页面。
+
+因此，并行扫描的意义不大，因为通常的读取成本会因进程间的数据传输而进一步增加。不过，如果工作者对获取的行进行任何后
+处理（如聚合），总执行时间可能会大大缩短。
+
+代价估算
+
+让我们来看看一个在大型表格上执行聚合的简单查询。执行计划是并行化的：
+
+#+begin_src sql
+  explain select count(*) from bookings;
+#+end_src
+
+Gather 下面的所有节点都属于计划的并行部分。它们由每个工作进程执行（这里计划了两个工作进程），也可能由领导进程执行
+（除非通过 parallel_leader_participation 参数关闭了该功能）。Gather 节点本身及其上方的所有节点构成计划的顺序
+部分，由领导进程单独执行。
+
+Parallel Seq Scan 节点表示并行堆扫描。行数字段显示单个进程要处理的估计平均行数。总的来说，执行必须由三个进程（一
+个领导进程和两个工作进程）完成，但领导进程处理的行数较少：随着工作进程数量的增加，领导进程的份额也会变小。在这种特殊
+情况下，系数为 2.4
+
+#+begin_src sql
+  select reltuples::numeric, round(reltuples / 2.4) as per_process
+  from pg_class where relname='bookings';
+#+end_src
+
+并行顺序扫描成本的计算方法与顺序扫描类似。接收到的值较小，因为每个进程处理的行数较少；I/O 部分全部包括在内，因为仍
+需逐页读取整个表：
+
+#+begin_src sql
+  select round((
+  relpages * current_setting('seq_page_cost')::real +
+  reltuples / 2.4 * current_setting('cpu_tuple_cost')::real
+  )::numeric, 2)
+  from pg_class where relname='bookings';
+#+end_src
+
+接下来，"Partial Aggregate"节点对获取的数据进行聚合；在这种特殊情况下，它会计算行数。
+
+聚合成本按常规方式估算，并添加到表格扫描的成本估算中：
+
+#+begin_src sql
+  with t(startup_cost)
+  as (
+  select 22243.29 + round((
+  reltuples / 2.4 * current_setting('cpu_operator_cost')::real
+  )::numeric, 2)
+  from pg_class
+  where relname='bookings'
+  )
+  select startup_cost,
+  startup_cost+round((
+  1*current_setting('cpu_tuple_cost')::real
+  )::numeric, 2) as total_cost
+  from t;
+#+end_src
+
+下一个节点（Gather）由领导进程执行。该节点负责启动工作者并收集他们返回的数据。
+
+为便于规划，启动进程（无论其数量多少）的成本估算由 parallel_setup_cost 参数定义，而进程间每行传输的成本则由
+parallel_tuple_cost 估算。
+
+在此示例中，启动成本（用于启动进程的成本）占主导地位；此值已添加到部分聚合节点的 启动成本中。总成本中还包括传输两行
+的成本；该值将计入 "Partial Aggregate"节点的总成本：
+
+#+begin_src sql
+  select
+  24442.36+round(
+  current_setting('parallel_setup_cost')::numeric,
+  2) as setup_cost,
+  24442.37+round(
+  current_setting('parallel_setup_cost')::numeric+
+  2*current_setting('parallel_tuple_cost')::numeric,
+  2) as total_cost;
+#+end_src
+
+最后但并非最不重要的是，"Finalize Aggregate"节点汇总 "Gather "节点从并行进程中收到的所有部分结果。
+
+最终聚合的估算与其他聚合一样。它的启动成本基于聚合三条记录的成本；这个值会加到聚合的总成本中（因为计算结果需要所有
+记录）。最终聚合的总成本还包括返回一条记录的成本。
+
+#+begin_src sql
+  with t(startup_cost) as (
+  select 25442.57+round((
+  3*current_setting('cpu_operator_cost')::real
+  )::numeric, 2)
+  from pg_class where relname='bookings'
+  )
+  select startup_cost,
+  startup_cost+round((
+  1*current_setting('cpu_tuple_cost')::real
+  )::numeric, 2) as total_cost
+  from t;
+#+end_src
+
+成本估算之间的依赖关系取决于节点是否需要先积累数据，然后再将结果传递给上级节点。聚合节点在获得所有输入行之前无法返
+回结果，因此其启动成本基于下级节点的总成本。相反，聚合节点会在获取记录后立即开始向上游发送记录。因此，该操作的启动
+成本取决于下层节点的启动成本，而总成本则基于下层节点的总成本。
+
+下面是依赖关系图：
+
+[[./images/hQJyfP.png]]
+
+** 并行执行的限制
+
+后端workers进程的数量
+
+进程数量由三个参数组成的层次结构控制。同时运行的后台工作者的最大数量由 max_worker_processes 值定义。
+
+然而，并行查询执行并不是唯一需要后台工作者的操作。例如，它们还参与逻辑复制，并可用于扩展。专门为并行计划执行分配的
+进程数量受限于 max_parallel_workers 值。
+
+其中，最多 max_parallel_workers_per_gather 进程可为一个领导者服务。
+
+这些参数值的选择取决于以下因素：
+
++ 软件能力：系统必须有专门用于并行执行的空闲内核。
++ 容量：数据库必须包含大型表格。
++ 典型负载：必须有可能受益于并行执行的查询。
+
+满足这些标准的通常是 OLAP 系统，而不是 OLTP 系统。
+
+如果估计要读取的堆数据量不超过 min_parallel_table_scan_size 值，规划器根本不会考虑并行执行。
+
+除非在 parallel_workers 存储参数中明确指定了特定表的进程数，否则进程数将按以下公式计算：
+
+$$ 1+logs_{3}{(\frac{table size}{min_parallel_table_scan_size})} $$
+
+这意味着表每增长三倍，PostgreSQL 就会多分配一个并行工作者进行处理。默认设置下的数据如下：
+
+| table,MB | number of processes |
+|----------+---------------------|
+|        8 |                   1 |
+|       24 |                   2 |
+|       72 |                   3 |
+|      216 |                   4 |
+|      648 |                   5 |
+|     1944 |                   6 |
+
+无论如何，并行工作者的数量不能超过 max_parallel_workers_per_gather 参数定义的上限。
+
+如果我们查询一个 19MB 的小表，将只计划并启动一个 Worker：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select count(*) from flights;
+#+end_src
+  
+在一个 105MB 的表上进行查询，只能获得两个进程，因为它达到了最大并行工作进程数的限制：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select count(*) from bookings;
+#+end_src
+
+如果取消这一限制，我们将得到估计的三个过程：
+
+#+begin_src sql
+  alter system set max_parallel_workers_per_gather=4;
+  select pg_reload_conf();
+  explain (analyze, costs off, timing off, summary off)
+  select count(*) from bookings;
+#+end_src
+
+如果查询执行期间空闲的插槽数量少于计划值，则只会启动可用的workers数量。
+
+让我们把并行进程的总数限制在 5 个，同时运行两个查询：
+
+#+begin_src sql
+  alter system set max_parallel_workers=5;
+  select pg_reload_conf();
+  explain (analyze, costs off, timing off, summary off)
+  select count(*) from bookings;
+  explain (analyze, costs off, timing off,  summary off)
+  select count(*) from bookings;
+#+end_src
+
+
+虽然在这两种情况下都预计有三个进程，但其中一个查询只获得了两个时段。
+
+让我们恢复默认设置：
+
+#+begin_src sql
+  alter system reset all;
+  select pg_reload_conf();
+#+end_src
+
+不可并行查询
+
+并非所有查询都可以并行化。特别是，并行计划不能用于以下查询类型：
+
++ 修改或锁定数据的查询（UPDATE、DELETE、SELECT FOR UPDATE 等）。
+  此限制不适用于以下命令中的子查询：
+  CREATE TABLE AS, SELECT INTO, CREATE MATERIALIZED VIEW
+  REFRESH MATERIALIZED VIEW
+  不过，在所有这些情况下，行插入仍按顺序进行。
++ 可暂停的查询。它适用于在游标内运行的查询，包括 PL/pgSQL 中的 FOR 循环。
++ 调用 PARALLEL UNSAFE 函数的程序。默认情况下，这些都是用户定义的函数和一些标准函数。您可以通过查询系统目录获得
+  不安全函数的完整列表：
+  #+begin_src sql
+    select * from pg_proc where proparallel='u';
+  #+end_src
++ 如果从并行化查询中调用了函数内的查询（以避免worker数量的递增），则应调用这些函数。
+
+其中一些限制可能会在未来的 PostgreSQL 版本中被移除。例如，在 Serializable 隔离级别并行查询的功能已经存在。
+
+#+begin_comment
+  目前正在开发使用 INSERT 和 COPY 等命令并行插入记录的功能。
+#+end_comment
+
+查询未并行化可能有几个原因：
+
++ 这种查询完全不支持并行化。
++ 服务器配置禁止使用并行计划（例如，由于强制规定的表大小限制）。
++ 并行计划比顺序计划更昂贵。
+
+要检查查询是否可以并行化，可以暂时关闭 force_parallel_mode 参数。这样，规划器就会尽可能建立并行计划：
+
+#+begin_src sql
+  explain select * from flights;
+#+end_src
+
+#+begin_src sql
+  set force_parallel_mode=on;
+  explain select * from flights;
+#+end_src
+
+并行限制查询
+
+计划的并行部分越大，可能实现的性能提升就越多。不过，某些操作只能由领导进程严格按顺序执行，尽管它们并不影响并行化。
+换句话说，它们不能出现在聚集节点下面的计划树中。
+
+不可扩展的子查询。不可扩展子查询最明显的例子就是扫描 CTE 结果（在计划中由 CTE 扫描节点表示）：
+
+#+begin_src sql
+  explain (costs off)
+  with t as materialized(
+  select * from flights
+  )
+  select count(*) from t;
+#+end_src
+
+如果 CTE 没有实体化，则计划不包含 CTE SCAN节点，因此此限制不适用。
+
+不过，请注意，如果 CTE 本身的计算成本较低，也可以在并行模式下进行计算：
+
+#+begin_src sql
+  explain (costs off)
+  with t as materialized(
+  select count(*) from flights;
+  )
+  select * from t;
+#+end_src
+
+下图中的 SubPlan 节点下显示了另一个不可扩展子查询的示例：
+
+#+begin_src sql
+  explain (costs off)
+  select * from flights f
+  where f.scheduled_depature > ( -- SubPlan
+  select min(f2.scheduled_depature)
+  from flights f2
+  where f2.aircraft_code=f.aircraft_code
+  );
+#+end_src
+
+前两行表示主查询的计划：按顺序扫描航班表，并根据提供的过滤器检查每一行。过滤器条件包括一个子查询；该子查询的计划从
+第三行开始。因此，SubPlan 节点会被执行多次，在这种情况下，通过顺序扫描获取的每一条记录都会被执行一次。
+
+该计划的上层 Seq Scan 节点不能参与并行执行，因为它依赖于 SubPlan 节点返回的数据。
+
+最后，这里还有一个由 InitPlan 节点表示的不可扩展子查询：
+
+#+begin_src sql
+  explain (costs off)
+  select * from flights f
+  where f.scheduled_depature > ( -- SubPlan
+  select min(f2.scheduled_depature)
+  from flights f2
+  where exists ( -- InitPlan
+  select * from ticket_flights tf
+  where tf.flight_id=f.flight_id
+  )
+  );
+#+end_src
+
+[[./images/KIPsEQ.png]]
+
+与 SubPlan 节点不同，InitPlan 只评估一次（在本例中，每次执行 SubPlan 2 节点时评估一次）。
+
+InitPlan 的父节点不能参与并行执行（但接收 InitPlan 评估结果的节点可以，如本示例）。
+
+临时表。临时表不支持并行扫描，因为只能由创建临时表的进程访问。它们的页面是在本地缓冲缓存中处理的。要让多个进程都能
+访问本地缓冲区，就需要像共享缓冲区那样的锁定机制，这将使其其他优点变得不那么突出。
+
+#+begin_src sql
+  create temporary table flights_tmp as select * from flights;
+  explain (costs off)
+  select count(*) from flights_tmp;
+#+end_src
+
+并行限制函数。定义为 PARALLEL RESTRICTED 的函数只允许在计划的顺序部分使用。您可以通过运行以下查询从系统目录中获
+取此类函数的列表：
+
+#+begin_src sql
+  select * from pg_proc where proparallel='r';
+#+end_src
+
+只有在完全了解所有影响并仔细研究了所有施加的限制后，才能将您的功能标记为 PARALLEL RESTRICTED（更不用说
+PARALLEL SAFE）。
+
+
+
+* 索引访问方法
+
+
+
 
 
 
