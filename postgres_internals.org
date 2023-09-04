@@ -2082,13 +2082,577 @@ WHERE 子句还可以提供任何条件（可与不可变函数一起使用）�
 当然，该接口只包括那些必须事先知道才能做出正确决定的索引方法属性。例如，它并没有列出支持谓词锁或非阻塞索引创建
 （CONCURRENTLY）等功能的任何属性。这些属性是在实现接口的函数代码中定义的。
 
+* 索引扫描
+
+** 定期索引扫描(Regular Index Scans)
+
+访问索引提供的 TID 有两种基本方法。第一种是执行索引扫描。大多数索引访问方法（但不是所有方法）都有 INDEX SCAN 属
+性来支持这种操作。
+
+索引扫描在计划中由INDEX SCAN节点表示：
+
+#+begin_src sql
+  explain select * from bookings
+  where book_ref='9AC0C6' and total_amount=48500.00;
+#+end_src
+
+在索引扫描过程中，访问方法会逐个返回 TID。收到 TID 后，索引引擎会访问该 TID 所指向的堆页面，获取相应的元组，并在
+满足可见性规则的情况下，返回该元组所请求的字段集。这个过程一直持续到访问方法用完与查询匹配的 TID。
+
+Index Cond（索引条件）行只包括可使用索引检查的过滤条件。其他必须在堆中重新检查的条件则单独列在过滤器一行中。
+
+正如本例所示，索引和堆访问操作都由一个共同的 Index Scan 节点来处理，而不是由两个不同的节点来处理。但还有一个单独的
+Tid Scan 节点，如果预先知道元组的 ID，它就会从堆中获取元组：
+
+#+begin_src sql
+  explain select * from bookings where ctid='(0, 1)'::tid;
+#+end_src
+
+
+代价估算
+
+索引扫描的成本估算包括索引访问操作和堆页面读取的估算成本。
+
+显然，与索引相关的估算部分完全取决于特定的访问方法。对于 B 树，代价主要来自于获取索引页和处理其条目。需要读取的页
+数和行数可由数据总量和应用过滤器的选择性决定。索引页的访问是随机的（逻辑结构中相互跟随的页在磁盘上是物理分散的）。
+从根节点到叶节点以及计算所需的所有表达式所耗费的 CPU 资源会进一步增加估算量。
+
+与堆相关的估算部分包括访问堆页面的成本，以及处理所有获取的图元所需的 CPU 时间。值得注意的是，I/O 估算既取决于索引
+扫描的选择性，也取决于磁盘上元组的物理顺序与访问方法返回其 ID 的顺序之间的相关性。
+
+良好方案：高相关性
+
+如果磁盘上元组的物理顺序与索引中 TID 的逻辑顺序完全相关，那么每个页面将只被访问一次：索引扫描节点将按顺序从一个页面
+到另一个页面，逐个读取元组。
+
+[[./images/G8UkYR.png]]
+
+PostgreSQL 收集相关性统计数据：
+
+#+begin_src sql
+  select attname, correlation
+  from pg_stats where tablename='bookings'
+  order by abs(correlation) desc;
+#+end_src
+
+如果相应的绝对值接近于 1，则相关性较高（如 book_ref 的情况）；如果绝对值接近于 0，则表明数据分布混乱。
+
+#+begin_comment
+  在这种特殊情况下，book_ref 列的高相关性当然是由于数据已经根据这一列以升序加载到表中，而且还没有更新。如果我们对
+  在这一列上创建的索引执行 CLUSTER 命令，也会看到同样的情况。
+
+  然而，完美的相关性并不能保证所有查询都会按 book_ref 值的升序返回结果。首先，任何行更新都会将结果元组移动到表的
+  末尾。其次，依赖于基于其他列的索引扫描的计划会以不同的顺序返回结果。即使是顺序扫描，也不一定从表的开头开始。因此，
+  如果需要特定顺序，应在 ORDER BY 子句中明确定义。
+#+end_comment
+
+下面是一个处理大量记录的索引扫描示例：
+
+#+begin_src sql
+  explain select * from bookings where book_ref < '100000';
+#+end_src
+
+该条件的选择率估计如下：
+
+#+begin_src sql
+  select round(132999::numeric/reltuples::numeric, 4)
+  from pg_class where relname='bookings';
+#+end_src
+
+这个值接近 $$ \frac{1}{16} $$，我们可以猜到，book_ref 的值范围是 000000 到 FFFFFF。
+
+对于 B 树，I/O 成本估算中与索引相关的部分包括读取所有所需页面的成本。满足 B 树支持的任何条件的索引条目都存储在绑
+定到有序列表中的页面中，因此需要读取的索引页面数估计为索引大小乘以选择性。但由于这些页面在物理上并不是有序的，因此
+读取会以随机的方式进行。
+
+CPU 资源用于处理所有读取的索引条目（处理单个条目的成本按 cpu_index_tuple_cost 值估算），以及计算每个条目的条件
+（在本例中，条件包含一个运算符；其成本按 cpu_operator_cost 值估算）。
+
+表访问被视为对所需页数的顺序读取。在完全相关的情况下，堆元组会在磁盘上相互跟随，因此页数是以表的大小乘以选择性来估
+算的。
+
+元组处理产生的费用进一步扩大了 I/O 成本；这些费用按每个元组的 cpu_tuple_cost 值估算
+
+#+begin_src sql
+  with costs(idx_cost, tbl_cost) as (
+  select
+  (
+  select round(
+  current_setting('random_page_cost')::real * pages +
+  current_setting('cpu_index_tuple_cost')::real * tuples +
+  current_setting('cpu_operator_cost')::real * tuples
+  )
+  from (
+  select relpages * 0.0630 as pages, reltuples * 0.0630 as tuples
+  from pg_class where relname='bookings_pkey'
+  ) c
+  ),
+  (
+  select round(
+  current_setting('seq_page_cost')::real * pages +
+  current_setting('cpu_tuple_cost')::real * tuples
+  )
+  from (
+  select relpages*0.0630 as pages, reltuples * 0.0630 as tuples
+  from pg_class where relname='bookings'
+  )c
+  )
+  )
+  select idx_cost, tbl_cost, idx_cost+tbl_cost as total
+  from costs;
+#+end_src
+
+这些计算说明了成本估算背后的逻辑，因此结果与规划师提供的估算结果一致，即使是近似值。要获得精确值，还需要考虑其他细
+节，在此不做讨论。
+
+糟糕的情况 低相关性
+
+如果相关性很低，一切都会改变。让我们在 book_date 列上创建一个索引，该列与该索引的相关性几乎为零，然后看一下查询，
+它选择的行数与上一个示例中几乎相同。结果表明，索引访问的成本非常高，只有在所有其他选择都被明确禁止的情况下，规划器
+才会选择索引访问：
+
+如果相关性很低，一切都会改变。让我们在 book_date 列上创建一个索引，该列与该索引的相关性几乎为零，然后看一下查询，
+它选择的行数与上一个示例中几乎相同。结果表明，索引访问的成本非常高，只有在所有其他选择都被明确禁止的情况下，规划器才
+会选择索引访问：
+
+#+begin_src sql
+  create index on bookings(book_date);
+  set enable_seqscan=off;
+  set enable_bitmapscan=off;
+  explain select * from bookings
+  where book_date < '2016-08-23 12:00:00+03';
+#+end_src
+
+问题在于，低相关性会增加访问方法返回的下一个元组位于不同页面的可能性。因此，索引扫描节点必须在页面之间跳转，而不是
+按顺序读取页面；在最糟糕的情况下，页面访问次数可能达到获取的元组数。
+
+[[./images/tiCx1l.png]]
+
+但是，在良好方案计算中，我们不能简单地用 random_page_cost 替换 seq_page_cost，用 reltuples 替换 relpages。
+我们在计划中看到的成本要比这样估算出的值低得多：
+
+#+begin_src sql
+  with costs(idx_cost, tbl_cost) as (
+  select
+  ( select round(
+  current_setting('random_page_cost')::real * pages +
+  current_setting('cpu_index_tuple_cost')::real * tuples +
+  current_setting('cpu_operator_cost')::real * tuples
+  )
+  from (
+  select relpages * 0.0630 as pages, reltuples * 0.0630 as tuples +
+  from pg_class where relname='bookings_pkey'
+  ) c
+  ),
+  ( select round(
+  current_setting('random_page_cost')::real * tuples +
+  current_setting('cpu_tuple_cost')::real * tuples
+  )
+  from (
+  select relpages * 0.0630 as pages, reltuples * 0.0630 as tuples
+  from pg_class where relname='bookings'
+  ) c
+  )
+  )
+  select idx_cost, tbl_cost, idx_cost + tbl_cost as total from costs;
+#+end_src
+
+原因在于该模型考虑到了缓存。经常使用的页面保存在缓冲缓存（和 os 缓存）中，因此缓存大小越大，在其中找到所需页面的机
+会就越多，从而避免了额外的磁盘访问操作。为便于规划，缓存大小由effective_cache_size参数定义。其值越小，预计读
+取的页面就越多。
+
+下图显示了需要读取的页数估算与表格大小之间的关系（选择性为 $$ \frac{1}{2} $$，页面包含 10 行）。虚线表示最佳情
+况下的访问次数（如果相关性完美，则为页数的一半）和最差情况下的访问次数（如果相关性为零且无缓存，则为行数的一半）。
+
+[[./images/kqz6y6.png]]
+
+假设 effective_cache_size 值表示可用于缓存的内存总量（包括 PostgreSQL 缓冲区缓存和操作系统缓存）。但由于该参
+数仅用于估算目的，并不影响内存分配本身，因此在更改该设置时不必考虑实际数据。
+
+如果将 effective_cache_size 减少到最小，计划估算结果将接近上表中无缓存情况下的低端值：
+
+#+begin_src sql
+  set effective_cache_size='8kB';
+  explain select * from bookings
+  where book_date < '2016-08-23 12:00:00+03';
+  reset effective_cache_size;
+  reset enable_seqscan;
+  reset enable_bitmapscan;
+#+end_src
+
+规划器会计算最坏情况和最好情况下的表格 I/O 成本，然后根据实际相关性取一个中间值。
+
+因此，如果只需要读取部分行，索引扫描是一个不错的选择。如果堆元组与访问方法返回其 ID 的顺序相关，那么这一部分就可能
+相当可观。然而，如果相关性较低，那么对于选择性较低的查询来说，索引扫描的吸引力就会大大降低。
 
 
 
+** 仅索引扫描(Index-Only Scan)
+
+如果一个索引包含了查询所需的所有堆数据，那么它就被称为该特定查询的覆盖索引。如果有这样的索引，就可以避免额外的表访
+问：访问方法可以直接返回实际数据，而不是 TID。这种类型的索引扫描称为仅索引扫描。支持 RETURNABLE 属性的访问方法可
+以使用它。
+
+在计划中，该操作由仅索引扫描节点表示：
+
+#+begin_src sql
+  explain select book_ref from bookings where book_ref < '1000000';
+#+end_src
+
+顾名思义，这个节点永远不需要访问堆，但事实并非如此。在 PostgreSQL 中，索引不包含元组可见性信息，因此访问方法会返
+回满足过滤条件的所有堆元组的数据，即使当前事务看不到它们。索引引擎会检查它们的可见性。
+
+仅索引扫描的成本估算取决于堆中所有可见页面的比例。PostgreSQL 会收集此类统计数据：
+
+#+begin_src sql
+  select relpages, relallvisible
+  from pg_class where relname='bookings';
+#+end_src
+
+仅索引扫描的成本估算与普通索引扫描不同：其与表访问相关的 I/O 成本与未出现在可见性映射中的页面比例成正比。(元组处
+理的成本估算是一样的）。
+
+由于在这个特定的例子中，所有页面只包含全部可见的元组，因此堆 I/O 的成本实际上不包括在成本估算中：
+
+#+begin_src sql
+  with costs(idx_cost, tbl_cost) as (
+  select
+  (
+  select round(
+  current_setting('roundom_page_cost')::real * pages +
+  current_setting('cpu_index_tuple_cost')::real * tuples +
+  current_setting('cpu_operator_cost')::real * tuples
+  )
+  from (
+  select relpages * 0.0630 as pages,
+  reltuples * 0.0634 as tuples
+  from pg_class where relname='bookings_pkey'
+  ) c
+  ) as idx_cost,
+  (
+  select round(
+  (1-frac_visible) *
+  current_setting('seq_page_cost')::real * pages +
+  current_setting('cpu_tuple_cost')::real * tuples
+  )
+  from (
+  select relpages * 0.0630 as pages,
+  reltuples * 0.0630 as tuples,
+  relallvisible::real/relpages::real as frac_visible
+  from pg_class where relname='bookings'
+  ) c
+  ) as tbl_cost
+  )
+  select idx_cost, tbl_cost, idx_cost + tbl_cost as total
+  from costs;
+#+end_src
+
+任何尚未消失在数据库范围内的未真空变更都会增加计划的估计成本（从而降低该计划对优化器的吸引力）。EXPLAIN ANALYZE
+命令可以显示实际的堆访问次数。
+
+在新创建的表中，PostgreSQL 必须检查所有元组的可见性：
+
+#+begin_src sql
+  create temp table bookings_tmp
+  with (autovaccum_enable=off) as
+  select * from bookings
+  order by book_ref;
+  alter table bookings_tmp add primary key (book_ref);
+  analyze bookings_tmp;
+  explain (analyze, timing off, summary off)
+  select book_ref from bookings_tmp where book_ref < '100000';
+#+end_src
+
+但是，一旦表格被清空，这种检查就变得多余了，只要所有页面仍然是全可见的，就不会执行这种检查。
+
+#+begin_src sql
+  vaccum bookings_tmp;
+  explain (analyze, timing off, summary off)
+  select book_ref from bookings_tmp where book_ref < '100000';
+#+end_src
+
+使用包含子句的索引
+
+并非总能用查询所需的所有列来扩展索引：
+
++ 对于唯一索引，添加新列会影响原始键列的唯一性。
++ 索引访问方法可能没有为要添加的列的数据类型提供操作符类。
+
+在这种情况下，您仍然可以将列包含到索引中，而不将其作为索引键的一部分。当然，我们不可能根据包含的列执行索引扫描，但
+如果查询引用了这些列，索引就会起到覆盖列的作用。
+
+下面的示例展示了如何用另一个包含列的索引替换自动创建的主键索引：
+
+#+begin_src sql
+  create unique index on bookings(book_ref) include (book_date);
+
+  begin;
+  alter table bookings drop constraint bookings_pkey cascade;
+
+  alter table bookings add constraint bookings_pkey primary key
+  using index bookings_book_ref_book_date_idx; -- a new index
+
+  alter table tickets
+  add foreign key(book_ref) references bookings(book_ref);
+
+  commit;
+
+  explain select book_ref, book_date
+  from bookings where book_ref < '100000';
+#+end_src
+
+#+begin_comment
+  这类索引通常被称为覆盖索引，但其实并不完全正确。如果索引的列集涵盖了特定查询所需的所有列，那么该索引就被认为是覆
+  盖索引。至于是否涉及 INCLUDE 子句添加的任何列，或者是否只使用关键列，这并不重要。此外，同一个索引可以覆盖一个查
+  询，但不能覆盖另一个查询。
+#+end_comment
+
+** 位图扫描
+
+索引扫描的效率是有限的：随着相关性的降低，对堆页面的访问次数也会增加，扫描就会变成随机的，而不是顺序的。 为了克服这
+一限制，PostgreSQL 可以在访问表之前获取所有 TID，并根据页码按升序排序。这正是位图扫描的工作原理，也是处理 TID 的
+另一种常用方法。支持 BITMAP SCAN 属性的访问方法可以使用这种方法。
+
+与常规索引扫描不同，该操作在查询计划中由两个节点表示：
+
+#+begin_src sql
+  create index on bookings(total_amount);
+  explain
+  select * from bookings where total_amount=48500.00;
+#+end_src
+
+位图索引扫描节点从访问方法中获取所有 TID 的位图。
+
+位图由独立的段组成，每个段对应一个堆页面。所有这些段的大小相同，无论有多少个元组，都足以容纳所有页面元组。这个数量是
+有限的，因为元组头相当大；一个标准大小的页面最多可容纳 256 个元组，相当于 32 个字节。
+
+然后，位图堆扫描逐段遍历位图，读取相应的页，并检查所有标记为全可见的元组。因此，页面会根据其编号按升序读取，而且每
+个页面都会被精确读取一次。
+
+尽管如此，这一过程与顺序扫描并不相同，因为访问的页面很少彼此相随。因此，位图堆扫描节点通过异步读取
+effective_io_concurrency 页面来实现自己的预取，而且它是唯一一个这样做的节点。这种机制依赖于某些操作系统实现的
+posix_fadvise 函数。如果系统支持该功能，则应根据硬件能力在表空间级别配置 effective_io_concurrency 参数。
+
+#+begin_comment
+  其他一些内部进程也使用异步预取：
+  + 为索引页删除堆记录时
+  + 分析期间的堆页面 ( ANALYZE)
+  预取深度由 maintenance_io_concurrency 定义。
+#+end_comment
+
+位图精度
+
+满足查询过滤条件的元组页面越多，位图就越大。位图建立在后端本地内存中，其大小受 work_mem 参数的限制。一旦达到允许
+的最大大小，某些位图段就会变成有损段：有损段的每个比特对应一整页，而段本身则包含一系列页面。因此，位图的大小会变小，
+但精度会降低。
+
+EXPLAIN ANALYZE 命令会显示所构建位图的精度：
+
+#+begin_src sql
+  select (analyze, costs off, timing off, summary off)
+  select * from bookings where total_amount > 150000.00;
+#+end_src
+
+在这里，我们有足够的内存来绘制精确的位图。
+
+如果我们降低 work_mem 值，部分位图段就会变得有损：
+
+#+begin_src sql
+  set work_mem='512kB';
+  explain (analyze, costs off, timing off, summary off)
+  select * from bookings where total_amount > 150000.00;
+  reset work_mem;
+#+end_src
+
+读取与有损位图段相对应的堆页面时，PostgreSQL 必须重新检查页面中每个元组的过滤条件。要重新检查的条件在计划中总是显
+示为重新检查条件（Recheck Cond），即使没有执行重新检查。在重新检查过程中被过滤掉的图元数量会单独显示（如通过索引
+重新检查删除的行数）。
+
+#+begin_comment
+  如果结果集的大小过大，位图可能无法容纳 work_mem 内存块，即使其所有段都是有损的。那么这个限制将被忽略，位图将占
+  用所需的空间。PostgreSQL 既不会进一步降低位图的精度，也不会将其任何段刷新到磁盘。
+#+end_comment
+
+位图操作
+
+如果查询对多个表列应用了条件，而这些表列上又分别创建了索引，那么位图扫描就可以同时使用多个索引。所有这些索引都有自
+己的位图；然后使用逻辑连接（如果表达式通过 AND 连接）或逻辑析取（如果表达式通过 OR 连接）将这些位图逐位组合在一
+起。例如
+
+#+begin_src sql
+  explain (costs off)
+  select * from bookings
+  where book_date < '2016-08-28'
+  and total_amount > 250000;
+#+end_src
+
+在这里，BitmapAnd 节点使用比特 AND 运算将两个位图组合在一起。
+
+在将两个位图合并为一个位图时，如果新的位图适合 work_mem 内存块，则合并后的精确线段仍然是精确的，但如果两个位图中
+的任何一个线段是有损的，则合并后的线段也将是有损的。
+
+代价估算
+
+让我们看看使用位图扫描的查询：
+
+#+begin_src sql
+  explain
+  select * from bookings where total_amount=28000.00;
+#+end_src
+
+规划器使用的条件的近似选择性等于
+
+#+begin_src sql
+  select round(31878::numeric/reltuples::numeric, 4)
+  from pg_class where relname='bookings';
+#+end_src
+
+位图索引扫描节点总成本的估算方法与不考虑堆访问的常规索引扫描成本相同：
+
+#+begin_src sql
+  select round(
+  current_setting('random_page_cost')::real * pages +
+  current_setting('cpu_index_tuple_cost')::real * tuples +
+  current_setting('cpu_operator_cost')::real * tuples
+  )
+  from (
+  select relpages * 0.0151 as pages, reltuples * 0.0151 as tuples
+  from pg_class where relname='bookings_total_amount_idx'
+  )c ;
+#+end_src
+
+位图堆扫描节点的 I/O 成本估算与常规索引扫描的完全相关情况不同。位图允许根据页码按升序读取堆页面，而不会返回到同一
+个页面，但满足过滤条件的元组不会再相互跟随。PostgreSQL 可能要访问更多的页面，而不是读取相当紧凑的严格按顺序排列的
+页面范围。
+
+[[./images/zhFbbq.png]]
+
+待读页数按以下公式估算：
+
+$$ min(\frac{2relpages*reltupes*sel}{2relpages+reltuples*sel},relpages) $$
+  
+读取单个页面的估计成本介于 seq_page_cost 和 random_page_cost 之间，具体取决于获取的页面数与表中页面总数的比率：
+
+#+begin_src sql
+  with t as (
+  select relpages,
+  least(
+  (2*relpages*reltuples*0.0151)/
+  (2*relpages+reltuples*0.0151),
+  relpages
+  ) as pages_fetched,
+  round(reltuples*0.0151) as tuples_fetched,
+  current_setting('random_page_cost')::real as rnd_cost,
+  current_setting('seq_page_cost')::real as seq_cost
+  from pg_class where relname='bookings'
+  )
+  select pages_fetched,
+  rnd_cost-(rnd_cost-seq_cost)*
+  sqrt(pages_fetched/relpages) as cost_per_page,
+  tuples_fetched
+  from t;
+#+end_src
+
+与往常一样，I/O 估算值会因处理每个获取的元组的成本而增加。如果使用的是精确的位图，那么元组数量的估计值就是表中元组
+的总数乘以过滤条件的选择性。但是，如果任何位图段是有损的，PostgreSQL 就必须访问相应页面，重新检查所有图元。
+
+[[./images/DnKGkF.png]]
+
+因此，估算时要考虑到有损位图段的预期比例（可根据所选行的总数和 work_mem 定义的位图大小限制来计算）。
+
+[[./images/BSNoQR.png]]
 
 
+这里的位图是精确的，成本估算大致如下：
 
+#+begin_src sql
+  with t as (
+  select 1 as cost_per_page,
+          13447 as pages_fetched,
+          31878 as tuples_fetched
+  ),
+  costs(startup_cost, run_cost) as (
+    select
+      ( select round(
+          589 /* cost estimation for the child node*/ +
+          0.1 * current_setting('cpu_operator_cost')::real *
+          reltuples * 0.0151
+      ),
+      ( select round(
+           cost_per_page * page_fetched +
+           current_setting('cpu_tuple_cost')::real * tuples_fetched +
+           current_setting('cpu_operator_cost')::real * tuples_fetched
+      )
+      from t
+    )
+  )
+  select startup_cost, run_cost,
+       startup_cost + run_cost as total_cost
+  from costs;
+#+end_src
 
+如果查询计划合并了多个位图，则单独索引扫描的成本总和会因合并这些位图而增加（很小的）成本。
+
+** 并行索引扫描
+
+所有索引扫描模式--常规索引扫描、仅索引扫描和位图扫描--都有各自的并行计划。
+
+并行执行成本的估算方法与顺序执行成本的估算方法相同，但（就像并行顺序扫描一样）CPU 资源会在所有并行进程之间分配，
+从而降低总成本。成本中的 I/O 部分不会被分配，因为进程会同步按顺序执行页面访问。
+
+现在，让我向大家展示几个并行计划的例子，但不对其成本估算进行细分。
+
+一个并行索引扫描：
+
+#+begin_src sql
+  explain select sum(total_amount)
+  from bookings where book_ref<'400000';
+#+end_src
+
+在对 B 树进行并行扫描时，当前索引页的 ID 会保存在服务器的共享内存中。初始值由开始扫描的进程设定：它从树根遍历到第
+一个合适的叶页，并保存其 ID。工作进程根据需要访问后续索引页，替换保存的 ID。获取页面后，工作进程会遍历所有合适的条
+目，并读取相应的堆元组。当 Worker 读取完满足查询过滤器要求的所有值时，扫描结束。
+
+一个仅索引的并行扫描：
+
+#+begin_src sql
+  explain select sum(total_amount)
+  from bookings where total_amount < 50000.00;
+#+end_src
+
+只对索引进行的并行扫描会跳过对所有可见页面的堆访问，这是它与并行索引扫描的唯一区别。
+
+一个位图并行扫描:
+
+#+begin_src sql
+  explain select sum(total_amount)
+  from bookings where book_date<'2016-10-01';
+#+end_src
+
+位图扫描意味着位图总是由单个领导进程按顺序创建；因此，位图索引扫描节点的名称不包含 Parallel（并行）字样。位图准备
+就绪后，并行位图堆扫描节点开始并行堆扫描。工作进程会访问后续的堆页面，并同时处理它们。
+
+** 各种接入方法的比较
+
+下图显示了各种访问方法的成本如何取决于过滤条件的选择性：
+
+[[./images/rYdlmq.png]]
+
+这是一个定性图表；实际数字当然取决于特定的表格和服务器配置。
+
+顺序扫描不依赖于选择性，而且从选定行的某一部分开始扫描，通常比其他方法更有效。
+
+索引扫描的成本受元组物理顺序与访问方法返回的 ID 顺序之间的相关性影响。如果相关性是完美的，那么即使被选中行的比例很
+高，索引扫描的效率也会很高。但是，如果相关性较低（这种情况更为常见），索引扫描很快就会变得比顺序扫描更加昂贵。尽管
+如此，在使用索引（通常是唯一索引）选择单行时，索引扫描仍然是绝对的领导者。
+
+如果适用，纯索引扫描可以显示出很高的性能，即使所有行都被选中，也能击败顺序扫描。不过，它们的性能在很大程度上取决于
+可见性映射，在最坏的情况下，纯索引扫描可能会退化为普通索引扫描。
+
+位图扫描的成本受可用内存大小的影响，但比索引扫描成本受相关性的影响要小得多。如果相关性低，位图扫描的成本就会低得多。
+
+每种访问方法都有自己完美的使用场景；没有一种方法总是优于其他方法。规划人员必须进行大量计算，才能估算出每种方法在每
+种特定情况下的效率。显然，这些估算的准确性在很大程度上取决于收集到的统计数据的准确性。
 
 
 
