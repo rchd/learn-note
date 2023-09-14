@@ -2655,6 +2655,467 @@ $$ min(\frac{2relpages*reltupes*sel}{2relpages+reltuples*sel},relpages) $$
 种特定情况下的效率。显然，这些估算的准确性在很大程度上取决于收集到的统计数据的准确性。
 
 
+* 嵌套循环
+
+** 连接类型和方法
+
+连接是 SQL 语言的一个关键特征；它是 SQL 语言强大和灵活的基础。记录集（可以直接从表中获取，也可以通过其他操作接收）
+总是成对连接的。
+
+有如下类型的连接
+
+*Inner joins* 内连接（指定为 INNER JOIN，或简称 JOIN）包括满足特定连接条件的两组记录对。连接条件将一组行的某
+些列与另一组行的某些列结合起来；所有涉及的列构成连接键。
+
+如果连接条件要求两个集合的连接键相等，这样的连接称为等连接；这是最常见的连接类型。
+
+两个集合的笛卡尔积（交叉连接）包括这些集合中所有可能的行对--它是带有真实条件的内部连接的一种特殊情况。
+
+*Outer joins* 左外连接（指定为 LEFT OUTER JOIN，或简称为 LEFT JOIN）通过左集合中在右集合中没有匹配的记录（
+相应的右侧列用 NULL 值填充）来扩展内连接的结果。
+
+右外连接（RIGHT JOIN）也是如此，直到集合的排列。
+
+全外连接（指定为 FULL JOIN）包括左外连接和右外连接，同时添加未找到匹配的右侧和左侧记录。
+
+*Anti-Joins and Semi-Joins* 半连接看起来很像内连接，但它只包括左集合中与右集合匹配的记录（即使有多个匹配记录，
+也只包括一次）。
+
+反连接包括一个集合中在另一个集合中没有匹配的行。
+
+SQL 语言没有明确的半连接和反连接，但使用 EXISTS 和 NOT EXISTS 等谓词也能达到同样的效果。
+
+所有这些连接都是逻辑运算。例如，内连接通常被描述为清除了不满足连接条件的记录的笛卡尔积。但在物理层面上，内连接通常是
+通过成本较低的方式实现的。
+
+PostgreSQl提供几种连接方法
+
++ 嵌套循环连接
++ 哈希连接
++ 归并连接
+
+连接方法是实现 SQL 连接逻辑运算的算法。尽管这些基本算法可能只支持其中的一些类型，但它们通常都有为特定连接类型量身
+定制的特殊功能。例如，嵌套循环支持内连接（在计划中以嵌套循环节点表示）和左外连接（以嵌套循环左连接节点表示），但不
+能用于全连接。
+
+同样算法的某些功能也可用于其他操作，如聚合。
+
+不同的连接方法在不同的条件下效果最佳；规划器的工作就是选择成本效益最高的方法。
+
+** COMMENT 嵌套循环连接
+
+嵌套循环连接功能的基本算法如下。外循环遍历第一个数据集中的所有行（称为外集）。对于其中的每一条记录，嵌套循环都会遍
+历第二个数据集（称为内集）中的记录，找出满足连接条件的记录。找到的每一对记录都会作为查询结果的一部分立即返回。
+
+算法访问内集的次数与外集中的行数相同。因此，嵌套循环连接的效率取决于多个因素：
+
++ 外集行数的Cardinality
++ 是否有一种访问方法可以高效地获取内集所需的行数
++ 同时访问内集的相同行
+
+笛卡尔积
+
+无论集合中有多少行，嵌套循环连接都是查找笛卡尔积的最有效方法：
+
+#+begin_src sql
+  explain select * from aircrafts_data a1
+  cross join aircrafts_data a2
+  where a2.range > 5000;
+#+end_src
+
+[[./images/lyZkrf.png]]
+
+嵌套循环节点使用上述算法执行连接。它总是有两个子节点：在计划中显示较高的节点对应外层行集，而较低的节点代表内层行集。
+
+在本例中，内集由 Materialize 节点表示。该节点返回从子节点接收到的记录，并将其保存起来以备将来使用（记录在内存中
+累积，直到其总大小达到 4MB work_mem，然后 PostgreSQL 开始将其溢出到磁盘上的临时文件中）。如果再次访问，节点会
+读取累积的行，而不会调用子节点。因此，执行者可以避免再次扫描整个表，而只读取满足条件的行。
+
+对于使用常规等连接的查询，也可以建立类似的计划：
+
+#+begin_src sql :engine postgres 
+  explain select *
+  from tickets t
+  join ticket_flights tf on tf.ticket_no=t.ticket_no
+  where t.ticket_no='0005432000284';
+#+end_src
+
+在确认两个值相等后，计划器用 tf.ticket_no = 常量条件替换了连接条件 tf.ticket_no = t.ticket_no，实际上将等
+连接简化为笛卡尔乘积。
+
+Cardinality 估算  笛卡尔积的Cardinality是根据连接数据集的Cardinality的乘积估算的： 3 = 1 × 3.
+
+代价估算  连接操作的启动成本综合了所有子节点的启动成本。
+
+连接操作的全部代价包括以下部分：
+
++ 获取外集所有记录的成本
++ 单次检索内集所有行的成本（因为外集的Cardinality估计值等于 1）
++ 每返回一行的处理成本
+
+以下是成本估算的依赖关系图：
+
+[[./images/YmXPiI.png]]
+
+连接操作的代价计算如下所示
+
+#+begin_src sql
+  select 0.43+0.56 as startup_cost,
+  round((
+      8.45+16.57+
+      3*current_setting('cpu_tuple_cost')::real
+      )::numeric, 2) as total_cost;
+#+end_src
+
+回到上一个示例
+
+#+begin_src sql
+  explain select *
+  from aircrafts_data a1
+  cross join aircrafts_data a2
+  where a2.range > 5000;
+#+end_src
+
+现在，计划中包含了 Materialize 节点；在累积了从其子节点接收到的记录后，Materialize 会在所有后续调用中更快地返
+回这些记录。
+
+一般来说，连接总成本包括以下：
+
++ 获取外集所有行的成本
++ 初始获取内集所有行的成本（在此期间将执行具体化操作）
++ 重复获取内集行的 (N-1)- 倍成本（此处 N 为外集的行数）
++ 每返回一行的处理成本
+
+这里的依赖关系图如下
+
+[[./images/xd10tS.png]]
+
+在本例中，物化减少了重复数据获取的成本。计划中显示了第一次 Materialize 调用的成本，但没有列出所有后续调用。我不会
+在此提供任何计算结果，但在这个特定案例中，估算值为 0.0125。
+
+因此，本例中的连接成本计算如下：
+
+#+begin_src sql
+  select 0.00+0.00 as startup_cost,
+  round((
+      1.09+(1.14+8*0.0125)+
+      45*current_setting('cpu_tuple_cost')::real
+      )::numeric, 2) as total_cost;
+#+end_src
+
+参数化连接
+
+现在让我们来看一个更常见的例子，它并不归结为笛卡尔积：
+
+#+begin_src sql
+  create index on tickets(book_ref);
+  explain select *
+  from tickets t
+  join ticket_flights tf on tf.ticket_no=t.ticket_no
+  where t.book_ref='03A76D';
+#+end_src
+
+在这里，嵌套循环节点遍历外层集合（tickets）的行，并为其中的每一行搜索内层集合（flights）的相应行，同时将机票号码
+(t.ticket_no) 作为参数传递给条件。当调用内部节点（Index Scan）时，它必须处理 ticket_no = 常量这一条件。
+
+Cardinality估算。 规划器估计，外集的两行（rows=2）满足预订号的筛选条件，其中每行平均匹配内集的三行（rows=3）。
+
+连接选择性是连接后两个集合的笛卡尔乘积的一部分。很明显，我们必须排除两个集合中那些在连接键中包含 NULL 值的记录，
+因为它们永远不会满足相等条件。
+
+估计的Cardinality等于笛卡尔积的万有引力（即两个集合的Cardinality）乘以选择性。
+
+在这里，第一个（外）集合的估计Cardinality为两行。由于除了连接条件本身外，第二个（内部）数据集没有应用任何条件，
+因此第二个数据集的Cardinality就是 ticket_flights 表的Cardinality。
+
+由于连接的表是通过外键连接的，因此选择性的估算依赖于子表中的每一条记录在父表中都有一条完全匹配的记录这一事实。因此，
+选择性是外键所指表大小的倒数。
+
+因此，在 ticket_no 列不包含 NULL 值的情况下，估算结果如下：
+
+#+begin_src sql
+  select round(2*tf.reltuples*(1.0/t.reltuples)) as rows
+  from pg_class t, pg_class tf
+  where t.relname='tickets'
+  and tf.relname='ticket_flights';
+#+end_src
+
+显然，也可以不使用外键来连接表。那么选择性将被视为特定连接条件的估计选择性。
+
+对于本例中的等连接，假设值分布均匀的选择性估计通用公式如下：min ($$ \frac{1}{nd_2}, \frac{1}{nd_2 $$)，其
+中 $ nd_1 $ 和 $ nd_2 $ 分别代表连接键在第一组和第二组中不同值的个数。
+
+对不同值的统计显示，机票表中的机票号码是唯一的（这是意料之中的，因为 ticket_no 列是主键），而 ticket_flights
+表中每张机票大约有三条匹配行：
+
+#+begin_src sql
+  select t.n_distinct, tf.n_distinct
+  from pg_stats t, pg_stats tf
+  where t.tablename='tickets' and t.attname='ticket_no'
+  and tf.tablename='ticket_flights' and tf.attname='ticket_no';
+#+end_src
+
+结果将与外键连接的估计值相匹配：
+
+#+begin_src sql
+  select round(2*tf.reltuples*
+  least(1.0/t.reltuples, 1.0/tf.reltuples/0.30362356)
+  ) as rows
+  from pg_class t, pg_class tf
+  where t.relname='tickets' and tf.relname='ticket_flights';
+#+end_src
+
+规划器会尽可能地完善基线估计。规划器目前无法使用直方图，但如果在两个表的连接键上收集了 MCV 列表统计信息，规划器就
+会将其考虑在内。这样就能更准确地估算出列表中出现的行的选择性，只有剩余的行需要依赖基于均匀分布的计算。
+
+一般来说，如果定义了外键，联接选择性估计可能会更准确。对于复合连接键来说尤其如此，因为在这种情况下，选择性通常会被
+大大低估。
+
+使用 EXPLAIN ANALYZE 命令，不仅可以查看实际行数，还可以查看内循环的执行次数：
+
+#+begin_src sql
+  explain (analyze, timing off, summary off) select *
+  from tickets t
+  join ticet_flights tf on tf.ticket_no=t.ticket_no
+  where t.book_ref='03A76D';
+#+end_src
+
+外集包含两行（实际行数=2）；估计正确。因此索引扫描节点执行了两次（循环次数=2），每次平均选择四条记录（实际记录数=
+4）。因此，找到的记录总数为：实际行数=8。
+
+#+begin_comment
+  为了适应有限的页面宽度，我没有在输出中显示计划每个阶段的执行时间（定时关闭）；此外，在某些平台上，启用定时的输出
+  会大大降低查询的执行速度。不过，如果我们将其包括在内，PostgreSQL 将显示一个平均值，就像显示行计数一样。要获得总
+  的执行时间，你应该用这个值乘以迭代次数（循环）。
+#+end_comment
+
+*代价估算* 这里的成本估算公式与前面的例子相同。
+
+回顾一下查询计划
+
+#+begin_src sql
+  explain select *
+   from tickets t
+   join ticket_flights tf on tf.ticket_no=t.ticket_no
+   where t.book_ref='03A76D';
+#+end_src
+
+在这种情况下，以后每次扫描内集的成本与第一次扫描的成本相同。因此，我们最终会得到以下数字：
+
+#+begin_src sql
+  select 0.43+0.56 as startup_cost,
+  round((
+  12.46+2*16.57+
+  6*current_setting('cpu_tuple_cost')::real
+  )::numeric, 2) as total_cost;
+#+end_src
+
+行缓存(Memoization)
+
+如果用相同的参数值重复扫描内集（从而得到相同的结果），那么缓存内集的行可能会有好处。
+
+这种缓存由 Memoize 节点执行。Memoize 节点与 Materialize 节点类似，都是为了处理参数化连接而设计的，其实现要复
+杂得多：
+
++ Materialize 节点只是将其子节点返回的所有记录具体化，而 Memoize 则确保不同参数值返回的记录分开保存。
++ 如果出现溢出，Materialize 存储会开始将行溢出到磁盘，而 Memoize 会将所有行保留在内存中（否则就没有缓存的意义了）
+
+下面是一个使用 Memoize 的查询示例：
+
+#+begin_src sql
+  explain select *
+  from flights f
+  join aircrafts_data a on f.aircraft_code=a.aircraft_code
+  where f.flight_no='PG0003';
+#+end_src
+
+用于存储缓存行的内存块大小等于 work_mem × × hash_mem_multiplier。正如第二个参数的名称所暗示的，缓存行存储在
+哈希表中（开放寻址）。哈希键（在计划中显示为 "缓存键"）是参数值（如果有多个参数，则为多个值）
+
+所有哈希键都被绑定到一个列表中；其中一端被视为冷键（因为它包含长期未使用的键），而另一端则是热键（它存储最近使用的
+键）。
+
+如果对 Memoize 节点的调用显示所传递的参数值与已缓存的行相对应，这些行将被传递到父节点（嵌套循环），而无需检查子节
+点。然后，使用过的哈希键会被移到列表的热端。
+
+如果缓存中不包含所需的行，Memoize 节点会从其子节点中提取这些行，将其缓存并传递给上一级节点。相应的哈希键也会变成热
+键。
+
+随着新数据的缓存，它可能会占满所有可用内存。为了释放空间，冷键对应的行会被驱逐。这种驱逐算法与缓冲缓存中使用的算法不
+同，但目的相同。
+
+有些参数值可能有很多匹配行，以至于无法放入分配的内存块中，即使所有其他行都已被驱逐。这样的参数会被跳过--只缓存部分记
+录是没有意义的，因为下一次调用仍需从子节点获取所有记录。
+
+*成本和Cardinality的估算。* 这些计算结果与我们上面看到的结果非常相似。我们只需记住，计划中显示的 Memoize 节点
+的成本与其实际成本无关：它只是其子节点的成本增加了 cpu_tuple_cost 值。
+
+我们已经遇到过 Materialize 节点的类似情况：它的成本只在后续扫描中计算，不会反映在计划中。
+
+显然，只有当 Memoize 的成本低于其子节点时，使用 Memoize 才有意义。每次后续 Memoize 扫描的成本取决于预期的缓存
+访问情况和可用于缓存的内存块大小。计算值在很大程度上取决于对内部行集扫描中使用的不同参数值数量的准确估计。根据这个
+数字，可以权衡出要缓存的行和要从缓存中剔除的行的概率。预期的命中率会降低估计成本，而潜在的剔除率会增加估计成本。这
+里我们将跳过这些计算的细节。
+
+要了解查询执行过程中的实际情况，我们将像往常一样使用 EXPLAIN ANALYZE 命令：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select * from flights f
+  join aircrafts_data a on f.aircraft_code=a.aircraft_code
+  where f.flight_no='PG0003';
+#+end_src
+
+该查询选择了由特定类型飞机执行的相同航线航班，因此对 Memoize 节点的所有调用都使用了相同的哈希键。第一行必须从表中
+获取（Misses：1），但随后的所有行都能在缓存中找到（Hits：112）。整个操作仅占用 1 KB 内存。
+
+另外两个显示值为零：它们分别代表当无法缓存与特定参数集相关的所有行时，缓存溢出的次数和缓存驱逐的次数。数字过大表明
+分配的缓存太小，这可能是由于对不同参数值的数量估计不准确造成的。这样一来，使用 Memoize 节点的成本就会很高。在极端
+情况下，可以关闭启用 Memoize 参数，禁止规划器使用缓存。
+
+外连接
+
+嵌套循环连接可用于执行左外连接：
+
+#+begin_src sql
+  explain select *
+  from ticket_flights tf
+  left join boarding_passes bp on bp.ticket_no=tf.ticket_no
+            and bp.flight_id=tf.flight_id
+  where tf.ticket_no='0005434026720';
+#+end_src
+
+这里的连接操作由Nested Loop Left Join节点表示。规划器选择了带筛选器的非参数化连接：它对内部记录集执行相同的扫
+描（因此该记录集隐藏在 Materialize 节点后面），并返回满足筛选条件（Join Filter）的记录。
+
+外连接的Cardinality估算与内连接的Cardinality估算一样，只是将计算出的估算值与外部行集的卡入度进行比较，并将
+较大的值作为最终结果。换句话说，外连接不会减少记录数（但可以增加）。
+
+成本估算与内部连接类似。
+
+我们还必须记住，规划器可以为内连接和外连接选择不同的计划。如果规划器被迫使用嵌套循环连接，即使是这个简单的示例也会有
+不同的连接过滤器：
+
+#+begin_src sql
+  set enable_mergejoin=off;
+  explain select *
+  from ticket_flights tf
+  join boarding_passes bp on bp.ticket_no=tf.ticket_no
+                        and bp.flight_id=tf.flight_id
+  where tf.ticket_no='0005434026720';
+  reset enable_mergejoin;
+#+end_src
+
+由于外连接还必须检查票号，以便在外层行中没有匹配的情况下得到正确的结果，因此总成本略有不同。
+
+由于嵌套循环算法对内集和外集的处理方式不同，因此不支持右连接。外层集会被全部扫描；至于内层集，索引访问只允许读取满
+足连接条件的记录，因此其中一些记录可能会被完全跳过。
+
+出于同样的原因，不支持完全连接。
+
+反连接和半连接
+
+反连接和半连接的相似之处在于，对于第一（外）集合中的每一行，只需在第二（内）集合中找到一个匹配行即可。
+
+反连接仅在第一数据集中的记录在第二数据集中没有匹配记录的情况下才会返回：只要执行器在第二数据集中找到第一条匹配记录，
+就可以退出当前循环：第一数据集中的相应记录必须从结果中排除。
+
+反连接可用于计算 NOT EXISTS 谓词。
+
+例如，让我们查找未定义机舱配置的飞机模型。相应的计划包含;Nested Loop Anti Join节点：
+
+#+begin_src sql
+  explain select *
+  from aircrafts a
+  where not exists (
+      select * from seats s where s.aircrafts_code=a.aircrafts_code
+  );
+#+end_src
+
+不使用 NOT EXISTS 谓词的其他查询将具有相同的计划：
+
+#+begin_src sql
+  explain select a.*
+  from aircrafts a
+  left join seats s on a.aircraft_code=s.aircraft_code
+  where s.aircraft_code is null ;
+#+end_src
+
+半连接会返回第一数据集中至少有一条匹配记录在第二数据集中的行列（同样，无需检查数据集中是否有其他匹配记录--结果已经
+知道了）。
+
+半连接可用于计算 EXISTS 谓词。让我们查找机舱内安装有座椅的飞机型号：
+
+#+begin_src sql
+  explain select *
+  from aircrafts a
+  where exists (
+     select * from seats s
+     where s.aircraft_code=a.aircraft_code
+  );
+#+end_src
+
+Nested Loop Semi Join节点表示同名连接方法。该计划（就像上面的反连接计划一样）提供了座位表（rows=149）中行数
+的基本估计，尽管只检索其中一条就足够了。当然，实际查询执行会在获取第一行后停止：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select * from aircrafts a
+  where exists(
+     select * from aircrafts a
+     where s.aircraft_code=a.aircraft_code
+  );
+#+end_src
+
+*Cardinality估算。* 半连接的选择性是按照通常的方式估算的，只是内集的卡方数取为 1。对于反连接，估计的选择性会从
+1 减去，就像否定一样。
+
+*代价估算。* 对于反连接和半连接，成本估算反映了这样一个事实，即一旦找到第一个匹配行，第二组的扫描就会停止。
+
+不等值连接
+
+嵌套循环算法允许根据任何连接条件连接记录集。
+
+显然，如果内集是一个基表，并在其上创建了索引，而连接条件使用的操作符属于该索引的操作符类，那么对内集的访问就会非常
+高效。但是，我们总是可以通过计算由某些条件过滤的记录的笛卡尔乘积来执行连接--在这种情况下，条件可以是绝对任意的。就
+像下面的查询，它选择的是一对相互靠近的机场：
+
+#+begin_src sql
+  create extension earthdistance cascade;
+  explain (costs off) select *
+  from airports a1
+  join airports a2 on a1.airport_code!=a.airport_code
+                   and a1.coordinates <@> a2.coordinates<100;
+#+end_src
+
+并行模式
+
+嵌套循环连接可参与并行计划执行。
+
+只有外集可以并行处理，因为它可以由多个工作者同时扫描。获取外层行后，每个Worker都要在内集中搜索匹配的行，这需要按
+顺序完成。
+
+下图中的查询包括几个连接；它搜索的是持有特定航班机票的乘客：
+
+#+begin_src sql
+  explain (costs off) select t.passenger_name
+  from tickets t
+  join ticket_flights tf on tf.ticket_no=t.ticket_no
+  join flights f on f.flight_id=tf.flight_id
+  where f.flight_id=12345;
+#+end_src
+
+在上层，嵌套循环连接是按顺序执行的。外层集由航班表中通过唯一键获取的单行组成，因此即使内层行数较多，嵌套循环的使用
+也是合理的。
+
+使用并行计划检索内集。每个工作员扫描自己在 ticket_flights 表中所占的行，并使用嵌套循环算法将它们与机票连接起来。
+
+
+
+
+
+
+
 
 
 
