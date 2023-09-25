@@ -3113,6 +3113,492 @@ Nested Loop Semi Join节点表示同名连接方法。该计划（就像上面�
 
 
 
+* 哈希
+
+** 哈希连接
+
+单程哈希连接
+
+散列连接使用预先建立的散列表搜索匹配的记录。下面是一个使用这种连接的计划示例：
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets t
+  join ticket_flights tf on tf.ticket_no=t.ticket_no;
+#+end_src
+
+在第一阶段，Hash Join节点会调用Hash节点，后者会从其子节点中提取整个内部行集，并将其放入哈希表中。
+
+散列表存储的是散列键和值对，可以通过键快速访问值；搜索时间与散列表的大小无关，因为散列键或多或少地均匀分布在数量有
+限的桶中。给定密钥所属的散列桶由散列密钥的散列函数决定；由于散列桶的数量总是 2 的幂次，因此只需提取计算值所需的比
+特数即可。
+
+与缓冲存储器缓存一样，这种实现方式也使用可动态扩展的哈希表，通过链式连接解决哈希碰撞问题。
+
+在连接操作的第一阶段，会扫描内集，并为其每一行计算哈希函数。连接条件（Hash Cond）中引用的列作为哈希键，而哈希表本
+身则存储内集的所有查询字段。
+
+如果整个哈希表都能在内存中容纳，那么哈希连接的效率就会最高，因为在这种情况下，执行器可以一次性处理数据。为此分配的
+内存块大小受 work_mem × hash_mem_multiplier 值的限制。
+
+[[./images/20MXNo.png]]
+
+让我们运行 EXPLAIN ANALYZE 来统计查询的内存使用情况：
+
+#+begin_src sql
+  set work_mem='256MB';
+  explain (analyze, costs off, timing off, summary off)
+  select * from bookings b
+  join tickets j on b.book_ref=t.book_ref;
+#+end_src
+
+嵌套循环连接会区别对待内集和外集，而散列连接则不同，它可以交换内集和外集。较小的集合通常被用作内部集合，因为这样可
+以得到更小的哈希表。
+
+在本例中，整个表都可以放入分配的缓存中：占用大约 143MB（Memory Usage），包含 $$ 4M = 2^{32} $$ 个数据桶。
+因此，连接是一次性完成的（Batches）。
+
+但如果查询只涉及一列，哈希表的容量将达到 111MB：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select b.book_ref
+  from bookings b
+  join tickets t on b.book_ref=t.book_ref;
+  reset work_mem;
+#+end_src
+
+这也是避免在查询中引用多余字段的另一个原因（举例来说，如果使用星号，就会出现这种情况）。
+
+所选的桶数应能保证在哈希表完全被数据填满时，每个桶平均只容纳一条记录。密度越大，散列碰撞率越高，搜索效率越低，而密
+度越小，散列表占用的内存就越大。估计的哈希表桶数会增加到最接近的 2 的幂次。
+
+(如果根据单行平均宽度估算的哈希表大小超过内存限制，则将采用两次散列）。
+
+在哈希表完全建立之前，哈希连接不能开始返回结果。
+
+在第二阶段（此时哈希表已经建立），哈希连接节点会调用它的第二个子节点来获取外层行集。对于扫描的每一行，哈希表都会搜
+索匹配项。这需要计算外集中包含在连接条件中的列的哈希键。
+
+[[./images/yMmJms.png]]
+
+找到的匹配结果会返回到父节点。
+
+*代价估算。* 我们已经介绍过Cardinality估计；由于它不依赖于连接方法，我现在将重点介绍成本估计。
+
+Hash节点的成本由其子节点的总成本表示。它是一个虚数，只是用来填补计划中的空位。所有实际估算都包含在Hash Join节
+点的成本中。
+
+如下示例
+
+#+begin_src sql
+  explain (analyze, timing off, summary off)
+  select * from flights f
+  join seats s on s.aircraft_code=t.aircraft_code;
+#+end_src
+
+连接的启动成本主要是创建哈希表的成本，包括以下部分：
+
++ 获取内集的总成本，这是建立哈希表所必需的
++ 计算连接键中包含的所有列的哈希函数的成本，针对内集的每一行（按每次操作的 cpu_operator_cost 估算）
++ 将所有内层行插入哈希表的成本（按每插入一行的 cpu_tuple_cost 估算）
++ 获取外层记录集的启动成本，这是启动连接操作所必需的
+
+总成本包括启动成本和连接本身的成本，即
+
++ 计算外集每一行中包含在连接键中的所有列的哈希函数的成本（cpu_operator_cost）
++ 连接条件重新检查的成本，这是处理可能的哈希碰撞所必需的（按每个被检查运算符的 cpu_operator_cost 估算）
++ 每一行的处理成本 ( cpu_tuple_cost)
+
+所需重新检查的次数是最难估算的。计算方法是将外集的行数乘以内集（存储在哈希表中）的某个分数。为了估算这个分数，规划
+者必须考虑到数据分布可能不均匀。我就不详细介绍这些计算方法了；在本例中，这个分数估计为 0.150112。
+
+因此，我们的查询成本估计如下：
+
+#+begin_src sql
+  with cost(startup) as (
+  select round((
+  21.39+
+  current_setting('cpu_operator_cost')::real*1339+
+  current_setting('cpu_tuple_cost')::real*1339+
+  0.00
+  )::numeric, 2)
+  )
+#+end_src
+
+#+begin_src sql
+  select startup,
+  startup+round((
+  4772.67+
+  current_setting('cpu_operator_cost')::real*214867+
+  current_setting('cpu_operator_cost')::real*214867*1339*
+  0.150112+
+  current_setting('cpu_tuple_cost')::real*16518865
+  )::numeric, 2) as total
+  from cost;
+#+end_src
+
+[[./images/wFQmaw.png]]
+
+两次哈希连接
+
+如果规划器的估算结果表明哈希表无法满足分配的内存，那么内部行集就会被分割成多个批次，分别处理。批次的数量（就像桶的
+数量一样）总是 2 的幂次；使用的批次由散列键的相应位数决定。
+
+任何两个匹配的记录都属于同一个批次：不同批次的记录不能有相同的哈希代码。
+
+所有批次都持有相同数量的哈希键。如果数据分布均匀，批次大小也会大致相同。规划器可以通过选择适当数量的批次来控制内存
+消耗。
+
+在第一阶段，执行器会扫描内部行集，以建立哈希表。如果扫描到的行属于第一批，则将其添加到哈希表中并保存在 RAM 中。否
+则，它将被写入一个临时文件（每个批次都有一个单独的文件）。
+
+#+begin_comment
+  会话在磁盘上可存储的临时文件总量受 temp_file_limit 参数限制（临时表不包括在此限制内）。一旦会话达到这个值，查
+  询就会中止
+#+end_comment
+
+[[./images/VLYiI5.png]]
+
+在第二阶段，对外部集合进行扫描。如果该行属于第一批，则与哈希表进行匹配，哈希表中包含内集的第一批行（反正其他批次的
+行也不可能匹配）。
+
+如果该行属于不同的批次，它将被存储在一个临时文件中，而该临时文件又是为每个批次单独创建的。因此，N 个批次可以使用
+2(N - 1) 个文件（如果某些批次是空的，则使用的文件数会更少）。
+
+第二阶段完成后，为哈希表分配的内存将被释放。此时，我们已经有了其中一个批次的连接结果。
+
+[[./images/9CSqza.png]]
+
+对于保存在磁盘上的每个批次，这两个阶段都要重复：内集的行从临时文件转移到哈希表；然后从另一个临时文件读取与同一批次
+相关的外集的行，并与哈希表进行匹配。处理完成后，临时文件将被删除。
+
+[[./images/qDncCu.png]]
+
+与一阶段连接的类似输出不同，双程连接的 EXPLAIN 命令输出包含多个批次。如果使用 BUFFERS 选项运行，该命令还会显示磁
+盘访问的统计数据：
+
+#+begin_src sql
+  explain (analyze, buffers, costs off, timing off, summary off)
+  select *
+  from bookings b
+  join tickets t on b.book_ref=t.book_ref;
+  
+#+end_src
+
+我已经在上文展示了增加 work_mem 设置后的查询。 默认值 4MB 太小，整个哈希表无法容纳在 RAM 中；在本例中，数据被
+分成 64 个批次，哈希表使用 $$ 64K = 2^16 $$ 个桶。在建立哈希表时（哈希节点），数据会被写入临时文件
+（temp written）；在连接阶段（哈希连接节点），临时文件会被读取和写入（temp read, written）。
+
+要收集更多有关临时文件的统计数据，可以将 log_temp_files 参数设置为零。这样服务器日志就会列出所有临时文件及其大小
+（如删除时的大小）。
+
+动态调整
+
+计划中的事件进程可能会受到两个问题的干扰：不准确的统计数据和不均匀的数据分布。
+
+如果连接键列中的值分布不均匀，不同批次的大小就会不同。
+
+如果某个批次（第一个批次除外）的数据量太大，就必须将其所有行写入磁盘，然后再从磁盘读取。最麻烦的是外层集，因为它通
+常比较大。因此，如果外集的 MCVS 存在有规律的、非多变量统计（即外集由表代表，而连接由单列执行），则具有与 MCVS 相
+对应的哈希代码的行将被视为第一批的一部分。这种技术（称为偏斜优化）可以在一定程度上减少两次连接的 I/O 开销。
+
+由于这两个因素，部分（或全部）批次的大小可能会超出估计值。这样，相应的哈希表就无法容纳所分配的内存块，并会超出所定义
+的限制。
+
+因此，如果建立的哈希表过大，批次数量就会立即增加（翻倍）。每个批次实际上被分成两个新的批次：大约一半的行（假设分布均
+匀）留在哈希表中，另一半保存到一个新的临时文件中。
+
+即使最初计划的是一阶段连接，也可能发生这种分割。事实上，一阶段连接和两阶段连接使用的是同一种算法，由相同的代码实现；
+我在这里将它们单独列出，只是为了叙述得更流畅。
+
+批次数量不能减少。如果发现规划器高估了数据大小，批次将不会合并在一起。
+
+在分布不均匀的情况下，增加批次数量可能无济于事。例如，如果键列的所有行中都包含一个相同的值，那么它们就会被放入同一
+个批次，因为哈希函数会重复返回相同的值。不幸的是，在这种情况下，哈希表将继续增长，而不管施加了什么限制。
+
+#+begin_comment
+  理论上，这个问题可以通过多路连接来解决，多路连接会对批次执行部分扫描，但目前还不支持多路连接。
+#+end_comment
+
+为了证明批次数量的动态增加，我们首先要进行一些操作：
+
+#+begin_src sql
+  create table bookings_copy (like bookings including indexes)
+  with (autovacuum_enable=off);
+  insert into bookings_copy select * from bookings;
+#+end_src
+
+#+begin_src sql
+  delete from bookings_copy where random()<0.9;
+  analyze bookings_copy;
+  insert into bookings_copy select * from bookings
+  on conflict do nothing;
+  select reltuples from pg_class where relname='bookings_copy';
+#+end_src
+
+结果，我们得到了一个名为 bookings_copy 的新表。它是预订表的精确副本，但规划器将其中的行数低估了 10 倍。如果哈希
+表是为另一个连接操作产生的记录集生成的，因此没有可靠的统计数据，也会出现类似情况。
+
+这一计算错误使规划器认为 8 个水桶就足够了，但在执行连接时，水桶数却增加到了 32 个：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select *
+  from bookings_copy b
+  join tickets t on b.book_ref=t.book_ref;
+#+end_src
+
+*代价估算。* 我已经用这个示例演示了一次连接的成本估算，但现在我要将可用内存的大小减小到最小，因此规划器将不得不使
+用两个批次。这会增加连接的成本：
+
+#+begin_src sql
+  set work_mem='64KB';
+  explain (analyze, timing off, summary off)
+  select * from flights f
+  join seats s on s.aircraft_code=f.aircraft_code;
+  reset work_mem;
+#+end_src
+
+第二遍的成本来自于将数据行溢出到临时文件中，以及从这些文件中读取数据行。
+
+两次连接的启动成本是以一次连接的启动成本为基础，再加上为存储内集所有行的所有必要字段而写入尽可能多页面的估计成本。
+虽然在建立哈希表时，第一批数据并没有写入磁盘，但估算时并没有将其考虑在内，因此并不取决于批次的数量。
+
+总成本则包括一次连接的总成本、读取先前存储在磁盘上的内集记录的估计成本，以及读取和写入外集记录的估计成本。
+
+写入和读取均按每页 seq_page_cost 估算，因为 I/O 操作被假定为顺序操作。
+
+在这种特殊情况下，内层数据集所需的页数估计为 7 页，而外层数据集的数据预计可容纳 2309 页。将这些估计值与上面计算
+的单程连接成本相加后，我们得到了与查询计划中显示的相同的数字：
+
+#+begin_src sql
+  select 38.13 + -- startup cost of a one-pass join
+  current_setting('seq_page_cost')::real*7
+  as startup,
+  278597.28+ -- total cost of a one-pass join
+  current_setting('seq_page_cost')::real*2*(7+2309)
+  as total;
+#+end_src
+
+因此，如果内存不足，连接会分两次进行，效率就会降低。因此，必须注意以下几点：
+
++ 查询的组成方式必须排除哈希表中的冗余字段。
++ 规划器在建立哈希表时，必须选择两组行中较小的一组。
+
+在并行计划中使用哈希连接
+
+上述散列连接算法也可用于并行计划。首先，几个并行进程为内集建立各自的（绝对相同的）哈希表，互不影响；然后，它们开始
+并发处理外集。这里的性能提升是由于每个进程只扫描自己的外层行。
+
+下面的计划使用常规的一阶段哈希连接：
+
+#+begin_src sql
+  set work_mem='128MB';
+  set enable_parallel_hash=off;
+  explain (analyze, costs off, timing off, summary off)
+  select count(*)
+  from bookings b
+  join tickets t on t.book_ref=b.book_ref;
+  reset enable_parallel_hash;
+#+end_src
+
+在这里，每个进程对bookings表进行散列，然后通过Parallel Index Only Scan节点检索自己的外层行份额，并将这
+些行与生成的散列表进行匹配。
+
+哈希表内存限制分别适用于每个并行进程，因此为此目的分配的内存总大小将比计划（内存使用情况）中显示的大三倍。
+
+并行一阶段哈希连接
+
+尽管普通的哈希连接在并行计划中效率很高（尤其是对于小型内集，并行处理对其意义不大），但大型数据集最好使用特殊的并行
+哈希连接算法来处理。
+
+并行版算法的一个重要区别是，哈希表是在共享内存中创建的，共享内存是动态分配的，所有参与连接操作的并行进程都可以访问。
+使用所有参与进程的专用内存总量，而不是多个单独的哈希表，建立了一个单一的公共哈希表。这增加了一次性完成连接的机会。
+
+在第一阶段（在计划中由Parallel Hash节点表示），所有并行进程利用并行访问内集的优势，建立一个共同的散列表。
+
+[[./images/IKaSna.png]]
+
+要继续前进，每个并行进程都必须完成其在第一阶段的处理份额。
+
+在第二阶段（Parallel Hash Join节点），进程再次并行运行，将其在外集行中所占的份额与此时已经建立的散列表进行匹配
+
+[[./images/d0ylLZ.png]]
+
+下面就是这样一个计划的例子：
+
+#+begin_src sql
+  set work_mem='64MB';
+  explain (analyze, costs off, timing off, summary off)
+  select count(*)
+  from bookings b
+  join tickets t on t.book_ref=b.book_ref;
+  reset work_meme;
+#+end_src
+
+这与我在上一节中展示的查询相同，但当时使用 enable_parallel_hash 参数关闭了并行散列连接。
+
+虽然与之前演示的普通散列连接相比，可用内存减少了一半，但由于使用的是为所有并行进程分配的内存（Memory Usage），因此
+操作仍能一次性完成。哈希表变大了一些，但由于现在只有一个哈希表，所以总内存使用量有所减少。
+
+
+并行二阶段哈希连接
+
+所有并行进程的合并内存可能仍然不足以容纳整个哈希表。这一点在规划阶段或之后的查询执行过程中都会很明显。在这种情况下
+采用的两阶段算法与我们迄今为止看到的算法截然不同。
+
+这种算法的主要区别在于，它创建的是多个较小的哈希表，而不是一个大表。每个进程都有自己的表，并独立处理自己的批次。(但
+由于独立的哈希表仍位于共享内存中，因此任何进程都可以访问这些表中的任何一个）。如果计划显示需要不止一个批次，则会立即
+为每个进程建立一个单独的哈希表。如果在执行阶段做出决定，则会重建哈希表。
+
+因此，在第一阶段，进程会并行扫描内集，将其分成多个批次并写入临时文件。由于每个进程只读取自己在内集中的份额，因此它们
+都不会为任何批次（即使是第一个批次）建立完整的哈希表。只有所有并行进程以同步方式写入的文件中才会累积任何批次的全行
+集。因此，与该算法的非并行版和一阶段并行版不同，并行二阶段哈希连接会将所有批次（包括第一个批次）写入磁盘。
+
+[[./images/GEVCXk.png]]
+
+所有进程完成内集散列后，第二阶段开始。
+
+如果采用非并行版算法，外集中属于第一批的行会立即与哈希表进行匹配。但在并行版本中，内存中还不包含哈希表，因此工作进
+程会独立处理批次。因此，第二阶段首先对外部集进行并行扫描，将其行分成若干批次，每批写入一个单独的临时文件。扫描的行
+不会插入哈希表（如第一阶段一样），因此批次的数量永远不会增加。
+
+如果采用非并行版算法，外集中属于第一批的行会立即与哈希表进行匹配。但在并行版本中，内存中还不包含哈希表，因此工作进
+程会独立处理批次。因此，第二阶段首先对外部集进行并行扫描，将其行分成若干批次，每批写入一个单独的临时文件。扫描的行
+不会插入哈希表（如第一阶段一样），因此批次的数量永远不会增加。
+
+一旦所有进程都完成了对外部数据集的扫描，我们就会在磁盘上得到 2N 个临时文件，其中包含内外部数据集的批次。
+
+[[./images/dCJJyU.png]]
+
+然后，每个进程选择其中一个批次并执行连接：将内层数据集的行加载到内存中的哈希表中，扫描外层数据集的行，并与哈希表进
+行匹配。当批次连接完成后，进程会选择下一个尚未处理的批次。
+
+[[./images/yIi0Im.png]]
+
+如果没有未处理的批次了，完成自己批次的进程就会开始处理另一个进程正在处理的批次；由于所有哈希表都位于共享内存中，因此
+这种并发处理是可能的。
+
+[[./images/AO8301.png]]
+
+这种方法比为所有进程使用一个大散列表更有效：更容易设置并行处理，同步也更便宜。
+
+修改
+
+哈希连接算法支持任何类型的连接：除了内连接，它还可以处理左连接、右连接和全外连接，以及半连接和反连接。但如前所述，
+连接条件仅限于相等运算符。
+
+在处理嵌套循环连接时，我们已经观察到了其中的一些操作。下面是右外部连接的示例：
+
+#+begin_src sql
+  explain (costs off) select *
+  from bookings b
+  left outer join tickets t on t.book_ref=b.book_ref;
+#+end_src
+
+请注意，SQL 查询中指定的逻辑左连接已在执行计划中转化为右连接的物理操作。
+
+在逻辑层面上，预订表是外层表（构成连接操作的左侧），而机票表是内层表。因此，连接结果中也必须包括没有门票的预订表。
+
+在物理层面上，内集和外集的分配是基于连接的成本，而不是它们在查询文本中的位置。这通常意味着，哈希表较小的集合将被用
+作内集合。这里的情况正是如此：预订表被用作内集，左连接被改为右连接。
+
+反之亦然，如果查询指定了右外部连接（显示与任何预订无关的机票），则执行计划使用左连接：
+
+#+begin_src sql
+  explain (costs off) select *
+  from bookings b
+  right outer join tickets t on t.book_ref=b.book_ref;
+#+end_src
+
+为了更全面地了解情况，我将提供一个使用完全外连接的查询计划示例：
+
+#+begin_src sql
+  explain (costs off) select *
+  from bookings b
+  full outer join tickets t on t.book_ref=b.book_ref;
+#+end_src
+
+并行哈希连接目前不支持右连接和全连接。
+
+请注意，下一个示例使用预订表作为外层集，但如果支持右连接，规划器会更喜欢右连接：
+
+#+begin_src sql
+  explain (costs off) select sum(b.total_amount)
+  from bookings b
+  left outer join tickets t on t.book_ref=b.book_ref;
+#+end_src
+
+** 唯一值和分组
+
+将值分组进行聚合并删除重复值的算法与连接算法非常相似。它们可以使用的方法之一是在所需列上建立一个哈希表。只有在哈希
+表中还不包含此类值时，才会将这些值纳入哈希表。因此，哈希表会累积所有不同的值。
+
+执行哈希聚合的节点称为 HashAggregate。
+
+让我们来考虑一些可能需要这个节点的情况。
+
+每个舱位的座位数（GROUP BY）：
+
+#+begin_src sql
+  explain (costs off) select fare_conditions, count(*)
+  from seats
+  group by fare_conditions;
+#+end_src
+
+旅行舱位列表 (DISTINCT)：
+
+#+begin_src sql
+  explain (costs off) select distinct fare_condintions
+  from seats;
+#+end_src
+
+旅行类别与另一个值（UNION）相结合：
+
+#+begin_src sql
+  explain (costs off) select fare_conditions
+  from seats
+  union
+  select null;
+#+end_src
+
+Append 节点会合并两个集合，但不会删除任何重复数据，因为这些重复数据一定不会出现在 UNION 结果中。它们必须由
+HashAggregate 节点单独删除。
+
+为散列表分配的内存块受 work_mem × hash_mem_multiplier 值的限制，就像散列连接一样。
+
+如果哈希表适合分配的内存，则聚合使用单个批次：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select distinct amount from ticket_flights;
+#+end_src
+
+金额字段中没有那么多不同的值，因此哈希表只占用 61KB 内存。
+
+一旦哈希表填满了分配的内存，所有其他的值都会溢出到临时文件中，并根据其哈希值的几个比特分成几个分区。分区的数量是 2
+的幂次，选择时要确保每个分区的哈希表都符合分配的内存。当然，估算的准确性取决于收集到的统计数据的质量，因此接收到的数
+字会乘以 1.5，以进一步缩小分区大小，提高一次性处理每个分区的机会。
+
+扫描整个数据集后，节点会返回进入哈希表的值的聚合结果。
+
+然后清空哈希表，对上一阶段保存到临时文件中的每个分区进行扫描，并像处理其他行集一样进行处理。如果哈希表仍然超出分配
+的内存，则会再次对溢出的行进行分区，并写入磁盘进行进一步处理。
+
+为了避免过多的 I/O，两次哈希连接算法会将 MCV 移入第一批。然而，聚合不需要这种优化：那些适合分配内存的行不会被分割
+成分区，而且 MCV 很可能在足够早的时候出现，从而进入 RAM。
+
+#+begin_src sql
+  explain(analyze, costs off, timing off, summary off)
+  select distinct flight_id from ticket_flights;
+#+end_src
+
+在本例中，不同 ID 的数量相对较多，因此哈希表无法满足分配的内存。执行查询需要五个批次：一个用于初始数据集，四个用于
+写入磁盘的分区。
+
+
+
 
 
 
