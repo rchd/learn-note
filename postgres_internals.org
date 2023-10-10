@@ -3597,6 +3597,542 @@ HashAggregate 节点单独删除。
 在本例中，不同 ID 的数量相对较多，因此哈希表无法满足分配的内存。执行查询需要五个批次：一个用于初始数据集，四个用于
 写入磁盘的分区。
 
+* 排序和归并
+
+** 归并连接
+
+合并连接处理按连接键排序的数据集，并返回以类似方式排序的结果。输入集可以在索引扫描后预先排序；否则，执行器必须在实际
+合并开始前对它们进行排序。
+
+合并排序集合
+
+让我们来看一个合并连接的示例；在执行计划中，合并连接节点表示合并连接：
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets t
+  join ticket_flights tf on tf.ticket_no=ticket_no
+  order by t.ticket_no;
+#+end_src
+
+优化器更喜欢这种连接方法，因为它返回的是由 ORDER BY 子句定义的排序结果。在选择计划时，优化器会注意数据集的排序顺
+序，除非确实需要，否则不会执行任何排序。例如，如果合并连接产生的数据集已具有适当的排序顺序，则可在随后的合并连接中按
+原样使用：
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets t
+  join ticket_flight tf on t.ticket_no=tf.ticket_no
+  join boarding_passes bp on bp.ticket_no=tf.ticket_no
+                             and bp.flight_id=tf.flight_id
+  order by t.ticket_no;
+#+end_src
+
+首先要连接的表是 ticket_flights 和 boarding_passes；这两个表都有一个复合主键（ticket_no、flight_id），结果
+按这两列排序。然后将生成的记录集与 ticket 表连接，后者按 ticket_no 列排序。
+
+连接只需对两个数据集进行一次传递，不占用任何额外内存。它使用两个指针指向内部和外部数据集的当前行（最初是第一行）。
+
+如果当前行的键不匹配，其中一个指针（引用键较小的一行）将前进到下一行，直到找到匹配为止。连接的行被返回到上节点，内部
+集合的指针前进一位。该操作一直持续到其中一个集合结束为止。
+
+这种算法可以处理内集的重复数据，但外集也可能包含重复数据。因此，必须改进算法：如果在外层指针前进后，键值保持不变，内
+层指针就会回到第一个匹配行。这样，外集的每一行都将与内集所有具有相同键的行匹配。
+
+对于外部连接，算法做了一些调整，但仍基于相同的原理。
+
+合并连接条件只能使用相等运算符，这意味着只支持相等连接（尽管目前也在支持其他条件类型）。
+
+*代价估算。* 让我们仔细看看前面的例子：
+
+#+begin_src sql
+  explain select *
+  from tickets t
+  join ticket_flights tf on tf.ticket_no=t.ticket_no
+  order by t.ticket_no;
+#+end_src
+
+连接的启动成本至少包括所有子节点的启动成本。
+
+一般来说，在找到第一个匹配之前，可能需要扫描外集或内集的一部分。可以通过比较（基于直方图）两个集合中最小的连接键来
+估计这一部分。但在这种特殊情况下，两个表中的票号范围是相同的。
+
+总成本包括从子节点获取数据的成本和计算成本。
+
+由于一旦其中一个集合结束，连接算法就会停止（当然，除非执行外部连接），因此另一个集合可能只扫描了一部分。为了估算扫描
+部分的大小，我们可以比较两个集合中的最大键值。在本例中，两个集合都将被全部读取，因此连接的总成本包括两个子节点的总成
+本之和。
+
+此外，如果存在重复数据，内集的某些行可能会被扫描多次。重复扫描的估计次数等于连接结果和内集的Cardinality值之差。
+在本查询中，这些Cardinality是相同的，这意味着这两个集合不包含重复行。
+
+该算法会比较两个数据集的连接键。一次比较的成本按 cpu_operator_cost 值估算，而估计的比较次数可视为两个集合的行数
+总和（增加了重复读取的次数）。与往常一样，结果中包含的每一行的处理成本都是按照 cpu_tuple_cost 值估算的。
+
+因此，在本例中，连接的成本估算如下：
+
+#+begin_src sql
+  select 0.43+0.56 as startup,
+  round((
+  139110.29+570972.46+
+  current_setting('cpu_tuple_cost')::real*8391852+
+  current_setting('cpu_operator_cost')::real*(2949857+8391852)
+  )::numeric, 2) as total;
+#+end_src
+
+并行模式
+
+虽然合并连接不具有并行性，但仍可用于并行计划中。
+
+外集可以由多个工作者并行扫描，但内集始终由每个工作者完整扫描。
+
+由于并行哈希连接几乎总是更便宜，我将暂时关闭它
+
+#+begin_src sql
+  set enable_hashjoin=off;
+#+end_src
+
+下面是一个使用合并连接的并行计划示例：
+
+#+begin_src sql
+  explain (costs off)
+  select count(*), sum(tf.amount)
+  from tickets t
+  join ticket_flights tf on tf.ticket_no=t.ticet_no;
+#+end_src
+
+并行计划中不允许全连接和右外层合并连接。
+
+修改
+
+合并连接算法可用于任何类型的连接。唯一的限制是全连接和右外部连接的连接条件必须包含与合并兼容的表达式（"outer-column
+equals inner-column "或 "column equals constant"）。
+
+下面是一个使用合并算法的全连接示例：
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets t
+  full join ticket_flights on tf.ticket_no=t.ticket_no
+  order by t.ticket_no;
+#+end_src
+
+内连接和左合并连接可以保持排序顺序。然而，全连接和右外连接则不能保证排序顺序，因为 NULL 值可能被夹在外集的有序值之
+间，从而破坏排序顺序。为了恢复所需的顺序，规划器在这里引入了Sort节点。当然，这会增加计划的成本，使散列连接更有吸
+引力，所以计划器选择这个计划只是因为散列连接目前是禁用的。
+
+但是，下一个示例却离不开散列连接：嵌套循环根本不允许完全连接，而由于不支持连接条件，因此无法使用合并。因此，无论参数
+enable_hashjoin 的值如何，都要使用哈希连接：
+
+#+begin_src sql
+  explain (costs off) select *
+  from tickets t
+  full join ticket_flights tf on tf.ticket_no=t.ticket_no
+                              and tf.amount>0
+  order by t.ticket_no;
+#+end_src
+
+让我们恢复之前禁用的哈希连接功能：
+
+#+begin_src sql
+  reset enable_hashjoin;
+#+end_src
+
+** 排序
+如果其中一个集合（也可能是两个集合）没有按连接键排序，则必须在连接操作开始前重新排序。这种排序操作在计划中由Sort
+节点表示：
+
+#+begin_src sql
+  explain (costs off)
+  select * from flights f
+  join airports_data dep on f.depatrue_airport=dep.airports_code
+  order by dep.airport_code;
+#+end_src
+
+如果在常规查询和窗口函数中指定 ORDER BY 子句，这种排序也可以在连接之外使用：
+
+#+begin_src sql
+  explain (costs off)
+  select flight_id,
+  row_number() over (partition by flight_no order by flight_id)
+  from flights f;
+#+end_src
+
+在这里，WindowAgg 节点对Sort节点预先排序过的数据集计算窗口函数。
+
+规划器的工具箱中有多种排序方法。我已经展示的示例使用了其中的两种（排序方法）。这些详细信息可以像往常一样通过
+EXPLAIN ANALYZE 命令显示出来：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select * from flights f
+  join airports_data dep on f.departure_aiport=dep.airport_code
+  order by dep.airport_code;
+#+end_src
+
+快速排序
+
+如果要排序的数据集符合 work_mem 块的大小，就会使用经典的 quicksort 方法。这种算法在所有教科书中都有介绍，我就
+不在这里解释了。
+
+至于执行，排序由一个专用组件执行，该组件根据可用内存量和其他一些因素选择最合适的算法。
+
+*代价估算。* 让我们来看看一个小表是如何排序的。在这种情况下，使用 quicksort 算法在内存中进行排序：
+
+#+begin_src sql
+  explain select *
+  from airports_data
+  order by airport_code;
+#+end_src
+
+众所周知，对 n 个值进行排序的计算复杂度为 O(nlog2n)。单次比较操作的估算值是 cpu_operator_cost 的两倍。由于
+在检索结果之前，必须对整个数据集进行扫描和排序，因此排序的启动成本包括子节点的总成本和所有比较操作的费用。
+
+排序的总成本还包括处理要返回的每一行的成本，该成本按 cpu_operator_cost 估算（而不是通常的 cpu_tuple_cost 值，
+因为Sort节点产生的开销微不足道）。
+
+在本例中，代价计算如下：
+
+#+begin_src sql
+  with costs(startup) as (
+  select 4.04+round((
+  current_setting('cpu_operator_cost')::real*2*
+  104*log(2, 104)
+  )::numeric, 2)
+  )
+  select startup,
+  startup+round((
+  current_setting('cpu_operator_cost')::real*104
+  )::numeric, 2) as total
+  from costs;
+#+end_src
+
+Top-N堆排序
+
+如果数据集只需要部分排序（由 LIMIT 子句定义），则可以使用堆排序方法（在计划中表示为 top-N 堆排序）。更确切地说，
+如果排序至少减少了一半的行数，或者分配的内存无法容纳整个输入集（而输出集却能容纳），就可以使用这种算法。
+
+#+begin_src sql
+  explain (analyze, timing off, summary off)
+  select * from seats
+  order by seat_no limit 100;
+#+end_src
+
+为了从 n 个值中找出 k 个最高（或最低）值，执行器会将前 k 行添加到一个名为堆的数据结构中。然后逐一添加其余的行，每
+次迭代后都会从堆中删除最小（或最大）的值。处理完所有行后，堆中就会包含 k 个所需值。
+
+#+begin_comment
+  这里的 "堆 "指的是一种众所周知的数据结构，与通常同名的数据库表无关。
+#+end_comment
+
+*代价估算。* 该算法的计算复杂度估计为 O(n log2 k)，但与 quicksort 算法相比，每个特定操作的成本都更高。因此，公
+式使用 $ nlog_{2}2K $
+
+#+begin_src sql
+  with costs(startup)
+  as (
+    select 21.39+round((
+      current_setting('cpu_operator_cost')::real*2*
+        1339*log(2,2*100)
+    )::numeric,2)
+  )
+  select startup,
+    startup+round((
+      current_setting('cpu_operator_cost')::real*100
+  )::numeric,2) as total
+  from costs;
+#+end_src
+
+外部排序
+
+如果扫描结果显示数据集过大，无法在内存中排序，排序节点就会切换到外部合并排序（在计划中标记为外部合并）。
+
+已经扫描过的行在内存中通过 quicksort（快速排序） 算法进行排序，并写入临时文件。
+
+[[./images/tCJmSE.png]]
+
+然后将随后的行读入释放的内存，如此反复，直到将所有数据写入几个预先排序的文件。
+
+[[./images/fco5bk.png]]
+
+然后，这些文件被合并成一个文件。这一操作的算法与合并连接的算法大致相同，主要区别在于它可以同时处理两个以上的文件。
+
+合并操作不需要太多内存。事实上，每个文件只需容纳一条记录就足够了。从每个文件中读取第一行，值最小的一行（或值最大的
+一行，取决于排序顺序）作为部分结果返回，腾出的内存将填充从同一文件中获取的下一行。
+
+在实际操作中，行是以 32 页为一批次读取的，而不是逐条读取，这就减少了 I/O 操作的次数。单次迭代中合并的文件数量取决
+于可用内存，但绝不会少于 6 个。由于文件过多会影响效率，因此上限也有限制（500）。
+
+#+begin_comment
+  排序算法的术语由来已久。外部排序最初是使用磁带进行的，PostgreSQL 也为控制临时文件的组件保留了类似的名称。部分排
+  序的数据集称为 "运行"。参与合并的运行数称为 "合并顺序"。我没有使用这些术语，但如果你想理解 PostgreSQL 代码和注
+  释，它们还是值得了解的。
+#+end_comment
+
+如果排序后的临时文件无法一次性合并，就必须分几次处理，并将部分结果写入新的临时文件。每次迭代都会增加需要读写的数据
+量，因此可用内存越多，完成外部排序的速度就越快。
+
+[[./images/lTdHu1.png]]
+
+下一次迭代将合并新创建的临时文件。
+
+[[./images/UKZJ5N.png]]
+
+最后的合并通常会推迟，在上层节点提取数据时即时执行。
+
+让我们运行 EXPLAIN ANALYZE 命令，看看外部排序占用了多少磁盘空间。BUFFERS 选项显示临时文件（临时读取和写入）的
+缓冲区使用统计。写入缓冲区的数量（大致）与读取缓冲区的数量相同；转换成千字节后，该值在计划中显示为 Disk：
+
+#+begin_src sql
+  explain (analyze, buffers, costs off, timing off, summary off)
+  select * from flights
+  order by scheduled_departure;
+#+end_src
+
+要在服务器日志中打印使用临时文件的更多详细信息，可以启用 log_temp_files 参数。
+
+*代价估算* 让我们以同一计划的外部排序为例：
+
+#+begin_src sql
+  explain select *
+  from flights
+  order by scheduled_departure;
+#+end_src
+
+在这里，比较的常规成本（其数量与内存中的快速排序操作相同）由 I/O 成本扩展而来。 所有输入数据必须先写入磁盘上的临时
+文件，然后在合并操作过程中从磁盘读取（如果一次迭代无法合并所有创建的文件，则可能需要多次读取）。
+
+假设四分之三的磁盘操作（包括读取和写入）是顺序操作，四分之一是随机操作。
+
+写入磁盘的数据量取决于要排序的行数和查询中使用的列数。在本例中，查询显示了航班表的所有列，因此如果不考虑元组和页元
+数据，写入磁盘的数据量几乎与整个表的数据量相同（2309 页，而不是 2624 页）。
+
+在这里，排序一次完成。
+
+因此，本计划对排序成本的估算如下：
+
+#+begin_src sql
+  with costs(startup) as (
+  select 4772.67+round((
+    current_setting('cpu_operator_cost')::real*2*214867*log(2, 214867)+
+    (current_setting('seq_page_cost')::real*0.75+current_setting('random_page_cost')::real*0.25)
+    ,*2*2309*1 -- one iteraton
+  
+  )::numeric, 2)
+  )
+  select startup,
+    startup+round((
+    current_setting('cpu_operator_cost')::real*214867
+    )::numeric, 2) as total
+  from costs;
+#+end_src
+
+增量排序
+
+如果数据集必须按照键 $ K_{1} ... ... K_{m} ... K_{m} $，而已知该数据集已按前 m 个键排序，则不必从头开始重新
+排序。取而代之的是，可以用相同的前键 $ K_{1} ... K_{m} $ 将数据集分成若干组（这些组中的值已经排序过）。$K_{m}$
+（这些组中的值已经按照定义的顺序排列），然后按照剩余的 $K_{m+1} ... $ 分别对这些组进行排序。$ K_{n} $键进行排
+序。这种方法称为增量排序。
+
+与其他排序算法相比，增量排序占用的内存较少，因为它会将数据集分成几个较小的组，此外，它还允许执行器在处理完第一组后
+开始返回结果，而无需等待整个数据集排序完毕。
+
+在 PostgreSQL 中，实现方式要更微妙一些：相对较大的记录组会单独处理，而较小的记录组则会合并在一起并进行全面排序。
+这减少了调用排序程序所产生的开销。
+
+执行计划通过Incremental Sort节点表示增量排序：
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select * from bookings
+  order by total_amount, book_date;
+#+end_src
+
+如计划所示，数据集是按 total_amount 字段预排序的，因为它是在该列（预排序键）上运行索引扫描的结果。EXPLAIN
+ANALYZE 命令还会显示运行时统计信息。Full-sort Groups（全排序组）行与统一进行全排序的小型组有关，而 Presorted
+Groups（预排序组）行显示的是具有部分排序数据的大型组的数据，这些数据只需要通过 book_date 列进行增量排序。在这两
+种情况下，都采用了内存中快速排序方法。组大小的差异是由于预订费用分布不均匀造成的。
+
+增量排序也可用于计算窗口函数
+
+#+begin_src sql
+  explain (costs off)
+  select row_number() over (order by total_amount, book_date)
+  from bookings;
+#+end_src
+
+*代价估算* 增量排序的成本计算基于预期的组数和平均规模组的估计排序成本（我们已经审查过）。
+
+启动成本反映的是对第一组进行排序的成本估算，它允许节点开始返回已排序的行；总成本包括所有组的排序成本。
+
+在此，我们不打算进一步探讨这些计算。
+
+并行模式
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select *
+  from flights
+  order by scheduled_departure
+  limit 10;
+#+end_src
+
+Gather Merge节点使用二进制堆来调整多个工作进程获取的行的顺序。它实际上是合并几组已排序的行，就像外部排序一样，但
+设计用途不同： Gather Merge 通常处理固定数量的少量数据源，并逐条而不是逐块获取记录。
+
+*代价估算* Gather Merge 节点的启动成本基于其子节点的启动成本。与 "收集 "节点的启动成本一样，该值也会因并行进程
+的启动成本（按 parallel_setup_cost 估算）而增加。
+
+然后，建立二进制堆的成本（需要对 n 个值进行排序，其中 n 是并行工作者的数量（即 $ n log_{2}n $））进一步扩展了
+接收值。单次比较操作的 cpu_operator_cost 估计为两倍，由于 n 非常小，因此此类操作的总份额通常可以忽略不计。
+
+总成本包括执行计划并行部分的多个进程获取所有数据所产生的费用，以及将这些数据传输给领导者的成本。单行数据传输的估计
+成本为 parallel_tuple_cost 增加 5%，以补偿获取下一个值时可能出现的等待。
+
+在计算总成本时，还必须考虑二进制堆更新所产生的费用：每个输入行需要 $ log_{2}n $ 次比较操作和某些附加操作（按
+cpu_operator_cost 估算）。
+
+我们再来看看另一个使用 "Gather Merge "节点的计划。请注意，这里的工作进程首先通过散列执行部分聚合，然后Sort节点
+对收到的结果进行排序（排序成本低，因为聚合后剩下的行数很少），再将结果传递给领导进程，由领导进程在 "Gather Merge"
+节点中收集全部结果。至于最后的聚合，则是在已排序的值列表上进行的：
+
+#+begin_src sql
+  explain select amount, count(*)
+  from ticket_flights
+  group by amount;
+#+end_src
+
+在这里，我们有三个并行进程（包括领导进程），"Gather Merge"节点的成本计算如下：
+
+#+begin_src sql
+  with costs(startup, run) as (
+    select round((
+    -- launching process
+    current_setting('parallel_setup_cost')::real+
+    -- building the heap
+    current_setting('cpu_operator_cost')::real*2*3*log(2,3)
+  )::numeric, 2),
+  round((
+    -- passing row
+    current_setting('parallel_tuple_cost')::real*1.05*674+
+    -- updating the heap
+    current_setting('cpu_operator_cost')::real*2*674*log(2,3)+
+    current_setting('cpu_operator_cost')::real*674
+  )::numeric, 2)
+  )
+  select 122399.59+startup as startup,
+    122400.44+startup+run as total
+  from costs;
+#+end_src
+
+** 唯一值和分组
+
+正如我们刚才看到的，不仅可以通过散列，还可以通过排序对值进行分组以执行聚合（以及消除重复值）。在排序后的列表中，重
+复值组可以一次性剔除。
+
+从排序列表中检索不同的值在计划中由一个名为 Unique 的非常简单的节点表示：
+
+#+begin_src sql
+  explain (costs off) select distinct book_ref
+  from bookings
+  order by book_ref;
+#+end_src
+
+聚合在 GroupAggregate 节点中进行：
+
+#+begin_src sql
+  explain (costs off) select book_ref, count(*)
+  from bookings
+  group by book_ref
+  order by book_ref
+#+end_src
+
+在并行计划中，该节点称为 "Partial GroupAggregate"，而完成聚合的节点称为 "Finalize GroupAggregate"。
+
+如果按多个列集（在 GROUPING SETS、CUBE 或 ROLLUP 子句中指定）进行分组，则散列和排序策略可以在单个节点中结合使
+用。在此，我不再赘述这一算法的复杂细节，我将简单举例说明在内存不足的情况下，如何对三个不同的列进行分组：
+
+#+begin_src sql
+  set work_mem='64kB';
+  explain (costs off) select count(*)
+  from flights
+  group by grouping sets (aircraft_code, flight_no, departure_airport);
+  reset work_mem;
+#+end_src
+
+下面是执行该查询时发生的情况。聚合节点（在计划中显示为 MixedAggregate）接收按 aircraft_code 列排序的数据集。
+
+首先，对该集合进行扫描，然后按aircraft_code列（组键）对值进行分组。随着扫描的进行，这些行会按 flight_no 列重
+新排序（就像普通排序节点所做的那样：如果内存足够，可以通过 quicksort 方法，或者使用磁盘上的外部排序）；同时，执行
+器会将这些行放入一个以 departure_airport 作为键的哈希表（就像哈希聚合所做的那样：可以在内存中，也可以使用临时文
+件）。
+
+在第二阶段，执行器会扫描刚刚按 flight_no 列排序的数据集，并按同一列（排序键和嵌套的组键节点）对值进行分组。如果需
+要按另一列对行进行分组，则将根据需要再次进行排序。
+
+最后，扫描第一阶段编制的哈希表，并按照 departure_airport 列（哈希键）对值进行分组。
+
+
+** join方法的比较
+
+正如我们所看到的，可以使用三种不同的方法来连接两个数据集，而每种方法都各有利弊。
+
+嵌套循环连接没有任何先决条件，可以立即开始返回结果集的第一行。它是唯一一种无需完全扫描内集的连接方法（只要索引访问
+可用）。这些特性使得嵌套循环算法（与索引相结合）成为处理较小行集的简短 OLTP 查询的理想选择。
+
+随着数据量的增加，嵌套循环的弱点就显现出来了。对于笛卡尔积，该算法的复杂度为二次方--成本与被连接数据集的大小乘积成
+正比。然而，笛卡尔积在实际应用中并不常见；对于外集的每一行，执行者通常会使用索引访问内集的一定数量的行，而这一平均
+数量并不取决于数据集的总大小（例如，订票中机票的平均数量不会随着订票和购票数量的增长而变化）。因此，嵌套循环算法的
+复杂度通常是线性增长而不是二次方增长，即使线性系数很高。
+
+嵌套循环算法的一个重要特点是它的普遍适用性：它支持所有连接条件，而其他方法只能处理等连接。它允许使用任何类型的条件
+运行查询（完全连接除外，嵌套循环不能使用完全连接），但必须记住，大型数据集的非等连接执行速度很可能比预期的慢。
+
+哈希连接最适合大型数据集。如果 RAM 足够大，它只需要对两个数据集进行一次传递，因此其复杂性是线性的。这种算法与顺序
+表扫描相结合，通常用于 OLAP 查询，这种查询根据大量数据计算结果。
+
+但是，如果响应时间比吞吐量更重要，散列连接就不是最佳选择：在整个散列表建立之前，散列连接不会开始返回结果行。
+
+散列连接算法只适用于等价连接。另一个限制是，连接键的数据类型必须支持散列（但几乎所有数据类型都支持）。
+
+嵌套循环连接有时可以击败散列连接，因为它可以利用 Memoize 节点（也是基于散列表）中缓存内集行的优势。哈希连接总是会
+完整地扫描内集，而嵌套循环算法则不需要，这可能会降低一些成本。
+
+合并连接可以完美地处理短的 OLTP 查询和长的 OLAP 查询。它具有线性复杂性（只需对要连接的数据集扫描一次），不需要太
+多内存，并且无需任何预处理即可返回结果；但是，数据集必须已经具有所需的排序顺序。成本效益最高的方法是通过索引扫描获
+取数据。如果行数较少，这自然是个不错的选择；对于较大的数据集，索引扫描仍然很高效，但前提是堆访问量很小或根本不会发
+生堆访问。
+
+如果没有合适的索引，则必须对集合进行排序，但这一操作需要大量内存，其复杂度高于线性： $O(nlog_{2}n)$。在这种情况
+下，哈希连接几乎总是比合并连接代价更低--除非结果必须排序。
+
+合并连接的一个额外优势是内外集的等价性。嵌套循环和散列连接的效率在很大程度上取决于规划器能否正确分配内集和外集。
+
+合并连接仅限于等连接。此外，数据类型必须有一个 B 树操作符类。
+
+下图说明了各种连接方法的成本与需要连接的行数之间的近似关系。
+
+[[./images/alUSTi.png]]
+
+如果选择性很高，嵌套循环连接会对两张表使用索引访问；然后，规划器会切换到对外表的全扫描，这反映在图的线性部分。
+
+在这里，哈希连接对两个表都进行了全扫描。图中的 "一步 "对应的是哈希表填满整个内存，批次开始溢出到磁盘的时刻。
+
+如果使用索引扫描，合并连接的成本会出现小幅线性增长。如果 work_mem 的大小足够大，哈希连接通常会更有效，但在临时文
+件方面，合并连接会更胜一筹。
+
+排序-合并连接的上图显示，当索引不可用且数据必须排序时，成本会上升。与哈希连接的情况一样，图中的 "台阶 "是由于内存
+不足造成的，因为它导致使用临时文件进行排序。
+
+这只是一个例子，在每个具体情况下，代价之间的比例都会不同。
+
+
+
+
+
+
+
+
 
 
 
