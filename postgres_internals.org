@@ -1,3 +1,328 @@
+#+name: postgres_internals
+#+header: :engine postgres
+
+* 表级锁
+
+** 关于锁
+
+锁控制对共享资源的并发访问。
+
+并发访问是指多个进程同时尝试获取同一个资源。这些进程是并行执行（如果硬件允许）还是在分时模式下顺序执行并无区别。如
+果没有并发访问，则无需获取锁（例如，共享缓冲存储器需要加锁，而本地缓冲存储器则无需加锁）。
+
+在访问资源前，进程必须获取资源锁；操作完成后，必须释放资源锁，其他进程才能使用资源。如果锁由数据库系统管理，那么既
+定的操作顺序就会自动保持；如果锁由应用程序控制，那么协议就必须由应用程序自己执行。
+
+在底层，锁只是一块共享内存，它定义了锁的状态（是否被获取）；它还可以提供一些附加信息，如进程编号或获取时间。
+
+#+begin_comment
+  正如你所猜测的，共享内存段本身就是一种资源。对此类资源的并发访问受操作系统提供的同步原语（如 semaphores 或
+  mutexes）的控制。它们保证访问共享资源的代码严格连续执行。在最底层，这些基元基于 CPU 的原子指令（如
+  test-and-set 或 compare-and-swap）。
+#+end_comment
+
+一般来说，我们可以使用锁来保护任何资源，只要它能被明确识别并分配一个特定的锁地址。
+
+例如，我们可以锁定数据库对象，如表（由系统目录中的 oid 标识）、数据页（由文件名和文件中的位置标识）、行版本（由页
+面和页面中的偏移量标识）。我们还可以锁定一个内存结构，例如哈希表或缓冲区（由分配的 ID 标识）。我们甚至可以锁定没有
+物理表示的抽象资源。
+
+但并不是每次都能一次性获得锁：资源可能已被其他人锁定。这时，进程要么加入队列（如果该特定锁类型允许的话），要么过一
+段时间再尝试。无论哪种方式，进程都必须等待锁被释放。
+
+我想特别指出两个会极大影响锁定效率的因素。
+
+*粒度* 或锁的 "粒度"。如果资源形成层次结构，粒度就非常重要。
+
+例如，表由页组成，页又由元组组成。所有这些对象都可以通过锁来保护。表级锁是粗粒度的；它们禁止并发访问，即使进程需要
+访问不同的页面或行。
+
+行级锁是细粒度的，因此没有这个缺点；但是，锁的数量会增加。为了避免与锁相关的元数据占用过多内存，PostgreSQL 可以采
+用多种方法，其中之一就是锁升级：如果细粒度锁的数量超过某个阈值，它们就会被粒度更粗的单个锁取代。
+
+*获取锁的一系列模式。*
+
+通常只应用两种模式。独占模式与其他所有模式都不兼容，包括它自己。共享模式允许多个进程同时锁定一个资源。共享模式可用
+于读取，而独占模式则用于写入。
+
+一般来说，还可能有其他模式。模式的名称并不重要，重要的是它们的兼容性矩阵。
+
+更精细的粒度和对多种兼容模式的支持为并发执行提供了更多机会。
+
+所有的锁都可以按其持续时间分类。
+
+*长期* 锁（Long-term locks）的获取时间可能会很长（在大多数情况下，直到事务结束）；它 们通常会保护关系
+（relationship）和行（rows）等资源。这些锁通常由 PostgreSQL 自动管理，但用户对这一过程仍有一定的控制权。
+
+长期锁提供多种模式，可对数据进行各种并发操作。它们通常有大量的基础设施（包括等待队列、死锁检测和仪器等功能），因为其
+维护费用无论如何都要比对受保护数据的操作便宜得多。
+
+*短期* 锁的获取时间仅为几分之一秒，持续时间很少超过几个 CPU 指令；它们通常保护共享内存中的数据结构。PostgreSQL
+以完全自动化的方式管理此类锁。
+
+短期锁通常只提供很少的模式和基本的基础设施，可能根本没有仪器。
+
+PostgreSQL 支持多种类型的锁。重量级锁（在关系和其他对象上获取）和行级锁被视为长期锁。短期锁包括内存结构上的各种
+锁。此外，还有一组不同的谓词锁，尽管它们的名字叫 "谓词锁"，但其实根本不是锁。
+
+** 重量级锁
+
+重量级锁是长期锁。它们在对象级别上获得，主要用于关系，但也可用于某些其他类型的对象。重量级锁通常保护对象不被并发更
+新，或在重构过程中禁止使用对象，但也可以满足其他需求。这种模糊的定义是有意为之：这种类型的锁可用于各种用途。它们唯
+一的共同点是内部结构。
+
+除非另有明确规定，锁定一词通常意味着重量级锁定。
+
+重量级锁位于服务器的共享内存中，可以在 pg_locks 视图中显示。它们的总数受 max_locks_per_transaction 值乘以
+max_connections 的限制。
+
+所有事务都使用共同的锁池，因此一个事务可以获得超过 max_locks_per_transaction 的锁。真正重要的是系统中锁的总数
+不超过定义的限制。由于锁池是在服务器启动时初始化的，因此更改这两个参数中的任何一个都需要重启服务器。
+
+如果资源已经被锁定在不兼容模式下，试图获取另一个锁的进程就会加入队列。等待的进程不会浪费 CPU 时间：它们会进入睡眠
+状态，直到锁被释放，操作系统将其唤醒。
+
+如果第一个事务在获得另一个事务锁定的资源之前无法继续运行，而另一个事务又需要第一个事务锁定的资源，那么两个事务就会
+陷入死锁。这种情况比较简单，死锁也可能涉及两个以上的事务。由于死锁会导致无限等待，PostgreSQL 会自动检测到它们，并
+中止其中一个受影响的事务，以确保正常操作可以继续。
+
+不同类型的重量级锁有不同的用途，保护不同的资源，支持不同的模式，因此我们将分别考虑。
+
+下面的列表提供了在 pg_locks 视图的 locktype 列中出现的锁类型名称：
+
+事务ID和虚拟xid － 事务ID相关锁
+
+表 － 表级锁
+
+元组 － 锁定一个元组
+
+对象 － 对非关系对象的锁定
+
+扩展 － 某些索引类型使用的页面级锁
+
+咨询 － 咨询锁
+
+几乎所有重量级锁都是根据需要自动获取的，并在相应事务完成后自动释放。但也有一些例外：例如，关系级锁可以显式设置，而
+咨询锁则始终由用户管理。
+
+** 事务 ID 上的锁
+
+每个事务总是对自己的 ID（虚拟和真实 ID，如果有的话）持有独占锁。
+
+PostgreSQL 为此提供了两种锁定模式：独占模式和共享模式。它们的兼容性矩阵非常简单：共享模式与自身兼容，而独占模式不
+能与任何模式结合。
+
+|           | Shared | Exclusive |
+| Shared    |        | X         |
+| Exclusive | X      | X         |
+
+为了跟踪某个特定事务的完成情况，进程可以在任何模式下请求这个事务 ID 上的锁。由于事务本身已经对自己的 ID 上了独占
+锁，因此不可能再获得另一个锁。请求这个锁的进程会加入队列并进入休眠状态。一旦事务完成，锁被释放，队列中的进程就会醒
+来。显然，它无法获取这个锁，因为相应的资源已经消失，但这个锁并不是实际需要的。
+
+让我们在一个单独的会话中启动一个事务，并获取后台的进程 ID（PID）：
+
+#+begin_src sql
+  begin;
+  select pg_backend_pid();
+#+end_src
+
+启动的事务对自己的虚拟 ID 持有独占锁：
+
+#+begin_src sql
+  select locktype, virtualxid, mode, granted
+  from pg_locks where pid=38980;
+#+end_src
+
+locktype 是锁的类型，virtualxid 是虚拟事务 ID（标识被锁资源），mode 是锁定模式（本例中为独占模式）。granted
+标志表示请求的锁是否已被获取。
+
+一旦事务获得真实 ID，相应的锁就会被添加到这个列表中：
+
+#+begin_src sql
+  select pg_current_xact_id();
+#+end_src
+
+#+begin_src sql
+  select locktype, virtualxid, transactionid as xid, mode, granted
+  from pg_locks where pid=28980;
+#+end_src
+
+现在，该事务在其两个 ID 上都有独占锁。
+
+** 表级锁
+
+PostgreSQL 提供了多达八种锁定关系（表、索引或任何其他对象）的模式。有了这么多的模式，你就可以最大限度地增加在一个
+关系上运行的并发命令数量。
+
+下一页显示了兼容性矩阵，并附有需要相应锁定模式的命令示例。记住所有这些模式或试图找出它们命名背后的逻辑是没有意义的，
+但浏览一下这些数据，得出一些一般性结论，并在需要时参考此表，肯定是非常有用的。
+
+|                        | AS | RS | RE | SUE | S | SRE | E | AE |                                  |
+| Access Share           |    |    |    |     |   |     |   | X  | SELECT                           |
+| Row Share              |    |    |    |     |   |     | X | X  | SELECT FOR UPDATE/SHARE          |
+| Row Exclusive          |    |    |    |     | X | X   | X | X  | INSERT,UPDATE,DELETE             |
+| Share Update Exclusive |    |    |    | X   | X | X   | X | X  | VACCUM,CREATE INDEX CONCURRENTLY |
+| Share                  |    |    | X  | X   |   | X   | X | X  | CREATE INDEX                     |
+| Share Row Exclusive    |    |    | X  | X   | X | X   | X | X  | CREATE TRIGGER                   |
+| Exclusive              |    | X  | X  | X   | X | X   | X | X  | REFRESH MAT.VIEW CONCURRENTLY    |
+| ACCESS Exclusive       | X  | X  | X  | X   | X | X   | X | X  | DROP,TRUNCATE,VACUUM FULL,       |
+|                        |    |    |    |     |   |     |   |    | LOCK TABLE,REFRESH MAT.VIEW      |
+
+访问共享模式是最弱的一种模式；它可以与除访问独占模式以外的任何其他模式一起使用，而访问独占模式与所有模式都不兼容。
+因此，SELECT 命令几乎可以与任何操作并行运行，但不能丢弃正在查询的表。
+
+前四种模式允许并发修改堆，而其他四种则不允许。例如，CREATE INDEX 命令使用 "共享 "模式，该模式与自身兼容（因此可
+以在一张表上并发创建多个索引），也与只读操作使用的模式兼容。因此，SELECT 命令可以与索引创建并行运行，而 INSERT、
+UPDATE 和 DELETE 命令将被阻塞
+
+相反，修改堆数据的未完成事务会阻塞 CREATE INDEX 命令。取而代之的是调用 CREATE INDEX CONCURRENTLY，它使用的
+是较弱的共享更新独占模式：创建索引需要更长的时间（该操作甚至可能失败），但作为回报，允许并发数据更新。
+
+ALTER 表命令有多种类型，使用不同的锁定模式（共享更新独占、共享行独占、访问独占）。所有这些在文档中都有说明。
+
+本书这一部分的示例再次依赖于accounts表：
+
+#+begin_src sql
+  truncate accounts;
+  insert into accounts(id, client, amount)
+  values
+  (1, 'alice', 100.00),
+  (2, 'bob', 200.00),
+  (3, 'charlie', 300.00);
+#+end_src
+
+我们将不得不多次访问 pg_locks 表，因此让我们创建一个视图，在单列中显示所有 ID，从而使输出更简洁：
+
+#+begin_src sql
+  create view locks as
+  select pid,
+    locktype,
+    case locktype
+      when 'relation' then relation::regclass::text
+      when 'transactionid' then transactionid::text
+      when 'virtualxid' then virtualxid
+    end as lockid,
+    mode,
+    granted
+  from pg_locks
+  order by 1, 2, 3;
+#+end_src
+
+仍在第一个会话中运行的事务更新了一条记录。该操作会锁定accounts表及其所有索引，从而导致在行独占模式下获得两个关系
+类型的新锁：
+
+#+begin_src sql
+  update accounts set amount=amount+100.00 where id=1;
+#+end_src
+
+#+begin_src sql
+  select locktype, lockid, mode, granted
+  from locks where pid=28980;
+#+end_src
+
+** 等待队列
+
+重量级锁形成一个公平等待队列。如果进程试图获取的锁与当前锁或队列中其他进程请求的锁不兼容，该进程就会加入队列。
+
+当第一个会话正在进行更新时，让我们尝试在另一个会话中为该表创建索引：
+
+#+begin_src sql
+  select pg_backend_pid();
+
+  create index on accounts(client);
+#+end_src
+
+命令挂起，等待资源释放。事务尝试以共享模式锁定表，但无法锁定：
+
+#+begin_src sql
+  select locktype, lockid, mode, granted
+  from locks where pid=29459;
+#+end_src
+
+现在让第三个会话启动 VACUUM FULL 命令。它也将加入队列，因为它需要使用 "访问独占 "模式，而该模式与所有其他模式都
+有冲突：
+
+#+begin_src sql
+  select pg_backend_pid();
+
+  vacuum full accounts;
+#+end_src
+
+#+begin_src sql
+  select locktype, lockid, mode, granted
+  from locks where pid=29662;
+#+end_src
+
+现在，所有后续竞争者都必须加入队列，无论其锁定模式如何。即使是简单的 SELECT 查询，也会老老实实地遵循 VACUUM
+FULL，尽管它们与执行更新的第一个会话所持有的行独占锁兼容。
+
+#+begin_src sql
+  select pg_backend_pid();
+
+  select * from accounts;
+#+end_src
+
+#+begin_src sql
+  select locktype, lockid, mode, granted
+  from locks where pid=29872;
+#+end_src
+
+[[./images/xq2zje.png]]
+
+pg_blocking_pids 函数提供了所有等待的高级概览。它会显示在指定进程之前排队的所有进程的 ID，这些进程已经持有或希
+望获得不兼容的锁：
+
+#+begin_src sql
+  select pid,
+  pg_blocking_pids(pid),
+  wait_event_type,
+  state,
+  left(query, 50) as query
+  from pg_stat_activity
+  where pid in (28980, 29459, 29662, 29872) \gx
+#+end_src
+
+要获取更多详细信息，可以查看 pg_locks 表中提供的信息。
+
+一旦事务完成（提交或中止），所有锁都会被释放。队列中的第一个进程获得请求的锁并唤醒。
+
+在这里，第一个会话中的事务提交会导致所有排队进程的顺序执行：
+
+#+begin_src sql
+  rollback;
+#+end_src
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 * 查询执行阶段
 
