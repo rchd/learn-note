@@ -293,17 +293,675 @@ pg_blocking_pids 函数提供了所有等待的高级概览。它会显示在指
   rollback;
 #+end_src
 
+* 行级锁
 
+** 锁设计
 
+得益于快照隔离，读取堆元组时无需锁定。但是，不能允许两个写事务同时修改同一条记录。在这种情况下，必须锁定行，但重量
+级锁并不是一个很好的选择：每个重量级锁都会占用服务器共享内存的空间（数百字节，更不用说所有的支持基础架构了），而且
+PostgreSQL 的内部机制并不是为处理大量并发的重量级锁而设计的。
 
+一些数据库系统通过锁升级来解决这个问题：如果行级锁过多，就用粒度更细的单个锁（例如，页面级或表级锁）来代替。这种方
+法简化了实施过程，但会极大地限制系统吞吐量。
 
+在 PostgreSQL 中，特定行是否被锁定的信息只保留在其当前堆元组的头部。行级锁实际上是堆页面中的属性，而不是实际的锁，
+它们不会以任何方式反映在 RAM 中。
 
+记录通常在更新或删除时被锁定。 在这两种情况下，行的当前版本都会被标记为已删除。用于此目的的属性是 xmax 字段中指定的
+当前事务的 ID，正是这个 ID（加上额外的提示位）表明行已被锁定。如果一个事务想修改一条记录，但在其当前版本的 xmax 字
+段中看到一个活动事务 ID，那么它就必须等待该事务完成。一旦完成，所有锁都会被释放，等待的事务就可以继续。
 
+这种机制可以根据需要锁定任意多行，无需额外费用。
 
+这种解决方案的缺点是其他进程无法形成队列，因为 RAM 中没有关于此类锁的信息。因此，仍然需要重量级的锁：等待行被释放
+的进程会请求对当前正在处理该行的事务 ID 加锁。一旦事务完成，该行就会再次可用。因此，重量级锁的数量与并发进程的数量
+成正比，而不是与被修改的行成正比。
 
+** 行级锁模式
 
+行级锁支持四种模式。其中两种实现了独占锁，每次只能由一个事务获取，而另外两种提供了共享锁，可以由多个事务同时持有。
 
+以下是这些模式的兼容性矩阵：
 
+|               | Key Share | Share | No Key Update | Update |
+|---------------+-----------+-------+---------------+--------|
+| Key Share     |           |       |               | X      |
+| Share         |           |       | X             | X      |
+| No Key Update |           | X     | X             | X      |
+| Update        | X         | X     | X             | X      |
+
+排他模式
+
+更新模式允许修改任何元组字段，甚至删除整个元组，而无键更新模式只允许那些不涉及与唯一索引相关的任何字段的更改（换句
+话说，外键必须不受影响）。
+
+UPDATE 命令会自动选择最弱的锁定模式；键通常保持不变，因此通常会在无键更新模式下锁定行。
+
+让我们创建一个函数，使用 pageinspect 显示我们感兴趣的一些元组元数据，即 xmax 字段和几个提示位：
+
+#+begin_src sql
+  create function row_locks(relname text, pageno integer)
+  returns table(
+    ctid tid, xmax text,
+    lock_only text, is_multi text,
+    keys_upd text, keyshr text,
+    shr text 
+  )
+  as $$
+    select (pageno, lp)::text::tid,
+    t_xmax,
+    case when t_infomask & 128 = 128 then 't' end,
+    case when t_infomask & 4096 = 4096 then 't' end,
+    case when t_infomask2 & 8192 = 8192 then 't' end,
+    case when t_infomask & 16 = 16 then 't' end,
+    case when t_infomask & 16+64 = 16+64 then 't' end
+    from heap_page_items(get_raw_page(relname, pageno))
+    order by lp;
+  $$ language sql;
+#+end_src
+
+现在在accounts表中启动一个事务，更新第一个账户的余额（键保持不变）和第二个账户的 ID（键得到更新）：
+
+#+begin_src sql
+  begin
+  update accounts set amount=amount+100.00 where id=1;
+  update accounts set id=20 where id=2;
+#+end_src
+
+该页面现在包含以下元数据：
+
+#+begin_src sql
+  select * from row_locks('accounts', 0) limit 2;
+#+end_src
+
+锁定模式由 keys_updated 提示位定义。
+
+#+begin_src sql
+  rollback;
+#+end_src
+
+SELECT FOR 命令使用相同的 xmax 字段作为锁定属性，但在这种情况下，还必须设置 xmax_lock_only 提示位。该位表示
+元组已锁定但未删除，这意味着它仍是当前元组：
+
+#+begin_src sql
+  begin;
+  select * from accounts where id=1 for no key update;
+  select * from accounts where id=2 for update;
+  select * from row_locks('accounts', 0) limit 2;
+  rollback;
+#+end_src
+
+共享模式
+
+共享模式适用于需要读取记录，但必须禁止其他事务修改该记录的情况。键共享模式允许更新除键属性外的任何元组字段。
+
+在所有共享模式中，PostgreSQL 内核只使用 "键共享"（Key Share），在检查外键时使用。由于它与 "无键更新"（No Key
+Update）独占模式兼容，因此外键检查不会干扰非键属性的并发更新。至于应用程序，它们可以使用自己喜欢的任何共享模式。
+
+请允许我再次强调，简单的 SELECT 命令从不使用行级锁。
+
+#+begin_src sql
+  begin;
+  select * from accounts where id=1 for key share;
+  select * from accounts where id=2 for share;
+#+end_src
+
+下面是我们在堆元组中看到的内容：
+
+#+begin_src sql
+  select * from row_locks('accounts', 0) limit 2;
+#+end_src
+
+这两种操作都会设置 xmax_keyshr_lock 位，但可以通过其他提示位识别共享模式。
+
+** 多事务
+
+正如我们所见，锁定属性由 xmax 字段表示，该字段被设置为获得锁的事务的 ID。那么，如何为多个事务同时持有的共享锁设
+置该属性呢？
+
+在处理共享锁时，PostgreSQL 会使用所谓的多事务（multitransactions）。多事务（multitransaction）是一组事务，
+它们被分配一个单独的 ID。组内成员及其锁定模式的详细信息存储在 PGDATA/pg_multixact 目录下的文件中。为了加快访问
+速度，锁定的页面会缓存在服务器的共享内存中；所有更改都会被记录下来，以确保容错。
+
+多重事务 ID 的 32 位长度与普通事务 ID 相同，但它们是独立发布的。这意味着事务和多重事务可能拥有相同的 ID。为了区
+分这两种情况，PostgreSQL 使用了一个额外的提示位：xmax_is_multi。
+
+让我们再添加一个由另一个事务获取的独占锁（键共享和无键更新模式兼容）：
+
+#+begin_src sql
+  begin;
+  update accounts set amount=amount+100.00 where id=1;
+#+end_src
+
+#+begin_src sql
+  select * from row_locks('accounts', 0) limit 2;
+#+end_src
+
+xmax_is_multi 位显示第一行使用的是多事务 ID 而不是普通 ID。
+
+在不进一步讨论实现细节的情况下，让我们使用 pgrowlocks 扩展来显示所有可能的行级锁的信息：
+
+#+begin_src sql
+  create extension pgrowlocks;
+  select * from pgrowlocks('accounts') \gx
+#+end_src
+
+它看起来很像查询 pg_locks 视图，但 pgrowlocks 函数必须访问堆页面，因为 RAM 不包含行级锁的信息。
+
+#+begin_src sql
+  commit;
+#+end_src
+
+#+begin_src sql
+  rollback;  
+#+end_src
+
+由于multixact ID是32位的，它们会因为计数器的限制而被包围，就像普通的事务ID一样。因此，PostgreSQL 必须
+以与冻结类似的方式处理多重事务 ID：用新的多重事务 ID 替换旧的多重事务 ID（如果当时只有一个事务持有锁，则用普通事
+务 ID 替换旧的多重事务 ID）。
+
+但是，普通事务 ID 只在 xmin 字段中冻结（因为 xmax 不为空表示元组已经过时，很快就会被删除），而对于多事务来说，必
+须冻结的是 xmax 字段：当前行版本可能会被共享模式下的新事务重复锁定。
+
+多事务冻结可通过服务器参数进行管理，这些参数与常规冻结参数类似：vacuum_multixact_freeze_min_age、
+vacuum_multixact_freeze_table_age、autovacuum_multixact_freeze_max_age 以及
+vacuum_multixact_failsafe_age。
+
+** 等待队列
+
+排他模式
+
+由于行级锁只是一个属性，队列的排列方式并不复杂。当一个事务要修改一条记录时，它必须遵循以下步骤：
+
+1. 如果 xmax 字段和提示位都表明该行以不兼容模式锁定，则对正在修改的元组获取排他性重量级锁定。
+2. 如有必要，可通过请求 xmax 事务 ID 上的锁（如果 xmax 包含一个 mutixact ID，则可请求多个事务），等待所有不兼
+   容的锁被释放。
+3. 在元组标头 xmax 中写入自己的 ID，并设置所需的提示位。
+4. 如果在第一步中获得了元组锁，则释放该锁。
+
+元组锁是另一种重量级锁，具有元组类型（不要与普通的行级锁混淆）。
+
+第 1 步和第 4 步看似多余，只需等待所有锁定事务结束即可。然而，如果多个事务都试图更新同一条记录，那么所有这些事务都
+将等待当前正在处理这条记录的事务。一旦该事务完成，它们就会发现自己处于争夺锁定该行权利的竞争状态，一些 "不幸 "的事
+务可能不得不无限期地等待很长时间。这种情况称为资源饥饿。
+
+元组锁可识别队列中的第一个事务，并保证它是下一个获得锁的事务。
+
+但你可以自己看一下。由于 PostgreSQL 在运行过程中会获得许多不同的锁，而每一个锁都会反映在 pg_locks 表中的单独
+一行中，因此我将在 pg_locks 表上创建另一个视图。它将以更简洁的形式显示这些信息，只保留我们当前感兴趣的锁（与
+accounts表和事务本身有关的锁，虚拟 ID 上的锁除外）：
+
+#+begin_src sql
+  create view locks_accounts as
+  select pid,
+    locktype,
+    case locktype
+      when 'relation' then relation::reglcass::text
+      when 'transactionid' then transactionid::text
+      when 'tuple' then relation::regclass||'('||page||','||tuple||')'
+    end as lockid,
+    mode,
+    granted
+  from pg_locks
+  where locktype in ('relation', 'transactionid', 'tuple')
+    and (locktype!='relation' or relation='accounts'::regclass)
+  order by 1, 2, 3;
+#+end_src
+
+让我们开始第一个事务并更新一行：
+
+#+begin_src sql
+  begin;
+  select txid_current(), pg_backend_pid();
+  update accounts set amount=amount+100.00 where id=1;
+#+end_src
+
+该事务已完成工作流程中的所有四个步骤，并锁定了表格：
+
+#+begin_src sql
+  select * from locks_accounts where pid=30723;
+#+end_src
+
+启动第二个事务并尝试更新同一行。该事务将挂起，等待锁定：
+
+#+begin_src sql
+  begin;
+  select txid_current(), pg_backend_pid();
+  update accounts set amount=amount+100.00 where id=1;
+#+end_src
+
+[[./images/s4Wgr6.png]]
+
+第二个事务只完成了第二步。因此，除了锁定表和自己的 ID 外，它还增加了两个锁，这两个锁也反映在 pg_locks 视图中：第
+一步获得的元组锁和第二步请求的第二个事务的 ID 锁：
+
+#+begin_src sql
+  select * from locks_accounts where pid=30790;
+#+end_src
+
+第三个事务将卡在第一步。它将尝试获取元组上的锁，并在此时停止：
+
+#+begin_src sql
+  begin
+  select txid_current(), pg_backend_pid();
+  update accounts set amount=amount+100.00 where id=1;
+#+end_src
+
+#+begin_src sql
+  select * from locks_accounts where pid=30865;
+#+end_src
+
+试图更新该行的第四个事务和所有后续事务在这方面与第三个事务没有区别：它们都在等待同一个元组锁。
+
+#+begin_src sql
+  begin;
+  select txid_current(), pg_backend_pid();
+  update accounts set amount=amount+100.00 where id=1;
+#+end_src
+
+#+begin_src sql
+  select * from locks_accounts where pid=30865;
+#+end_src
+
+[[./images/bRDwNq.png]]
+
+要全面了解当前的等待情况，可以用锁定进程的信息来扩展 pg_stat_activity 视图：
+
+#+begin_src sql
+  select pid, wait_event_type,
+    pg_blocking_pids(pid)
+  from pg_stat_activity
+  where pid in (30723, 30794, 30865, 30936);
+#+end_src
+
+如果第一个事务被中止，一切都会按预期进行：所有后续事务都会向前移动一步，不会跳过队列。
+
+然而，第一个事务更有可能被提交。在可重复读取或可串行化隔离级别，这会导致串行化失败，因此第二个事务必须中止（队列中
+的所有后续事务也会中止）。但在已提交读取隔离层，修改后的记录将被重新读取，其更新将被重试
+
+因此，第一个事务已提交：
+
+#+begin_src sql
+  commit;
+#+end_src
+
+第二个事务唤醒并成功完成工作流程的第三和第四步：
+
+#+begin_src sql
+  select * from locks_accounts where id=30794;
+#+end_src
+
+第二个事务释放元组锁后，第三个事务也会醒来，但它会发现新元组的 xmax 字段已包含不同的 ID。
+
+至此，上述工作流程结束。在 "已提交读取 "隔离级别，会再尝试锁定记录，但不会按照概述的步骤进行。现在，第三个事务正在
+等待第二个事务完成，而没有尝试获取元组锁：
+
+#+begin_src sql
+  select * from locks_accounts where pid=30865;
+#+end_src
+
+第四次事务也是如此：
+
+#+begin_src sql
+  select * from locks_accounts where pid=30936;
+#+end_src
+
+现在，第三个和第四个事务都在等待第二个事务的完成，有可能陷入竞赛状态。队列实际上已经崩溃。
+
+如果其他事务在队列还存在时就加入，那么所有事务都会被拖入这场竞赛。
+
+结论：在多个并发进程中更新同一个表行不是一个好主意。在高负载情况下，这个热点会很快变成瓶颈，导致性能问题。
+
+让我们提交所有已启动的事务。
+
+#+begin_src sql
+  commit;
+#+end_src
+
+#+begin_src sql
+  commit;
+#+end_src
+
+#+begin_src sql
+  commit;
+#+end_src
+
+共享模式
+
+PostgreSQL 获取共享锁仅用于参照完整性检查。在高负载应用程序中使用共享锁会导致资源枯竭，而两级锁模型无法避免这种结
+果。
+
+让我们回顾一下事务锁定记录的步骤：
+
+1. 如果 xmax 字段和提示位表明该行在独占模式下被锁定，则获取独占的重量级元组锁。
+2. 如果需要，可通过请求 xmax 事务 ID 上的锁（如果 xmax 包含多重 ID，则可请求多个事务），等待所有不兼容的锁被释
+   放。
+3. 将自己的 ID 写入元组标头的 xmax 中，并设置所需的提示位。
+4. 如果在第一步中获得了元组锁，则释放该锁。
+
+前两个步骤意味着，如果锁定模式兼容，事务将跳转队列。
+
+让我们从头开始重复实验。
+
+#+begin_src sql
+  truncate accounts;
+#+end_src
+
+#+begin_src sql
+  insert into accounts(id, client, amount)
+  values
+    (1, 'alice', 100.00),
+    (2, 'bob', 200.00),
+    (3, 'charlie', 300.00)
+#+end_src
+
+开始第一个事务
+
+#+begin_src sql
+  begin;
+  select txid_current(), pg_backend_pid();
+#+end_src
+
+现在，该行已锁定为共享模式：
+
+#+begin_src sql
+  select * from accounts where id=1 for share;
+#+end_src
+
+第二个事务试图更新同一行，但这是不允许的： 共享和无键更新模式不兼容：
+
+#+begin_src sql
+  begin;
+  select txid_current(), pg_backend_pid();
+  update accounts set amount=amount+100.00 where id=1;
+#+end_src
+
+在等待第一个事务完成的同时，第二个事务持有元组锁，就像前面的例子一样：
+
+#+begin_src sql
+  select * from locks_accounts where pid=30794;
+#+end_src
+
+[[./images/MziVSL.png]]
+
+现在让第三个事务以共享模式锁定该行。这种锁与已获得的锁兼容，因此该事务会跳转到队列中：
+
+#+begin_src sql
+  begin;
+  select txid_current(), pg_backend_pid();
+  select * from accounts where id=1 for share;
+#+end_src
+
+我们有两个事务在锁定同一行：
+
+#+begin_src sql
+  select * from pgrowlocks('accounts') \gx
+#+end_src
+
+[[./images/GAB8uK.png]]
+
+如果第一个事务在此时完成，第二个事务就会醒来，发现该行仍被锁定，并返回到队列中，但这次它会发现自己排在第三个事务之
+后：
+
+#+begin_src sql
+  commit;
+#+end_src
+
+#+begin_src sql
+  select * from locks_accounts where pid=30794;
+#+end_src
+
+只有当第三个事务完成后，第二个事务才能执行更新（除非在此时间间隔内出现其他共享锁）。
+
+#+begin_src sql
+  commit;
+#+end_src
+
+#+begin_src sql
+  commit;
+#+end_src
+
+外键检查不太可能导致任何问题，因为键属性通常保持不变，而且键共享可以与无键更新一起使用。但在大多数情况下，应避免在
+应用程序中共享行级锁。
+
+** 无等待锁
+
+SQL 命令通常会等待请求的资源被释放。但有时，如果不能立即获得锁，取消操作也是有意义的。为此，SELECT、LOCK 和
+ALTER 等命令提供了 NOWAIT 子句。
+
+锁定一行
+
+#+begin_src sql
+  begin;
+  update accounts set amount=amount+100.00 where id=1;
+#+end_src
+
+如果请求的资源已锁定，则带有 NOWAIT 子句的命令会立即完成，并显示错误：
+
+#+begin_src sql
+  select * from accounts for update nowait;
+#+end_src
+
+应用程序代码可以捕捉并处理此类错误。
+
+UPDATE 和 DELETE 命令没有 NOWAIT 子句。相反，可以使用 SELECT FOR UPDATE NOWAIT 命令尝试锁定记录，然后在尝
+试成功后更新或删除记录。
+
+在某些罕见的情况下，跳过已锁定的行并立即开始处理可用的行可能会很方便。这正是使用 SKIP LOCKED 子句运行 SELECT
+FOR 时要做的事情：
+
+#+begin_src sql
+  select * from accounts
+  order by id
+  for update skip locked limit 1;
+#+end_src
+
+在本例中，跳过了第一行（已锁定），查询锁定并返回了第二行。
+
+通过这种方法，我们可以批量处理行，或设置事件队列的并行处理。不过，请避免为该命令发明其他用例--大多数任务都可以用简
+单得多的方法来解决。
+
+最后但并非最不重要的一点是，您可以通过设置超时来避免长时间等待：
+
+#+begin_src sql
+  set lock_timeout='1s';
+  alter table accounts drop column amount;
+#+end_src
+
+由于未能在一秒内获得锁，命令完成时出现错误。超时不仅可以在会话级别设置，也可以在更低级别设置，例如针对某个事务。
+
+当需要独占锁的命令在负载情况下执行时，该方法可防止在表格处理过程中出现长时间等待。如果发生错误，该命令可以在一段时
+间后重试。
+
+#+begin_comment
+  statement_timeout 限制操作符执行的总时间，而 lock_timeout 参数则定义等待锁的最长时间。
+#+end_comment
+
+#+begin_src sql
+  rollback;
+#+end_src
+
+** 死锁
+
+一个事务有时可能需要另一个事务正在使用的资源，而另一个事务可能正在等待第三个事务锁定的资源，如此循环。此类事务会使用
+重量级锁进行排队。
+
+但是，队列中的事务有时可能需要另一个资源，因此必须再次加入同一队列，等待该资源被释放。这时就会出现死锁：队列现在有一
+个循环依赖关系，无法自行解决。
+
+为了更直观，我们来画一个等待图。图中的节点代表活动进程，而箭头所示的边则从等待锁的进程指向持有这些锁的进程。如果图
+中出现循环，即节点可以沿着箭头到达自身，则表示发生了死锁。
+
+#+begin_comment
+  这里的插图显示的是事务而不是进程。这种替换通常是可以接受的，因为一个事务由一个进程执行，而锁只能在一个事务中获
+  取。但一般来说，更正确的说法是进程，因为有些锁可能不会在事务完成后立即释放。
+#+end_comment
+
+如果发生了死锁，而参与方都没有设置超时，那么事务将永远互相等待。这就是锁管理器自动检测死锁的原因。
+
+不过，这种检查需要花费一些精力，而每次请求锁时都不应该浪费精力（毕竟死锁不会经常发生）。因此，如果进程获取锁的尝试
+不成功，并在加入队列后睡着了，PostgreSQL 就会自动设置一个由 deadlock_timeout 参数定义的超时。如果资源提前可用，
+那就太好了，可以避免检查的额外费用。但如果在 deadlock_timeout 单位时间后继续等待，等待进程就会醒来并启动检查。
+
+[[./images/jYjEmN.png]]
+
+这种检查实际上是建立一个等待图，并在其中搜索周期。为了 "冻结 "图的当前状态，PostgreSQL 会在整个检查过程中停止任
+何重量级锁的处理。
+
+如果没有检测到死锁，进程就会再次进入休眠状态；迟早会轮到它。
+
+如果检测到死锁，其中一个事务将被迫终止，从而释放锁，使其他事务能够继续执行。在大多数情况下，启动检查的事务会被中
+断，但如果循环中包括一个autovacuum进程，而该进程当前没有冻结元组以防止修改，服务器就会终止优先级较低的
+autovacuum进程。
+
+死锁通常表明应用程序设计不当。要发现这种情况，需要注意两点：服务器日志中的相应信息和 pg_stat_database 表中不断
+增加的死锁值。
+
+行更新产生的死锁
+
+虽然死锁最终是由重量级锁造成的，但主要是以不同顺序获取的行级锁导致了死锁。
+
+假设一笔交易要在两个账户之间转账 100 美元。首先从第一个账户中提取这笔款项：
+
+#+begin_src sql
+  begin;
+  update accounts set amount=amount-100.00 where id=1;
+#+end_src
+
+与此同时，另一笔交易将从第二个账户向第一个账户转账 10 美元。它首先从第二个账户中提取这笔钱：
+
+#+begin_src sql
+  begin;
+  update accounts set amount=amount-10.00 where id=2;
+#+end_src
+
+现在，第一笔交易试图增加第二个账户的金额，但发现相应的行已被锁定：
+
+#+begin_src sql
+  update accounts set amount=amount+100.00 where id=2;
+#+end_src
+
+然后第二个交易试图更新第一个账户，但也被锁定：
+
+#+begin_src sql
+  update accounts set amount=amount+10.00 where id=1;
+#+end_src
+
+这种循环等待永远不会自行解决。由于无法在一秒内获取资源，第一个事务会启动死锁检查，并被服务器中止：
+
+[[./images/5aS7ax.png]]
+
+现在第二个事务可以继续了。它唤醒并执行更新：
+
+完成这个事务
+
+#+begin_src sql
+  rollback;
+#+end_src
+
+#+begin_src sql
+  rollback;
+#+end_src
+
+执行此类操作的正确方法是按相同顺序锁定资源。例如，在本例中，可以根据账户编号按升序锁定账户。
+
+两个UPDATE语句产生的死锁
+
+在某些情况下，死锁似乎是不可能发生的，但它们确实发生了。
+
+我们通常认为 SQL 命令是原子性的，但它们真的是原子性的吗？让我们仔细看看 UPDATE：该命令在更新记录时锁定记录，而不
+是一次性全部更新，而且不会同时进行。因此，如果一条 UPDATE 命令以一种顺序修改多条记录，而另一条命令以另一种顺序进
+行同样的修改，就会出现死锁。
+
+让我们重现一下这个场景。首先，我们要在金额列上建立一个降序索引：
+
+#+begin_src sql
+  create index on accounts(amount desc);
+#+end_src
+
+为了能够观察这一过程，我们可以编写一个函数来减慢速度：
+
+#+begin_src sql
+  create function inc_slow(n numeric)
+  returns numeric
+  as $$
+    select pg_sleep(1);
+    select n+100.00;
+  $$ language sql;
+#+end_src
+
+第一条 UPDATE 命令将更新所有数据元组。执行计划依赖于对整个表的顺序扫描。
+
+#+begin_src sql
+  explain (costs off)
+  update accounts set amount=inc_slow(amount);
+#+end_src
+
+为了确保堆页面根据金额列以升序存储行，我们必须截断表并重新插入行：
+
+#+begin_src sql
+  truncate accounts;
+  insert into accounts(id, client, amount)
+  values
+    (1, 'alice', 100.00),
+    (2, 'bob', 200.00),
+    (3, 'charlie', 300.00);
+  analyze accounts;
+  select ctid, * from accounts;
+#+end_src
+
+顺序扫描将以相同的顺序更新行（但对于大型表来说，并非总是如此）。
+
+让我们开始更新吧：
+
+#+begin_src sql
+  update accounts set amount=inc_slow(amount);
+#+end_src
+
+同时，我们将在另一个会话上禁止顺序扫描：
+
+#+begin_src sql
+  set enable_seqscan=off;
+#+end_src
+
+因此，规划器会为下一条 UPDATE 命令选择索引扫描。
+
+#+begin_src sql
+  explain (costs off)
+  update accounts set amount=inc_slow(amount)
+  where amount>100.00;
+#+end_src
+
+第二和第三行满足条件；由于索引是降序的，因此行将以相反的顺序更新。
+
+开始下一个更新
+
+#+begin_src sql
+  update accounts set amount=inc_slow(amount)
+  where amount>100.00;
+#+end_src
+
+pgrowlocks 扩展显示，第一个操作符已经更新了第一行（0,1），而第二个操作符已经更新了最后一行（0,3）：
+
+#+begin_src sql
+  select locked_row, locker, modes from pgrowlocks('accounts');
+#+end_src
+
+又过了一秒钟。第一个操作更新了第二行，另一个操作也想更新，但不允许。
+
+#+begin_src sql
+  select locked_row, locker, modes from pgrowlocks('accounts');
+#+end_src
+
+现在，第一个操作想更新最后一条表记录，但它已被第二个操作锁定。死锁发生了。
+
+其中一个事务被中止：
+
+[[./images/GaEljH.png]]
+
+而另一个则完成了它的执行：
+
+虽然这种情况看似不可能发生，但在高负载系统中执行批量行更新时确实会发生。
 
 
 
@@ -465,7 +1123,7 @@ SQL 是一种声明式语言：查询指定要获取哪些数据，但不指定�
 + 计划树中的三个查询表只包含两个：规划器发现其中一个表不需要用于检索结果，因此将其从计划树中删除。
 + 在树的每个节点上，规划器都会提供估计成本和预计要处理的行数。
 
-#+begin_src sql
+#+begin_src sql :engine postgresql
   explain select schemaname, tablename
   from pg_tables
   where tableowner='postgres'
@@ -3027,7 +3685,7 @@ PostgreSQl提供几种连接方法
 
 不同的连接方法在不同的条件下效果最佳；规划器的工作就是选择成本效益最高的方法。
 
-** COMMENT 嵌套循环连接
+**  嵌套循环连接
 
 嵌套循环连接功能的基本算法如下。外循环遍历第一个数据集中的所有行（称为外集）。对于其中的每一条记录，嵌套循环都会遍
 历第二个数据集（称为内集）中的记录，找出满足连接条件的记录。找到的每一对记录都会作为查询结果的一部分立即返回。
@@ -4451,42 +5109,8 @@ cpu_operator_cost 估算）。
 
 这只是一个例子，在每个具体情况下，代价之间的比例都会不同。
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
-* hash索引
+* HASH索引
 ** 概览
 散列索引提供了通过特定索引键快速查找元组ID(TID)的能力。粗略地说，它只是一个存储在磁盘上的哈希表。散列索引所支持的
 唯一操作是通过平等条件进行搜索。
@@ -4756,7 +5380,7 @@ REINDEX或VACCUM FULL命令重建它
 
 
 * B-tree索引
-
+
 ** 概览
 B树（实现为btree访问方法）是一种数据结构，它可以使你从树的根部往下走，快速找到树的叶子节点中的所需元素。为了使
 搜索路径能够被明确地确定，所有的树元素必须是有序的。B树是为有序数数据类型设计的，其数值可以被比较和排序。
