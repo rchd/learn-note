@@ -1,6 +1,558 @@
 #+name: postgres_internals
 #+header: :engine postgres
 
+
+
+
+
+* 缓冲缓存
+
+** 缓存
+
+在现代计算系统中，高速缓存无处不在--无论是在硬件层面还是在软件层面。仅处理器就有多达三到四级缓存。RAID 控制器和磁
+盘也增加了自己的缓存。
+
+缓存用于均衡快慢类型内存之间的性能差异。快速内存价格昂贵，容量较小，而慢速内存容量大，价格便宜。因此，快速内存无法
+容纳慢速内存中存储的所有数据。但在大多数情况下，只有一小部分数据在每个特定时刻被积极使用，因此分配一些快速内存作为
+缓存来保存热数据，可以大大减少慢速内存访问所产生的开销。
+
+在 PostgreSQL 中，缓冲存储器保存关系页，从而平衡磁盘（毫秒）和内存（纳秒）的访问时间。
+
+操作系统也有自己的缓存，起到同样的作用。因此，数据库系统的设计通常会避免双重缓存：通常会绕过操作系统缓存，直接查询
+存储在磁盘上的数据。但 PostgreSQL 使用的是另一种方法：它通过缓冲文件操作读写所有数据。
+
+#+begin_comment
+  如果使用直接 I/O，就可以避免双重缓存。这将减少开销，因为 PostgreSQL 将使用直接内存访问（DMA），而不是将缓冲页
+  复制到 os 地址空间；此外，你还能立即控制磁盘上的物理写入。不过，直接I/O不支持缓冲区化带来的数据预取功能，因此
+  必须通过异步I/O单独实现，这需要对PostgreSQL核心代码进行大量修改，还要处理操作系统在支持直接I/O和异步
+  I/O时的不兼容性问题。但是，一旦异步通信设置完成，你就可以享受无等待磁盘访问的额外优势。
+
+  PostgreSQL 社区已经开始了这一重大努力，但实际成果还需要很长时间才能显现。
+#+end_comment
+
+** 缓冲缓存设计
+
+缓冲缓存位于服务器的共享内存中，所有进程都可以访问。它占据了共享内存的大部分，无疑是 PostgreSQL 中最重要、最复杂
+的数据结构之一。了解缓存的工作原理本身就很重要，但由于许多其他结构（如子事务、CLOG 事务状态和 WAL 条目）都使用类
+似的缓存机制（尽管比较简单），因此了解缓存的工作原理就更加重要了。
+
+这种高速缓存的名称是受其内部结构的启发，因为它由一系列缓冲区组成。每个缓冲区都预留了一个内存卡盘，可容纳单个数据页
+及其页头。
+
+[[./images/xicEDi.png]]
+
+页头包含缓冲区和其中页面的一些信息，例如
+
++ 页面的实际位置（文件 ID、分叉和分叉中的区块编号）
++ 该属性表明页面中的数据已被修改，迟早要写回磁盘（这样的页面称为 dirty 页面）。
++ 缓冲区使用计数
++ 钉住数或引用数
+
+要访问某个关系的数据页，进程会向缓冲区管理器提出请求，并接收包含该页的缓冲区 ID。然后，它会读取缓存数据，并在需要
+时直接在缓存中修改。当页面被使用时，其缓冲区会被钉住。插销禁止驱逐缓存页面，可以与其他锁一起使用。每个插值也会增加
+使用次数。
+
+只要页面处于缓存状态，使用时就不会产生任何文件操作。
+
+我们可以使用 pg_buffercache 扩展来探索缓冲区缓存：
+
+#+begin_src sql
+  create extension pg_buffercache;
+#+end_src
+
+#+begin_src sql
+  create table cacheme(
+    id integer
+  )with (autovaccum_enabled=off);
+  insert into cacheme values(1);
+#+end_src
+
+现在，缓冲区缓存中的堆页面包含了新插入的记录。你可以通过选择与某个表相关的所有缓冲区来查看。我们将再次需要这样的查
+询，因此让我们把它封装到一个函数中：
+
+#+begin_src sql
+  create function buffercache(rel regclass)
+  returns table(
+    bufferid integer, relfork text, relblk bigint,
+    isdirty boolean, usagecount smallint, pins integer 
+  ) as $$
+  select bufferid,
+    case relforknumber
+      when 0 then 'main'
+      when 1 then 'fsm'
+      when 2 then 'vm'
+    end,
+    relblocknumber,
+    isdirty,
+    usagecount,
+    pinning_backends
+  from pg_buffercache
+  where relfilenode = pg_relation_filenode(rel)
+  order by relforknumber, relblocknumber
+  $$ language sql;
+#+end_src
+
+#+begin_src sql
+  select * from buffercache('cacheme');
+#+end_src
+
+页面为脏页面：已被修改，但尚未写入磁盘。其使用计数设置为 1。
+
+** 缓冲命中
+
+当缓冲区管理器需要读取一个页面时，它会首先检查缓冲区缓存。所有缓冲区 ID 都存储在一个哈希表中，用来加快搜索速度。
+
+#+begin_comment
+  许多现代编程语言都将哈希表作为基本数据类型之一。哈希表通常被称为关联数组，事实上，从用户的角度来看，哈希表看起来
+  就像一个数组；但是，其索引（哈希键）可以是任何数据类型，例如，文本字符串而不是整数。
+
+  虽然可能的键值范围可能相当大，但散列表一次绝不会包含那么多不同的值。散列的原理是使用散列函数将键值转换成整数。这
+  个数字（或其部分比特）被用作一个常规数组的索引。该数组的元素称为哈希表桶。
+
+  一个好的散列函数或多或少会将散列键均匀地分配到不同的散列桶中，但它仍有可能将相同的数字分配给不同的键，从而将它们
+  放到同一个桶中；这就是所谓的碰撞。因此，值与散列键一起存储在桶中；要通过键访问散列值，PostgreSQL 必须检查桶中的
+  所有键。
+#+end_comment
+
+哈希表有多种实现方式；在所有可能的选项中，缓冲存储器缓存使用的是可扩展表，它通过链式方式解决哈希碰撞问题。
+
+哈希键由关系文件的 ID、分叉类型和分叉文件中页面的 ID 组成。这样，PostgreSQL 在知道页面后，就能快速找到包含该页
+面的缓冲区，或确保该页面当前未被缓存。
+
+[[./images/0soFQP.png]]
+
+#+begin_comment
+  缓冲区缓存的实现依赖于哈希表，这一点长期以来一直饱受诟病：当需要查找特定关系页占用的所有缓冲区时，这种结构毫无用
+  处，而在运行 DROP 和 TRUNCATE 命令或在自动回收元组过程中截断表时，需要从缓存中移除页面。然而，迄今为止还没有人
+  提出合适的替代方案。
+#+end_comment
+
+如果哈希表中包含所需的缓冲区 ID，缓冲区管理器就会将该缓冲区固定下来，并将其 ID 返回给进程。然后，该进程就可以开始
+使用缓存页面，而不会产生任何 I/O 流量。
+
+要固定一个缓冲区，PostgreSQL 必须递增其头部的固定计数器；一个缓冲区可以同时被多个进程固定。当缓冲区的引脚计数器
+大于零时，缓冲区就被认为正在使用中，其内容不允许有任何重大改变。例如，可以出现一个新的元组（根据可见性规则，它将是
+不可见的），但页面本身不能被替换。
+
+当使用 analyze 和 buffers 选项运行时，EXPLAIN 命令会执行显示的查询计划，并显示已使用的缓冲区数量：
+
+#+begin_src sql
+  explain (analyze, buffers, costs off, timing off, summary off)
+  select * from cacheme;
+#+end_src
+
+hit=1 表示在缓存中找到了唯一需要读取的页面。
+
+缓冲区针脚会将使用次数增加一个：
+
+#+begin_src sql
+  begin;
+  declare c cursor for select * from cacheme;
+  fetch c;
+#+end_src
+
+#+begin_src sql
+  select * from buffercache('cacheme');
+#+end_src
+
+如果一个进程无法使用一个固定的缓冲区，它通常会跳过该缓冲区，直接选择另一个缓冲区。我们可以在回收元组时看到这种情况：
+#+begin_src sql
+  vacuum verbose cacheme;
+#+end_src
+
+该页被跳过是因为其元组无法从被钉住缓冲区中物理移除。
+
+但如果需要的正是这个缓冲区，进程就会加入队列，等待对该缓冲区的独占访问。这种操作的一个例子就是自动回收和冻结。
+
+一旦光标关闭或移动到其他页面，缓冲区就会被解钉。在本例中，它发生在事务结束时：
+
+#+begin_src sql
+  commit;
+  select * from buffercache('cacheme');
+#+end_src
+
+页面修改也受同样的固定机制保护。例如，让我们在表格中插入另一行（它将进入同一页面）：
+
+#+begin_src sql
+  insert into cacheme values(2);
+  select * from buffercache('cacheme');
+#+end_src
+
+PostgreSQL 不会立即向磁盘写入任何内容：页面会在缓冲缓存中保持一段时间，为读取和写入提供一些性能提升。
+
+** 缓存丢失
+
+如果哈希表中没有与所查询页面相关的条目，则表示该页面未被缓存。在这种情况下，会分配一个新的缓冲区（并立即固定），将
+页面读入该缓冲区，并相应修改哈希表引用。
+
+让我们重启实例，清除其缓冲区缓存：
+
+#+begin_src sh
+  pg_ctl restart -l /home/postgres/logfile 
+#+end_src
+
+尝试读取页面将导致缓存缺失，页面将被加载到一个新的缓冲区：
+
+#+begin_src sql
+  explain (analyze, buffers, costs off, timing off, summary off)
+  select * from cacheme;
+#+end_src
+
+计划现在显示的是读取状态，而不是命中，这表示缓存未命中。此外，该页面已经变脏，因为查询修改了一些提示位
+
+缓冲区缓存查询显示，新添加页面的使用计数设置为 1：
+
+#+begin_src sql
+  select * from buffercache('cacheme');
+#+end_src
+
+pg_statio_all_tables 视图包含各表缓冲区缓存使用情况的完整统计数据：
+
+#+begin_src sql
+  select heap_blks_read, heap_blks_hit
+  from pg_statio_all_tables
+  where relname='cacheme';
+#+end_src
+
+PostgreSQL 为索引和序列提供了类似的视图。它们还可以显示 I/O 操作的统计信息，但前提是关闭 track_io_timing 功能。
+
+缓冲区搜索和替换
+
+为页面选择缓冲区并非易事。有两种可能的情况：
+
+1. 服务器启动后，所有缓冲区都会清空，并绑定到一个列表中。
+   
+   当一些缓冲区仍然空闲时，下一个从磁盘读取的页面将占用第一个缓冲区，并将其从列表中移除。
+
+   缓冲区只有在其页面消失而没有被其他页面取代时，才能返回列表。如果调用 DROP 或 TRUNCATE 命令，或者在自动回收
+   过程中表被截断，就会出现这种情况。
+
+2. 迟早会没有空闲的缓冲区（因为数据库的大小通常大于为缓存分配的内存块）。这时，缓冲区管理器必须选择一个已在使用的
+   缓冲区，并从该缓冲区中驱逐缓存页面。这需要使用时钟扫描算法，时钟隐喻很好地说明了这一点。时钟指针指向其中一个缓
+   冲区，开始绕缓冲区缓存一周，并在经过时将每个缓存页面的使用计数减少一个。时钟指针发现的第一个计数为零的未固定缓
+   冲区将被清除。
+
+
+因此，每次访问缓冲区（即钉住）时，使用计数都会递增，而当缓冲区管理器搜索要驱逐的页面时，使用计数就会减少。因此，最
+近使用次数最少的页面会首先被驱逐，而访问次数较多的页面则会在缓存中保留更长时间。
+
+正如你所猜测的那样，如果所有缓冲区的使用次数都不为零，那么时钟指针必须走完一圈以上的路程才能最终到达零值。为了避免
+跑多圈，PostgreSQL 将使用计数限制为 5。
+
+一旦找到要驱逐的缓冲区，就必须从哈希表中删除仍在该缓冲区中的页面引用。
+
+但如果该缓冲区很脏，即包含一些修改过的数据，就不能简单地扔掉旧页面--缓冲区管理器必须先将其写入磁盘。
+
+[[./images/jZ4DpS.png]]
+
+然后，缓冲区管理器会将新页面读入找到的缓冲区--无论该缓冲区是否已被清空或仍处于空闲状态。为此，缓冲管理器使用缓冲
+I/O，因此只有当操作系统无法在自己的缓存中找到页面时，才会从磁盘读取页面。
+
+#+begin_comment
+  然后，缓冲区管理器会将新页面读入找到的缓冲区--无论该缓冲区是否已被清空或仍处于空闲状态。为此，缓冲管理器使用缓冲
+  I/O，因此只有当操作系统无法在自己的缓存中找到页面时，才会从磁盘读取页面。
+#+end_comment
+
+哈希表更新为引用新页面，缓冲区被钉住。缓冲区的使用计数会递增，现在设置为 1，这样在时钟指针遍历缓冲区缓存时，缓冲区
+就有时间增加使用计数。
+
+** 批量驱逐
+
+如果进行批量读取或写入，一次性数据有可能很快将有用的页面从缓冲缓存中删除。
+
+为谨慎起见，批量操作会使用相当小的缓冲区环，并在其边界内执行驱逐，而不会影响其他缓冲区。
+
+#+begin_comment
+  除了 "缓冲区环"，代码还使用了 "环形缓冲区 "一词。不过，这个同义词比较含糊，因为环形缓冲区本身由多个缓冲区（属
+  于缓冲区缓存）组成。在这方面，"缓冲区环 "一词更为准确。
+#+end_comment
+
+一个特定大小的缓冲区环由一个接一个使用的缓冲区阵列组成。起初，缓冲区环是空的，各个缓冲区按照通常的方式从缓冲区缓存
+中选择后，一个接一个地加入缓冲区环。然后，驱逐开始发挥作用，但只能在缓冲区环的范围内进行。
+
+添加到环中的缓冲区不会被排除在缓冲区缓存之外，仍可被其他操作使用。因此，如果要重复使用的缓冲区被钉住，或其使用次数
+大于 1，它就会被从环中分离出来，由另一个缓冲区取代。
+
+PostgreSQL 支持三种驱逐策略。
+
+*批量读取策略* 如果大型表的大小超过缓冲区缓存的 $ \frac{1}{4} $ 倍，则使用环形缓冲区对其进行顺序扫描。环形缓冲
+区容量为 256kB（32 个标准页）。
+
+这种策略不允许将脏页写入磁盘来释放缓冲区；相反，缓冲区会被从环中删除，并由另一个缓冲区取代。因此，读取无需等待写入
+完成，因此读取速度更快。
+
+如果发现表已被扫描，启动另一次扫描的进程会加入现有的缓冲区环，并访问当前可用的数据，而不会产生额外的 I/O 操作。 当
+第一个进程完成扫描后，第二个进程将返回到表的跳过部分。
+
+*批量写入策略* COPY FROM、CREATE TABLE AS SELECT 和 CREATE MATERIALIZED VIEW 命令，以及那些会导致表重写
+的 ALTER TABLE 命令都采用了批量写入策略。分配的环非常大，默认大小为 16MB（2048 个标准页），但绝不会超过缓冲区缓
+存总大小的 $ \frac{1}{8} $。
+
+*自动回收策略* 在不考虑可见性映射的情况下执行全表扫描时，抽真空流程会使用抽真空策略。环形缓冲区的 RAM 为 256 kB
+（32 个标准页）。
+
+缓冲区环并不总能防止不必要的驱逐。如果 UPDATE 或 DELETE 命令会影响大量行，执行的表扫描就会应用批量读取策略，但
+由于页面会不断被修改，缓冲环实际上就失去了作用。
+
+另一个值得一提的例子是在 TOAST 表中存储超大数据。尽管需要读取的数据量可能很大，但烤焦的值总是通过索引来访问，因此
+可以绕过缓冲区环。
+
+让我们仔细看看批量读取策略。为简单起见，我们将创建一个表，使插入的行占用整个页面。默认情况下，缓冲区缓存大小为
+16384 页，每页 8kB。因此，要使用缓冲区环进行扫描，表必须占用超过 4096 页的空间。
+
+#+begin_src sql
+  create table big(
+    id integer primary key generated always as identity,
+    s char(1000)
+  ) with (fillfactor=10);
+#+end_src
+
+#+begin_src sql
+  insert into big(s)
+  select 'FOO' from generate_series(1, 4096+1);
+#+end_src
+
+让我们来分析一下表:
+
+#+begin_src sql
+  analyze big;
+  select relname, relfilenode, relpages
+  from pg_class
+  where relname in ('big', 'big_pkey');
+#+end_src
+
+重启服务器以清除缓存，因为现在缓存中包含一些在分析过程中读取过的堆页面。
+
+#+begin_src sh
+    pg_ctl restart -l /home/postgres/logfilec
+#+end_src
+
+服务器重启后，让我们读取整个表:
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select id from big;
+#+end_src
+
+堆页面只占用 32 个缓冲区，这些缓冲区构成了该操作的缓冲区环：
+
+#+begin_src sql
+  select count(*)
+  from pg_buffercache
+  where relfilenode=pg_relation_filenode('big'::regclass);
+#+end_src
+
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select * from big order by id;
+#+end_src
+
+因此，缓冲缓存最终会包含整个表和整个索引：
+
+#+begin_src sql
+  select relfilenode, count(*)
+  from pg_buffercache
+  where relfilenode in (
+    pg_relation_filenode('big'),
+    pg_relation_filenode('big_pkey')
+  )
+  group by relfilenode;
+#+end_src
+
+** 选择缓冲缓存大小
+
+缓冲区缓存的大小由 shared_buffers 参数定义。众所周知，该参数的默认值较低，因此在安装 PostgreSQL 后立即增加该值
+是合理的。在这种情况下，你必须重新加载服务器，因为共享内存是在服务器启动时分配给缓存的。
+
+但我们如何才能确定一个合适的值呢？
+
+即使是超大型数据库，同时使用的热数据集也是有限的。在完美的世界中，这组数据必须适合缓冲区缓存（为一次性数据保留一定空
+间）。如果缓存的大小较小，那么正在使用的页面就会一直相互驱逐，从而导致过多的 I/O 操作。但不假思索地增加缓存大小也不
+是个好主意： 内存是一种稀缺资源，此外，缓存越大，维护成本越高。
+
+最佳缓冲存储器大小因系统而异：它取决于可用内存的总大小、数据配置文件和工作负载类型等因素。遗憾的是，没有一个神奇的
+值或公式能让每个人都同样适合。
+
+你还应该记住，PostgreSQL 中的缓存缺失并不一定会触发物理 I/O 操作。如果缓冲缓存很小，操作系统缓存就会使用剩余的
+可用内存，在一定程度上可以平滑处理。但与数据库不同的是，操作系统对读取的数据一无所知，因此会采用不同的驱逐策略。
+
+一般建议从 $ \frac{1}{4} $ 内存开始，然后根据需要调整这一设置。
+
+最好的办法是进行实验：可以增加或减少缓存大小，然后比较系统性能。当然，这需要有一个与生产系统完全类似的测试系统，而
+且必须能够重现典型的工作负载。
+
+您还可以使用 pg_buffercache 扩展运行一些分析。例如，根据缓冲区的使用情况探索缓冲区的分布情况
+
+#+begin_src sql
+  select useagecount, count(*)
+  from pg_buffercache
+  group by usagecount
+  order by useagecount;
+
+#+end_src
+
+NULL使用次数值对应的是空闲缓冲区。在这种情况下，这些值是意料之中的，因为服务器在重启后大部分时间都处于空闲状态。
+已使用的缓冲区大多包含系统目录表的页面，这些页面由后端读取，用于填充系统目录缓存和执行查询。
+
+我们可以检查每种关系的缓存比例，以及这些数据是否热门（如果页面的使用次数大于 1，则视为热门）：
+
+#+begin_src sql
+  select c.relname,
+    count(*) blocks,
+    round(100.0*8192*count(*) /
+      pg_table_size(c.oid) ) as "% of rel",
+    round(100.0*8192*count(*) filter (where b.usagecount > 1 ) /
+      pg_table_size(c.oid) ) as "% hot"
+  from pg_buffercache b
+    join pg_class c on pg_relation_filenode(c.oid)=b.relfilenode
+  where b.reldatabase in (
+    0, -- cluster-wide objects
+    (select oid from pg_database where datname=current_database())
+  )
+  and b.usagecount is not null
+  group by c.relname, c.oid
+  order by 2 desc
+  limit 10;
+#+end_src
+
+该示例显示，big表及其索引已完全缓存，但其页面并未被频繁使用。
+
+从不同角度分析数据，可以获得一些有用的见解。不过，在运行 pg_buffercache 查询时，请务必遵守以下简单规则：
+
++ 由于返回的数字会有一定程度的差异，因此请重复此类查询数次。
++ 不要不停地运行此类查询，因为 pg_buffercache 扩展会锁定所查看的缓冲区，即使只是短暂锁定。
+
+** 级存预热
+
+服务器重启后，缓存需要一些时间来预热，也就是说，需要积累当前使用的数据。立即缓存某些表可能会有帮助，pg_prewarm 扩
+展正是为此目的而设计的：
+
+#+begin_src sql
+  create extension pg_prewarm;
+#+end_src
+
+除了将表载入缓冲缓存（或仅载入操作系统缓存）外，该扩展还能将当前缓存状态写入磁盘，并在服务器重启后恢复。要启用此功能
+必须将此扩展库添加到 shared_preload_libraries，然后重启服务器：
+
+#+begin_src sql
+  alter system set shared_preload_libraries='pg_prewarm';
+#+end_src
+
+#+begin_src sh
+  pg_ctl restart -l /home/postgres/logfile
+#+end_src
+
+如果 pg_prewarm.autoprewarm 设置未变，则会在服务器重载后自动启动一个名为 autoprewarm leader 的进程；一旦进
+入 pg_prewarm.autoprewarm_interval 秒，该进程就会将缓存页面列表刷新到磁盘（使用 max_parallel_processes
+插槽之一）。
+
+#+begin_src sh
+  ps -o pid,command \
+     --ppid `head -n /usr/local/pgsql/data/postmaster.pid` | \
+      grep prewarm
+#+end_src
+
+现在服务器已重新启动，big表不再缓存：
+
+#+begin_src sql
+  select count(*)
+  from pg_buffercache
+  where relfilenode=pg_relation_filenode('big'::regclass);
+#+end_src
+
+如果您有充分的理由假设整个表将被频繁使用，而磁盘访问会导致响应时间过长，那么您可以提前将该表加载到缓冲缓存中：
+
+#+begin_src sql
+  select pg_prewarm('big');
+#+end_src
+
+#+begin_src sql
+  select count(*)
+  from pg_buffercache
+  where relfilenode=pg_relation_filenode('big'::regclass);
+#+end_src
+
+页面列表将转储到 PGDATA/autoprewarm.blocks 文件中。您可以等到 autoprewarm 领导第一次完成后再进行转储，但我
+们将手动启动转储：
+
+#+begin_src sql
+  select autoprewarm_dump_now();
+#+end_src
+
+刷新页面的数量大于 4097，因为所有使用过的缓冲区都被考虑在内。文件以文本格式写入，其中包含数据库、表空间和文件的 ID
+以及分叉号和段号：
+
+#+begin_src sh
+  head -n 10 /usr/local/pgsql/data/autoprewarm.blocks
+#+end_src
+
+再次重启服务器
+
+#+begin_src sh
+  pg_ctl restart -l /home/postgres/logfile
+#+end_src
+
+表会立即出现在缓存中：
+
+#+begin_src sql
+  select count(*)
+  from pg_buffercache
+  where relfilenode=pg_relation_filenode('big'::regclass);
+#+end_src
+
+所有的前期工作还是由autoprewarm领导者来完成：它读取文件，按数据库对页面进行排序，重新排序（以便尽可能按顺序读
+取磁盘），然后将它们传递给自动重启工作者进行处理。
+
+** 本地缓存
+
+临时表不遵循上述工作流程。由于临时数据只对单个进程可见，因此没有必要将其加载到共享缓冲区缓存中。因此，临时数据使用
+的是拥有表的进程的本地缓存。
+
+一般来说，本地缓冲存储器的工作原理与共享缓冲存储器类似：
+
++ 页面搜索通过哈希表进行。
++ 驱逐遵循标准算法（除了不使用缓冲区环）。
++ 可钉住页面以避免被驱逐。
+
+不过，本地缓存的实现要简单得多，因为它既不需要处理内存结构锁（缓冲区只能由单个进程访问），也不需要容错（临时数据最
+多存在到会话结束）。
+
+由于只有少数会话通常会使用临时表，因此本地缓存内存是按需分配的。会话可用的本地缓存最大容量受 temp_buffers 参数限
+制
+
+#+begin_comment
+  尽管名称相似，但 temp_file_limit 参数与临时表无关；它与查询执行过程中可能创建的临时存储中间数据的文件有关。
+#+end_comment
+
+在 EXPLAIN 命令输出中，所有对本地缓冲区缓存的调用都标记为本地，而不是共享：
+
+#+begin_src sql
+  create temporary table tmp as select 1;
+  explain (analyze, buffers, costs off, timing off, summary off)
+  select * from tmp;
+#+end_src
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 * 表级锁
 
 ** 关于锁
