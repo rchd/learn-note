@@ -1,6 +1,755 @@
 #+name: postgres_internals
 #+header: :engine postgres
 
+* 隔离
+
+** 一致性
+
+关系数据库的主要特点是能够确保数据的一致性，即数据的正确性。
+
+众所周知，在数据库级别可以创建完整性约束，如 NOT NULL 或 UNIQUE。数据库系统可确保这些约束永远不会被破坏，因此数
+据完整性永远不会受到影响。
+
+如果所有需要的约束条件都能在数据库一级制定，一致性就能得到保证。但有些条件过于复杂，例如同时涉及多个表。即使在数据
+库中可以定义一个约束，但由于某些原因没有定义，也并不意味着这个约束可能会被违反。
+
+因此，数据一致性比完整性更严格，但数据库系统并不知道 "一致性 "的实际含义。如果应用程序在不破坏完整性的情况下破坏了
+一致性，数据库系统根本无法发现。因此，必须由应用程序来制定数据一致性的标准，而且我们必须相信它是正确编写的，绝不会
+出现任何错误。
+
+但是，如果应用程序始终只执行正确的运算符序列，那么数据库系统的作用又在哪里呢？
+
+首先，一个正确的操作符序列可能会暂时破坏数据的一致性，虽然看起来很奇怪，但这是完全正常的。
+
+从一个账户向另一个账户转移资金就是一个老生常谈但却清晰明了的例子。一致性规则听起来可能是这样的：资金转移绝不能改变
+受影响账户的总余额。要在 SQL 中将这条规则表述为完整性约束是相当困难的（尽管有可能），因此我们假设它是在应用程序级
+别定义的，对数据库系统来说是不透明的。转账由两个操作组成：第一个操作是从一个账户中提取资金，而第二个操作则是将这笔
+资金添加到另一个账户中。第一个操作会破坏数据的一致性，而第二个操作则会恢复数据的一致性。
+
+如果第一个操作成功了，但第二个操作没有成功（由于某些故障），数据一致性就会被破坏。这种情况是不可接受的，但要在应用
+程序层面发现并解决这些问题却需要花费大量精力。幸运的是，这并不是必需的--如果数据库系统知道这两个操作构成了一个不可
+分割的整体，即一个事务，那么这个问题完全可以由数据库系统自己解决。
+
+但这里还有一个更微妙的方面。事务本身是绝对正确的，但并行运行时可能会开始运行错误。这是因为属于不同事务的操作经常会
+混合在一起。如果数据库系统先完成一个事务的所有操作，然后再进入下一个事务，就不会出现这种问题，但顺序执行的性能会低
+得离谱。
+
+#+begin_comment
+  只有在拥有合适硬件（多核处理器、磁盘阵列等）的系统上，才能真正实现事务的同步执行。但同样的道理也适用于在分时模式
+  下顺序执行命令的服务器。出于概括的目的，这两种情况有时都被称为并发执行。
+#+end_comment
+
+正确的事务在一起运行时行为不正确，会导致并发异常或并发现象。
+
+下面是一个简单的例子。要从数据库中获取一致的数据，应用程序至少不能看到其他未提交事务所做的任何更改。否则（如果某些
+事务回滚），应用程序就会看到从未存在过的数据库状态。这种异常情况被称为 "脏读"。还有许多其他异常情况，它们更为复杂。
+
+在并发运行事务时，数据库必须保证事务的执行结果与可能的顺序执行结果相同。换句话说，数据库必须将事务相互隔离，从而避免
+可能出现的异常情况。
+
+总而言之，事务是将数据库从一个正确状态带到另一个正确状态（一致性）的一组操作，条件是事务必须完整执行（原子性），并
+且不受其他事务的影响（隔离性）。这一定义结合了 ACID 首字母缩写前三个字母所隐含的要求。它们相互交织在一起，因此将
+它们放在一起讨论是合理的。事实上，耐久性要求也很难分割开来：在系统崩溃后，系统可能仍包含一些未提交事务所做的更改，
+因此必须采取一些措施来恢复数据的一致性。
+
+因此，尽管数据库系统不知道隐含的一致性规则，但它可以通过考虑事务边界来帮助应用程序保持数据一致性。
+
+遗憾的是，完全隔离很难实现，而且会对性能产生负面影响。现实生活中的大多数系统都使用较弱的隔离级别，这可以防止一些异
+常情况，但不能防止所有异常情况。这意味着维护数据一致性的工作部分落在了应用程序身上。正因如此，了解系统中使用的隔离
+级别、该级别能保证什么、不能保证什么，以及如何确保代码在这种情况下的正确性就显得非常重要。
+
+** SQL 标准中的隔离级别和异常情况
+
+SQL 标准规定了四种隔离级别。这些级别由并发事务执行期间可能发生或不发生的异常情况列表定义。因此，在谈论隔离级别时，
+我们必须从异常情况入手。
+
+我们应该牢记，标准是一种理论建构：它影响着实践，但实践仍在很多方面与它相背离。这就是为什么这里的所有例子都是假设性
+的。关于银行账户上的交易，这些例子不言自明，但我必须承认，它们与真实的银行业务毫无关系。
+
+有趣的是，实际的数据库理论也与标准相左：它是在标准通过后才制定的，而实践已经远远领先于标准
+
+丢失更新
+
+当两个事务读取同一个表行，然后其中一个事务更新该行，最后另一个事务在不考虑第一个事务所做更改的情况下更新同一行时，
+就会出现更新丢失异常。
+
+假设有两笔交易将使同一个账户的余额增加 100 美元。第一个事务读取当前值（1000 美元），然后第二个事务读取相同的值。
+第一个事务增加余额（使其达到 1,100 美元），并将新值写入数据库。第二个事务做了同样的操作：增加余额后获得 1,100
+美元，并写入该值。结果，客户损失了 100 美元。   
+
+所有隔离级别的标准都禁止丢失更新。
+
+脏读和读未提交
+
+当一个事务读取另一个事务做出的未提交更改时，就会出现脏读异常。
+
+例如，第一个事务将 100 美元转入一个空账户，但没有提交这一变更。另一个事务读取了账户状态（已更新但未提交），并允许
+客户取款，尽管第一个事务被中断，其更改被回滚，因此账户是空的。
+
+该标准允许在 "读取未提交 "级别进行脏读。
+
+不可重复读和读提交
+
+当一个事务两次读取同一条记录，而另一个事务在两次读取之间更新（或删除）该记录并提交更改时，就会出现不可重复读取异常。
+因此，第一个事务会得到不同的结果。
+
+例如，假设有一条一致性规则禁止银行账户余额为负。第一笔交易将使账户余额减少 100 美元。它检查了当前值，得到了 1,000
+美元，并决定这个操作是可行的。与此同时，另一个交易从该账户中提取所有资金，并提交更改。如果此时第一笔交易再次检查余
+额，则会得到 0 美元（但取款的决定已经做出，该操作会导致透支）。
+
+该标准允许在 "未提交读取 "和 "已提交读取 "级别进行不可重复读取。
+
+幻读和重复读
+
+当同一个事务执行两个相同的查询，返回一组满足特定条件的记录，而另一个事务添加了一些满足该条件的其他记录，并在这两个
+查询之间的时间间隔内提交更改时，就会出现幻读异常。因此，第一个事务会得到两组不同的记录。
+
+例如，假设有一条一致性规则禁止客户拥有超过三个账户。第一个事务要开设一个新账户，因此它要检查当前有多少个账户（假设
+有两个），并决定可以进行此操作。此时，第二个事务也会为该客户开设一个新账户，并提交更改。如果第一个事务重复检查了开
+放账户的数量，就会得到三个账户（但它已经在开设另一个账户，客户最终拥有四个账户）。
+
+该标准允许在 "未提交读取"、"已提交读取 "和 "可重复读取 "隔离级别进行幻读。
+
+无异常和可序列化
+
+该标准还定义了不允许任何异常的可序列化级别。这与禁止丢失更新、脏读、不可重复读和幻读不同。事实上，已知异常情况的数
+量比标准规定的要多得多，而未知异常情况的数量仍然未知。
+
+可序列化级别必须防止任何异常情况。这意味着应用程序开发人员不必考虑隔离问题。如果事务在单独运行时执行正确的操作符序
+列，并发执行也不会破坏数据一致性。
+
+可序列化级别必须防止任何异常情况。这意味着应用程序开发人员不必考虑隔离问题。如果事务在单独运行时执行正确的操作符序
+列，并发执行也不会破坏数据一致性。
+
+为了说明这一观点，我将使用标准中提供的一个众所周知的表格；为清楚起见，在此 增加了最后一列：
+
+|                 | lost update | dirty read | non-repeatable | phantom read | other anomalies |
+| Read Uncommited | -           | yes        | yes            | yes          | yes             |
+| Read Committed  | -           | -          | yes            | yes          | yes             |
+| Repeatable Read | -           | -          | -              | yes          | yes             |
+| Serializable    | -           | -          | -              | -            | -               |
+
+为什么会出现这些异常现象？
+
+在所有可能出现的异常情况中，为什么标准只提到了一些，而且恰恰是这些异常情况？
+
+似乎没有人确切知道这一点。不过，由于当时的理论远远落后于实践，在通过第一版标准时根本没有考虑到其他异常情况，这也并
+非不可能。
+
+此外，隔离必须基于锁。广泛使用的两阶段锁协议（2PL）要求事务在执行过程中锁定受影响的行，并在完成后释放锁。简单来说，
+一个事务获得的锁越多，它与其他事务的隔离就越好。因此，系统性能就越差，因为事务会开始排队访问相同的行，而不是并发运
+行。
+
+我认为，在很大程度上，标准隔离级别之间的差异是由实现这些级别所需的锁的数量决定的。
+
+如果要更新的行对写入锁定但对读取不锁定，我们就会得到 "未提交读取 "隔离级别，它允许在提交前读取数据。
+
+如果要更新的行在读取和写入时都被锁定，我们就会得到 "已提交读取 "级别：禁止读取未提交的数据，但如果查询被运行多次
+（不可重复读取），它可能会返回不同的值。
+
+锁定要读取和要更新的记录的所有操作后，我们就获得了可重复读取级别：重复查询将返回相同的结果。
+
+然而，可序列化级别带来了一个问题：不可能锁定一条尚未存在的记录。这就给幻读取留下了可乘之机：事务可以添加一条满足上
+一次查询条件的记录，而这条记录将出现在下一次查询结果中。
+
+因此，常规锁无法提供完全隔离：要实现完全隔离，我们必须锁定条件（谓词）而不是行。早在 1976 年开发 R 系统时，就已经
+引入了这种谓词锁；然而，它们的实际应用仅限于简单的条件，对于这些条件，两个不同的谓词是否会发生冲突是显而易见的。据
+我所知，谓词锁从未在任何系统中实现过。
+
+** PostgreSQL 中的隔离级别
+
+随着时间的推移，基于锁的事务管理协议被快照隔离（SI）协议所取代。这种方法背后的理念是，每个事务都会访问特定时间点出
+现的一致数据快照。快照中包括快照拍摄前提交的所有当前更改。
+
+快照隔离可最大限度地减少所需锁的数量。 事实上，只有并发更新尝试才会锁定记录。在所有其他情况下，操作都可以并发执行：
+写操作永远不会锁定读操作，而读操作永远不会锁定任何内容。
+
+PostgreSQL 使用一种多版本的 SI 协议。多版本并发控制意味着数据库系统在任何时刻都可能包含同一行的多个版本，因此
+PostgreSQL 可以在快照中包含适当的版本，而不是中止试图读取过时数据的事务。
+
+基于快照，PostgreSQL 的隔离与标准中规定的要求不同--事实上，它甚至更加严格。设计上禁止脏读。从技术上讲，你可以指定
+"未提交读取"（Read Uncommitted）级别，但其行为与 "已提交读取"（Read Committed）相同，因此我不再提及这一级别。
+可重复读取既不允许不可重复读取，也不允许幻读（尽管它不能保证完全隔离）。但在某些情况下，有可能丢失已提交读取级别的
+更改。
+
+|                 | lost updates | dirty reads | non-repeatable reads | phantom reads | other anomalies |
+| Read Committed  | yes          | -           | yes                  | yes           | yes             |
+| Repeatable Read | -            | -           | -                    | -             | yes             |
+| Serializable    | -            | -           | -                    | -             | -               |
+
+在探讨内部隔离机制之前，我们先从用户的角度来讨论一下这三种隔离级别。
+
+为此，我们将创建账户表；Alice 和 Bob 将各有 1,000 美元，但 Bob 将有两个账户：
+
+#+begin_src sql
+  create table accounts(
+    id integer primary key generated by default as identity,
+    client text,
+    amount numeric
+  );
+  insert into accounts values(1, 'alice', 1000.00),
+                             (2, 'bob', 100.00),
+                             (3, 'bob', 900.00)
+#+end_src
+
+读已提交
+
+*不读脏页* 要检查不允许读取脏数据很容易。让我们启动一个事务。默认情况下，它使用 "读已提交"隔离级别：
+
+#+begin_src sql
+  begin;
+  show transaction_isolation;
+#+end_src
+
+更确切地说，默认级别由以下参数设置，可根据需要进行更改：
+
+#+begin_src sql
+  show default_transaction_isolation;
+#+end_src
+
+打开的交易从客户账户中提取了一些资金，但尚未提交这些更改。但它会看到自己的变化，因为它总是被允许的：
+
+#+begin_src sql
+  update accounts set amount=amount-200 where id=1;
+  select * from accounts where client='alice';
+#+end_src
+
+在第二个会话中，我们启动另一个事务，该事务也将在 "读已提交 "级别运行：
+
+#+begin_src sql
+  begin;
+  select * from accounts where client='alice';
+#+end_src
+
+可以预见的是，第二个事务不会看到任何未提交的更改--禁止脏读。
+
+*不可重复读* 现在让第一个事务提交更改。然后第二个事务将重复同样的查询：
+
+#+begin_src sql
+  commit;
+#+end_src
+
+#+begin_src sql
+  select * from accounts where client='alice';
+  commit;
+#+end_src
+
+查询会收到数据的更新版本，而这正是不可重复读取异常所能理解的，在 "已提交读取 "级别上是允许的。
+
+一个实用的启示：在事务中，不能根据前一个操作员读取的数据做出任何决定，因为中间的一切都可能发生变化。下面是一个例子，
+它在应用程序代码中的变化非常频繁，可以说是一种典型的反模式：
+
+#+begin_src sql
+  if (select amount from accounts where id=1)>=1000 then
+    update accounts set amount=amount-1000 where id=1;
+  end if;
+#+end_src
+
+在检查和更新之间的时间里，其他交易可以随意改变账户的状态，因此这样的 "检查 "是完全无用的。为了更好地理解，可以想象
+其他事务的随机操作符 "楔入 "当前事务的操作符之间。例如，像这样
+
+#+begin_src sql
+  if (select amount from accounts where id=1)>=1000 then
+   |  update accounts set amount=amount-200 where id=1;
+   |  commit;
+    update accounts set amount=amount-1000 where id=1;
+  end if;
+#+end_src
+
+如果一重新排列运算符就会出错，那么代码就是不正确的。不要自欺欺人，以为自己永远不会遇到这种麻烦：任何可能出错的事情
+都会出错。这种错误很难重现，因此，修复它们是一项真正的挑战。
+
+如何更正此代码？有几种选择：
+
++ 用声明式代码取代程序式代码。
+
+  例如，在这种特殊情况下，很容易将 IF 语句转化为 CHECK 约束：
+
+  #+begin_src sql
+    alter table accounts
+      add check amount>=0;
+  #+end_src
+
+  现在不需要在代码中进行任何检查：只需运行命令，并处理违反完整性约束时产生的异常即可。
+
+  现在不需要在代码中进行任何检查：只需运行命令，并处理违反完整性约束时产生的异常即可。
+
++ 使用单个SQL操作符
+
+  如果一个事务在另一个事务的操作员之间的时间间隙内提交，从而改变了数据的可见性，那么数据的一致性就会受到影响。如果
+  只有一个操作员，就不会出现这种时间差。
+
+  PostgreSQL 拥有足够的能力，只需一条 SQL 语句就能解决复杂的任务。特别是，它提供的通用表表达式（CTE）可以包含
+  INSERT、DELETE、UPDATE 等操作符，以及 INSERT ON CONFLICT 操作符，该操作符实现了以下逻辑：如果行不存在，
+  则插入该行，否则执行更新。
+
++ 应用明确的锁。
+
+  最后的办法是对所有需要的记录（SELECT FOR UPDATE）甚至整个表（LOCK TABLE）手动设置排他性锁。这种方法总能奏
+  效，但却抵消了 MVCC 的所有优点：一些可以并发执行的操作将按顺序运行。
+  
+*读取偏差* 然而，事情并非如此简单。PostgreSQL 的实现允许其他一些不太为人所知的异常情况，而这些情况并不受标准的约
+束。
+
+假设第一笔交易启动了 Bob 账户之间的转账：
+
+#+begin_src sql
+  begin;
+  update accounts set amount=amount-100 where id=2;
+#+end_src
+
+与此同时，另一个事务开始循环处理Bob的所有账户，计算它们的总余额。它从第一个账户开始（当然是看到它之前的状态）：
+
+#+begin_src sql
+  begin;
+  select amount from accounts where id=2;
+#+end_src
+
+此时，第一笔事务成功完成：
+
+#+begin_src sql
+  update accounts set amount=amount+100 where id=3;
+  commit;
+#+end_src
+
+第二个事务读取第二个账户的状态（并看到已更新的值）：
+
+#+begin_src sql
+  select amount from accounts where id=3;
+  commit;
+#+end_src
+
+结果，第二笔交易因为读取了错误的数据而获得了 1100 美元。这种异常情况被称为读偏移。
+
+如何避免在 "读已提交 "级别出现这种异常？答案显而易见：使用单一操作符。例如，像这样
+
+#+begin_src sql
+  select sum(amount) from accounts where client='bob';
+#+end_src
+
+我一直在说，数据可见性只能在操作符之间发生变化，但真的是这样吗？如果查询运行了很长时间呢？在这种情况下，它能看到处
+于不同状态的数据的不同部分吗？
+
+让我们来看看。一种方便的方法是通过调用 pg_sleep 函数为操作符添加延迟。这样，第一行将被立即读取，但第二行则需要等
+待两秒钟：
+
+#+begin_src sql
+  select amount, pg_sleep(2) -- two seconds
+  from accounts where client='bob';
+#+end_src
+
+在执行这条语句的同时，让我们开始另一个事务，把钱转回去：
+
+#+begin_src sql
+  begin;
+  update accounts set amount=amount+100 where id=2;
+  update accounts set amount=amount-100 where id=3;
+  commit;
+#+end_src
+
+结果显示，运算符在开始执行时看到了对应状态下的所有数据，这当然是正确的：
+
+但也不是那么简单。如果查询包含一个声明为 VOLATILE 的函数，而这个函数又执行了另一个查询，那么这个嵌套查询所看到的
+数据将与主查询的结果不一致。
+  
+让我们用下面的函数来检查一下Bob的账户余额：
+
+#+begin_src sql
+  create function get_amount(id integer) returns numeric
+  as $$
+    select amount from accounts a where a.id=get_amount.id;
+  $$ volatile language sql;
+
+  select get_amount(id), pg_sleep(2)
+  from accounts where client='bob';
+#+end_src
+
+在执行延迟查询的同时，我们将再次在账户间转账：
+
+#+begin_src sql
+  begin;
+  update accounts set amount=amount+100 where id=2;
+  update accounts set amount=amount-100 where id=3;
+  commit;
+#+end_src
+
+在这种情况下，我们将得到不一致的数据--100 美元已经丢失：
+
+我想强调的是，只有在读取已提交（Read Committed）的隔离级别下，并且只有当函数是 VOLATILE 时，才有可能产生这种
+效果。问题是，PostgreSQL 默认使用的正是这种隔离级别和这种不稳定性类别。因此我们不得不承认，这个陷阱设置得非常狡
+猾。
+
+*读取偏差，而不是更新丢失。* 在更新过程中，读取偏移异常也可能发生在单个运算符中，尽管发生的方式有些出人意料。
+
+让我们看看如果两个交易试图修改同一行会发生什么。Bob目前在两个账户中共有 1000 美元：
+
+#+begin_src sql
+  select * from accounts where client='bob';
+#+end_src
+
+开始事务，减少鲍勃的余额：
+
+#+begin_src sql
+  begin;
+  update accounts set amount=amount-100 where id=3;
+#+end_src
+
+与此同时，另一项交易将计算总余额在 1 000 美元或以上的所有客户账户的利息：
+
+#+begin_src sql
+  update accounts set amount=amount*1.01
+  where client in (
+    select client
+    from accounts
+    group by client
+    having sum(amount)>=1000
+  );
+#+end_src
+
+UPDATE 操作符的执行实际上包括两个阶段。首先，根据提供的条件选择要更新的行。由于第一个事务尚未提交，第二个事务无法
+看到其结果，因此选择应计利息的行不会受到影响。因此，bob的账户满足条件，一旦更新操作完成，他的余额必须增加 10 美
+元。
+
+在第二阶段，被选中的记录会被逐一更新。第二个事务需要等待，因为 id = 3 的记录被锁定：它正在被第一个事务更新。
+
+同时，第一个事务提交其更改：
+
+#+begin_src sql
+  commit;
+  select * from accounts where client='bob';
+#+end_src
+
+一方面，UPDATE 命令不能看到第一个事务所做的任何更改。但另一方面，它也不能丢失任何已提交的更改。
+
+一旦锁被释放，UPDATE 操作符就会重新读取要更新的记录（但仅限于这一行！）。结果，Bob 从 900 美元的总额中获得了 9
+美元的利息。但如果他有 900 美元，他的账户就不应该包含在查询结果中。
+
+因此，我们的事务返回了错误的数据：从不同的快照中读取了不同的行。我们再次观察到读取倾斜异常，而不是更新丢失。
+
+*丢失更新* 但是，如果数据被不同的 SQL 操作员修改，重新读取锁定行的技巧将无助于防止更新丢失。
+
+下面是我们已经看过的一个例子。 应用程序（在数据库外）读取并注册 Alice 账户的当前余额：
+
+#+begin_src sql
+  begin;
+  select amount from accounts where id=1;
+#+end_src
+
+与此同时，另一笔交易也是如此：
+
+#+begin_src sql
+  begin;
+  select amount from accounts where id=1;
+#+end_src
+
+第一笔交易将先前登记的值增加 100 美元，并提交这一更改：
+
+#+begin_src sql
+  update accounts set amount=800.00+100 where id=1
+  returning amount;
+  commit;
+#+end_src
+
+第二次交易也是如此：
+
+#+begin_src sql
+  update accounts set amount=800.00+100 where id=1
+  returning amount;
+  commit;
+#+end_src
+
+不幸的是，Alice 损失了 100 美元。数据库系统不知道 800 美元的注册值与 accounts.amount 有某种关联，因此无法防
+止丢失更新异常。在 "读已提交"（Read Committed）隔离级别，这段代码是不正确的。
+
+重复读
+
+*不可重复读和幻读* 顾名思义，可重复读取隔离级别必须保证可重复读取。让我们来检查一下，确保幻读也不会发生。为此，我
+们将启动一个事务，将 Bob 的账户恢复到之前的状态，并为 Charlie 创建一个新账户：
+
+#+begin_src sql
+  begin;
+
+  update accounts set amount=200.00 where id=2;
+  update accounts set amount=800.00 where id=3;
+  insert into accounts values
+  (4, 'charlie', 100.00);
+  select * from acounts order by id;
+#+end_src
+
+在第二个会话中，让我们启动另一个事务，在 BEGIN 命令中明确指定可重复读取级别（第一个事务的级别并不重要）：
+
+#+begin_src sql
+  begin isolation level repeatable read;
+  select * from accounts order by id;
+#+end_src
+
+现在，第一个事务提交其更改，第二个事务重复相同的查询：
+
+#+begin_src sql
+  commit;
+  |  select * from accounts order by id;
+  |  commit;
+#+end_src
+
+第二个事务看到的数据仍与之前相同：既看不到新行，也看不到行更新。在这种隔离级别下，您不必担心操作员之间会发生变化。
+
+*序列化失败，而不是更新丢失。* 正如我们已经看到的，如果两个事务在 "读已提交 "级别更新同一行，就会导致读取偏移异常：
+等待的事务必须重新读取锁定的行，因此与其他行相比，它在不同的时间点看到该行的状态。
+
+可重复读取 "隔离级别不允许出现这种异常情况，如果出现这种情况，只能通过序列化失败中止事务。让我们通过重复应计利息的
+情况来验证一下：
+
+#+begin_src sql
+  select * from accounts where client='bob';
+  begin;
+  update accounts set amount=amount-100.00 where id=3;
+  | begin isolation level repeatable read;
+  | update accounts set amount=amount*1.01
+  | where client in (
+  |   select client
+  |   from accounts
+  |   group by client
+  |   having sum(amount)>=1000
+  |  );
+  commit;
+#+end_src
+
+#+begin_src sql
+  rollback;
+#+end_src
+
+数据保持一致：
+
+#+begin_src sql
+  select * from accounts where client='bob';
+#+end_src
+
+任何并发的行更新都会引发相同的错误，即使它们影响的是不同的列。
+
+如果我们试图根据先前存储的值更新余额，也会出现此错误：
+
+#+begin_src sql
+  begin isolation level repeatable read;
+  select amount from accounts where id=1;
+  |  begin isolation level repeatable read ;
+  |  select amount from accounts where id=1;
+  update accounts set amount=900.00+100.00 where id=1 returning amount;
+  commit;
+  | update accounts set amount=900.00+100.00 where id=1 returning amount;
+  | rollback;
+#+end_src
+
+实践启示：如果您的应用程序对写事务使用可重复读取隔离级别，就必须准备好重试已完成但序列化失败的事务。对于只读事务，
+这种结果是不可能发生的。
+
+*写偏差* 正如我们所看到的，PostgreSQL 实现的可重复读取隔离级别可以防止标准中描述的所有异常情况。但并非所有可能
+的异常情况：没有人知道有多少异常情况存在。然而，一个重要的事实已被证实：快照隔离并不能只防止两种异常情况，无论还有
+多少其他异常情况存在。
+
+第一个是写偏差。
+
+让我们定义以下一致性规则：只要总余额不是负数，就允许客户的某些账户余额为负数。
+
+第一笔交易得到Bob账户的总余额：
+
+#+begin_src sql
+  begin isolation level repeatable read;
+  select sum(amount) from accounts where client='bob';
+#+end_src
+
+第二个事务获取到的相关的和
+
+#+begin_src sql
+  |  begin isolation level repeatable read;
+  |  select sum(amount) from accounts where client='bob';
+#+end_src
+
+第一笔交易假定可以从其中一个账户中扣除 600 美元：
+
+#+begin_src sql
+  update accounts set amount=amount-600.00 where id=2;
+#+end_src
+
+第二笔交易的结论相同，但借记另一个账户：
+
+#+begin_src sql
+  | update accounts set amount=amount-600.00 where id=3;
+  | commit;
+  select * from accounts where client='bob';
+#+end_src
+
+Bob的总余额现在是负数，尽管如果分开运行，这两笔交易都是正确的。
+
+*只读事务异常。* 只读事务异常是可重复读取隔离级别允许的第二种异常，也是最后一种异常。要观察这种异常情况，我们必须
+运行三个事务：其中两个事务将更新数据，而第三个事务将只读。
+
+但首先让我们恢复Bob的帐户：
+
+#+begin_src sql
+  update accounts set amount=900.00 where id=2;
+  select * from accounts where client='bob';
+#+end_src
+
+第一笔交易计算的是Bob总余额的应计利息，并将这笔钱存入他的一个账户：
+
+#+begin_src sql
+  begin isolation level repeatable read; -- 1
+  update accounts set amount=amount+(
+    select sum(amount) from accounts where client='bob'
+  )*0.01
+  where id=2;
+#+end_src
+
+然后，第二笔交易从Bob的另一个账户中取出一些钱，并提交这一更改：
+
+#+begin_src sql
+  | begin isolation level repeatable read; -- 2
+  | update accounts set amount=amount-100.00 where id=3;
+  | commit;
+#+end_src
+
+如果第一个事务在此时提交，就不会出现异常：我们可以假设第一个事务在第二个事务之前提交（但反之亦然--第一个事务在第二
+个事务进行任何更新之前已经看到 id = 3 的账户状态）。
+
+#+begin_src sql
+  begin isolation level repeatable read; -- 3
+  select * from accounts where client='alice';
+#+end_src
+
+只有现在，第一笔交易才会被提交：
+
+#+begin_src sql
+  commit;
+#+end_src
+
+此时，第三个事务应该看到哪种状态呢？启动后，它可以看到第二个事务（已提交）所做的更改，但看不到第一个事务（尚未提交）
+所做的更改。但正如我们已经确定的，第二个事务应被视为在第一个事务之后启动的。第三个事务看到的任何状态都是不一致的，
+这正是只读事务异常的含义：
+
+#+begin_src sql
+  | select * from accounts where client='bob';
+  | commit;
+#+end_src
+
+可序列化
+
+可序列化隔离级别可防止所有可能的异常情况。该级别实际上建立在快照隔离之上。在可重复读取隔离级别不会出现的异常情况（
+如脏读、不可重复读或幻读），在可串行化级别也不会出现。而出现的两种异常情况（写偏斜和只读事务异常）会以一种特殊的方
+式被检测到，从而中止事务，导致我们已经熟悉的序列化失败。
+
+*无异常* 让我们确保我们的写偏移方案最终会以序列化失败告终：
+
+#+begin_src sql
+  begin isolation level serializable;
+  select sum(amount) from accounts where client='bob';
+#+end_src
+
+#+begin_src sql
+  | begin isolation level serializable;
+  | select sum(amount) from accounts where client='bob';
+#+end_src
+
+#+begin_src sql
+  update accounts set amount=amount-600.00 where id=2;
+#+end_src
+
+#+begin_src sql
+  | update accounts set amount=amount-600.00 where id=3;
+  | commit;
+#+end_src
+
+#+begin_src sql
+  commit;
+#+end_src
+
+只读事务异常的情况也会导致同样的错误。
+
+*推迟只读事务。* 为了避免只读事务导致异常，从而影响数据一致性，PostgreSQL 提供了一种有趣的解决方案：可以推迟该
+事务，直到其执行变得安全为止。这是 SELECT 语句被行更新阻塞的唯一情况。
+
+我们将通过重复演示只读事务异常的场景来检查它：
+
+#+begin_src sql
+  update accounts set amount=900.00 where id=2;
+  update accounts set amount=100.00 where id=3;
+  select * from accounts where client='bob' order by id;
+#+end_src
+
+#+begin_src sql
+  begin isolation level serializable; -- 1
+  update accounts set amount=amount+(
+    select sum(amount) from accounts where client='bob';
+  )*0.01
+  where id=2;
+
+  | begin isolation level serializable; -- 2
+  | update accounts set amount=amount-100.00 where id=3;
+  | commit;
+#+end_src
+
+让我们明确地将第三个事务声明为只读和延迟：
+
+#+begin_src sql
+  | begin isolation level serializable read only deferrable;
+  | select * from accounts where client='alice';
+#+end_src
+
+尝试运行查询会阻塞事务，否则就会导致异常。
+
+只有当第一个事务提交后，第三个事务才能继续执行：
+
+#+begin_src sql
+  commit;
+  | select * from accounts where client='bob';
+  | commit;
+#+end_src
+
+因此，如果应用程序使用可序列化隔离级别，就必须准备好重试因序列化失败而结束的事务。(可重复读取 "级别也需要同样的方
+法，除非应用程序仅限于只读事务）。
+
+可串行化隔离级别带来了编程的简便，但付出的代价是异常检测和强制终止部分事务所产生的开销。如果在声明只读事务时明确使
+用 READ ONLY 子句，就可以降低这种影响。但主要的问题当然是终止的事务数量有多大，因为这些事务必须重试。如果
+PostgreSQL 只中止那些导致数据冲突和真正不兼容的事务，情况也不会太糟糕。但这种方法不可避免地会耗费大量资源，因为
+它需要跟踪每一行的操作。
+
+如果使用 Serializable 级别，应用程序的所有事务都必须遵守。当与其他级别结合使用时，Serializable 的行为与可重复
+读取一样，无需任何通知。因此，如果决定使用 Serializable 级别，那么相应地修改 default_transaction_isolation
+参数值是有意义的，即使有人仍然可以通过显式设置不同的级别来覆盖它。
+
+此外，还有其他限制；例如，在可序列化级别运行的查询不能在副本上执行。虽然这个层级的功能在不断改进，但目前的限制和开
+销使其吸引力大打折扣。
+
+** 使用哪种隔离级别？
+
+读已提交（Read Committed）是 PostgreSQL 的默认隔离级别，显然绝大多数应用程序都使用这个级别。这个级别很方便，
+因为它只允许在出现故障时中止事务，而不会中止任何事务以保持数据一致性。换句话说，序列化失败不会发生，因此你不必担心
+事务重试。
+
+这一级别的缺点是可能出现大量异常情况，上文已对此进行了详细讨论。开发人员必须时刻牢记这些异常情况，并在编写代码时防
+止其发生。如果不可能在一条 SQL 语句中定义所有需要的操作，那么就必须使用显式锁定。最困难的是，代码很难测试与数据不
+一致相关的错误；这些错误可能以不可预测、几乎不可重现的方式出现，因此也很难修复。
+
+可重复读取隔离级别消除了部分不一致问题，但并非全部。因此，你不仅要记住剩余的异常情况，还要修改应用程序以正确处理序
+列化失败，这当然很不方便。不过，对于只读事务来说，该级别是对已提交读取级别的完美补充；它在构建涉及多个 SQL 查询的
+报告等情况下非常有用。
+
+最后，可序列化隔离级别让你完全不用担心数据一致性问题，这在很大程度上简化了代码的编写。应用程序唯一需要做的就是能够
+重试任何因序列化失败而中止的事务。不过，中止的事务数量和相关开销会大大降低系统吞吐量。您还应该记住，可序列化级别不
+支持副本，也不能与其他隔离级别结合使用。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
