@@ -737,6 +737,579 @@ PostgreSQL 只中止那些导致数据冲突和真正不兼容的事务，情况
 重试任何因序列化失败而中止的事务。不过，中止的事务数量和相关开销会大大降低系统吞吐量。您还应该记住，可序列化级别不
 支持副本，也不能与其他隔离级别结合使用。
 
+* 页和元组
+
+** 页结构
+
+每个页面都有一定的内部布局，通常由以下部分组成：
+
++ 页头
++ 元组指针
++ 可用空间
++ 元组
++ 特殊空间
+
+页头
+
+页眉位于最低地址，大小固定。它存储了有关页面的各种信息，如页面的校验和以及页面所有其他部分的大小。
+
+使用 pageinspect 扩展可以轻松显示这些尺寸。让我们来看看表格的第一页（页码为零）：
+
+#+begin_src sql
+  create extension pageinspect;
+  select lower, upper, sepical, pagesize
+  from page_header(get_raw_page('accounts', 0));
+#+end_src
+
+特殊空间
+
+特殊空间位于页面的相反部分，占用其最高地址。有些索引使用它来存储辅助信息；在其他索引和表页中，该空间的大小为零。
+
+一般来说，索引页面的布局多种多样，其内容主要取决于特定的索引类型。即使是同一种索引也可能有不同种类的页面：例如，B
+树有一个特殊结构的元数据页面（第 0 页），还有与表格页面非常相似的常规页面。
+
+元组
+
+行包含数据库中存储的实际数据以及一些附加信息。它们位于特殊空间之前。
+
+对于表，我们必须处理行版本而不是行，因为多版本并发控制意味着同一行有多个版本。索引不使用这种 MVCC 机制；相反，它
+们必须引用所有可用的行版本，并根据可见性规则选择适当的版本。
+
+#+begin_comment
+  表行版本和索引条目通常都被称为元组（tuples）。这个术语是从关系理论中借用过来的，是 PostgreSQL 的另一个学术遗
+  产。
+#+end_comment
+
+元组指针
+
+元组指针数组是页面的目录。它位于页头之后。
+
+索引条目必须以某种方式引用特定的堆图元。为此，PostgreSQL 使用了六字节的元组标识符（TID）。每个 TID 由主叉的页号
+和对该页中特定行版本的引用组成。
+
+理论上，可以通过从页面开始的偏移量来引用图元。但这样就不可能在不中断这些引用的情况下在页面内移动元组，这反过来又会
+导致页面碎片和其他令人不快的后果。
+
+因此，PostgreSQL 使用间接寻址：元组标识符指向相应的指针编号，该指针指定元组的当前偏移量。如果元组在页面内移动，其
+TID 仍保持不变；只需修改指针即可，而指针也位于该页面内。
+
+每个指针占用四个字节，包含以下数据：
+
++ 元组从页面开始的偏移量
++ 元组长度
++ 定义元组状态的几个位
+
+空闲空间
+
+在指针和元组之间，页面可能还有一些可用空间（这反映在可用空间映射中）。不存在页面碎片：所有可用的空闲空间总是聚集在
+一个块中。
+
+** 行版本布局
+
+每个行版本都包含一个标题，后面是实际数据。标题由多个字段组成，包括以下内容：
+
+*xmin,xmax* 代表事务 ID，用于区分同一行的该版本和其他版本。
+
+*infomask* 提供了一组定义版本属性的信息位。
+
+*ctid* 是指向同一行下一个更新版本的指针。
+
+*null bitmap* 是一个位数组，用于标记可以包含 NULL 值的列。
+
+结果，表头变得相当大：每个元组至少需要 23 个字节，而且由于空位图和用于数据对齐的强制性填充，这个值经常会超出。在
+"窄 "表中，各种元数据的大小很容易超过实际存储数据的大小。
+
+磁盘上的数据布局与 RAM 中的数据表示完全一致。页面及其元组会被原封不动地读入缓冲缓存，不会进行任何转换。这就是数据
+文件在不同平台间不兼容的原因。
+
+字节顺序是造成不兼容的原因之一。例如，x86 架构是小字节顺序，z/Architecture 是大字节顺序，而 ARM 则有可配置的字
+节顺序。
+
+另一个原因是许多体系结构都要求按机器字边界对齐数据。例如，在 32 位 x86 系统中，整数（整数类型，需要 4 个字节）与
+双精度浮点数（双精度类型，需要 8 个字节）一样，都是按 4 字节字边界对齐的。但在 64 位系统中，双数值按 8 字节字的
+边界对齐。
+
+数据对齐使得元组的大小取决于表中字段的顺序。这种影响通常可以忽略不计，但在某些情况下，可能会导致数据量大幅增加。
+下面是一个例子：
+
+#+begin_src sql
+  create table padding(
+    b1 boolean,
+    i1 integer,
+    b2 boolean,
+    i2 integer
+  );
+  insert into padding values(true, 1, false, 2);
+  select lp_len from heap_page_items(get_raw_page('padding', 0));
+#+end_src
+
+我使用了 pageinspect 扩展的 heap_page_items 函数来显示指针和元组的一些详细信息。
+
+#+begin_comment
+  在 PostgreSQL 中，表通常被称为堆。这又是一个晦涩难懂的术语，暗示了元组空间分配与动态内存分配之间的相似性。当
+  然，我们可以看到一些相似之处，但表是由完全不同的算法管理的。与有序索引相比，我们可以从 "所有东西都堆在一起 "的
+  意义上解释这个术语。
+#+end_comment
+
+行的大小为 40 字节。头信息占用 24 个字节，整数类型的列占用 4 个字节，布尔类型的列各占用 1 个字节。这样就有 34 个
+字节，其中 6 个字节浪费在整数列的四字节对齐上。
+
+如果我们重建表，空间的使用效率会更高：
+
+#+begin_src sql
+  drop table padding;
+  create table padding(
+    i1 integer,
+    i2 integer,
+    b1 boolean,
+    b2 boolean
+  );
+  insert into padding values(1, 2, true, false);
+  select lp_len from heap_page_items(get_raw_page('padding', 0));
+#+end_src
+
+另一种可能的微优化方法是，以不能包含 NULL 值的固定长度列开始表。由于可以在元组中缓存这些列的偏移量，因此访问这些
+列的效率会更高。
+
+** COMMENT 元组操作
+
+为了识别同一条记录的不同版本，PostgreSQL 为每条记录标记了两个值：xmin 和 xmax。这些值定义了每条记录版本的 "有
+效时间"，但不是实际时间，而是依赖于不断增加的事务 ID。
+
+创建记录时，其 xmin 值会设置为 INSERT 命令的事务 ID。
+
+删除记录时，其当前版本的 xmax 值将设置为 DELETE 命令的事务 ID。
+
+在一定程度上，UPDATE 命令可被视为两个独立的操作： DELETE 和 INSERT。首先，将当前记录版本的 xmax 值设置为
+UPDATE 命令的事务 ID。然后，创建该行的新版本；其 xmin 值将与前一版本的 xmax 值相同。
+
+现在，让我们来了解一下对元组进行不同操作的底层细节。
+
+在这些实验中，我们需要一个双列表，并在其中一列上创建索引：
+
+#+begin_src sql
+  create table t(
+    id integer generated always as identity,
+    s text
+  );
+  create index on t(s);
+#+end_src
+
+插入
+
+开启一个事务插入一条记录
+
+#+begin_src sql
+  begin;
+  insert into t(s) values('FOO');
+#+end_src
+
+当前的事务ID
+
+#+begin_src sql
+  -- txid_current() before v.13
+  select pg_current_xact_id();
+#+end_src
+
+#+begin_comment
+  为了表示事务的概念，PostgreSQL 使用了 xact 这个术语，它可以在 SQL 函数名和源代码中找到。 因此，事务 ID 可以
+  称为 xact ID、TXID 或简称 XID。我们会反复遇到这些缩写。
+#+end_comment
+
+让我们来看看页面内容。 函数 heap_page_items 可以为我们提供所需的全部信息，但它显示的是 "原样 "数据，因此输出格
+式有点难以理解：
+
+#+begin_src sql
+  select * heap_page_items(get_raw_page('t', 0))\gx
+#+end_src
+
+为了提高可读性，我们可以省略一些信息，并扩大几列：
+
+#+begin_src sql
+  select '(0, '|| lp ||')' as ctid,
+    case lp_flags
+      when 0 then 'unused'
+      when 1 then 'normal'
+      when 2 then 'redirect to'||lp_off
+      when 3 then 'dead'
+    end as state,
+    t_xmin as xmin,
+    t_xmax as xmax,
+    (t_infomask & 256) > 0 as xmin_committed,
+    (t_infomask & 512) > 0 as xmin_aborted,
+    (t_infomask & 1024) > 0 as xmin_committed,
+    (t_infomask & 2048) > 0 as xmax_aborted
+  from heap_page_items(get_raw_page('t', 0)) \gx
+#+end_src
+
+这里就是这样做的：
+
++ lp 指针被转换为标准的元组 ID 格式：（页号、指针编号）。
++ lp_flags 的状态是明确的。在这里，它被设置为正常值，这意味着它确实指向一个元组。
++ 在所有信息位中，我们目前只挑出了两对。xmin_committed 和 xmin_aborted 位显示 xmin 事务是已提交还是已中止。
+  xmax_committed 和 xmax_aborted 位提供了关于 xmax 事务的类似信息。
+
+#+begin_comment
+  pageinspect 扩展提供了 heap_tuple_infomask_flags 函数，该函数解释了所有的信息位，但我将只检索目前所需的
+  信息位，以更简洁的形式展示它们。
+#+end_comment
+
+让我们回到实验中来。INSERT 命令在堆页面中添加了指针 1；它指的是第一个元组，也是目前唯一的一个元组。
+
+元组的 xmin 字段被设置为当前事务 ID。该事务仍处于活动状态，因此 xmin_committed 和 xmin_aborted 位尚未设置。
+
+xmax 字段包含 0，这是一个虚拟数字，表示该元组未被删除，并代表该行的当前版本。由于 xmax_aborted 位已被设置，因此
+事务将忽略该数字。
+
+#+begin_comment
+  与中止的事务相对应的位被设置为尚未发生的事务，这似乎有些奇怪。但从隔离的角度来看，这些事务之间并无区别：中止的事
+  务不会留下任何痕迹，因此它从未存在过。
+#+end_comment
+
+我们将不止一次使用这个查询，因此我将把它封装成一个函数。同时，我还将通过隐藏信息位列和显示事务状态及其 ID 来使输出
+更简洁。
+
+#+begin_src sql
+  create function heap_page(relname text, pageno integer)
+  returns table (ctid tid, state text, xmin text, xmax text)
+  as $$
+  select (pageno, lp)::text::tid as ctid,
+    case lp_flags
+      when 0 then 'unused'
+      when 1 then 'normal'
+      when 2 then 'redirect to '||lp_off
+      when 3 then 'dead'
+    end as state,
+    t_xmin || case
+      then (t_infomask & 256) > 0 then 'c'
+      then (t_infomask & 512) > 0 then ' a'
+      else ''
+    end as xmin,
+    t_xmax || case
+      when (t_infomask & 1024) > 0 then ' c'
+      when (t_infomask & 2048) > 0 then ' a'
+      else ''
+    end as xmax
+  from heap_page_items(get_raw_page(relname, pageno))
+  order by lp;
+  $$ language sql;
+#+end_src
+
+现在，元组头中发生的事情就更清楚了：
+
+#+begin_src sql
+  select * from heap_page('t', 0);
+#+end_src
+
+通过查询 xmin 和 xmax 伪列，可以从表本身获得类似但不太详细的信息：
+
+#+begin_src sql
+  select xmin, xmax, * from t;
+#+end_src
+
+提交
+
+一旦事务成功完成，它的状态就必须以某种方式存储起来--它必须被登记为事务已提交。为此，PostgreSQL 采用了一种特殊的
+CLOG（提交日志）结构。它以文件形式存储在 PGDATA/pg_xact 目录中，而不是系统目录表中。
+
+#+begin_comment
+  以前，这些文件位于 PGDATA/pg_clog，但在第 10 版中，这个目录被重命名了：不熟悉 PostgreSQL 的数据库管理员为
+  了寻找可用磁盘空间而删除该目录，认为 "日志 "是不必要的东西，这种情况并不少见。
+#+end_comment
+
+仅为方便起见，CLOG 被分成多个文件。 这些文件通过服务器共享内存中的缓冲区逐页访问。
+
+就像元组标头一样，CLOG 包含每个事务的两个位：已提交和已中止。
+
+事务一旦提交，就会在 CLOG 中标记已提交位。任何其他事务访问堆页面时，都必须回答一个问题：xmin 事务是否已经完成？
+
++ 否则，创建的元组一定不可见。
+  要检查事务是否仍处于活动状态，PostgreSQL 会使用位于实例共享内存中的另一个结构，即 ProcArray。该结构包含所有
+  活动进程的列表，并为每个进程指定了相应的当前（活动）事务。
+
++ 如果是，是提交还是中止？在后一种情况下，相应的元组也不可见。
+  正是这种检查需要 CLOG。但是，即使最近的 CLOG 页面存储在内存缓冲区中，每次执行这种检查的成本仍然很高。一旦确定，
+  事务状态就会被写入元组头，更具体地说，写入 xmin_committed 和 xmin_aborted 信息位（也称为提示位）。如果其中
+  一个比特被设置，那么 xmin 事务状态就会被认为是已知的，下一个事务将不必访问 CLOG 或 ProcArray。
+
+
+为什么执行行插入的事务不设置这些位？问题在于，当时还不知道该事务是否会成功完成。而当事务提交时，已经不清楚哪些元组
+和页面被更改了。如果一个事务会影响很多页，跟踪这些页的成本可能会太高。此外，其中一些页面可能已经不在缓存中，再次读
+取它们来更新提示位会严重拖慢提交速度。
+
+成本降低的另一方面是，任何事务（即使是只读 SELECT 命令）都可能开始设置提示位，从而在缓冲缓存中留下被污染页面的痕迹。
+
+最后，提交 INSERT 语句启动的事务：
+
+#+begin_src sql
+  commit;
+#+end_src
+
+页面中没有任何变化（但我们知道交易状态已写入 CLOG）：
+
+#+begin_src sql
+  select * from heap_page('t', 0);
+#+end_src
+
+现在，第一个访问页面的事务（以 "标准 "方式，不使用 pageinspect）必须确定 xmin 事务的状态，并更新提示位：
+
+#+begin_src sql
+  select * from t;
+  select * from heap_page('t', 0);
+#+end_src
+
+删除
+
+删除记录时，其当前版本的 xmax 字段将被设置为执行删除的事务 ID，并且 xmax_aborted 位将被取消设置。
+
+当该事务处于活动状态时，xmax 值将作为行锁。如果另一个事务要更新或删除该行，就必须等到 xmax 事务完成。
+
+删除一行
+
+#+begin_src sql
+  begin;
+  delete from t;
+  select pg_current_xact_id();
+#+end_src
+
+事务 ID 已写入 xmax 字段，但信息位尚未设置：
+
+#+begin_src sql
+  select * from heap_page('t', 0);
+#+end_src
+
+中断
+
+中止事务的机制与提交类似，速度也一样快，但中止事务不会提交，而是在 CLOG 中设置中止位。虽然相应的命令被称为
+ROLLBACK，但实际上并没有发生数据回滚：中止的事务在数据页中所做的所有更改都保持不变。
+
+#+begin_src sql
+  rollback;
+  select * from heap_page('t', 0);
+#+end_src
+
+访问页面时，会检查事务状态，元组会收到 xmax_aborted 提示位。xmax 数字本身仍保留在页面中，但没有人会再关注它：
+
+#+begin_src sql
+  select * from t;
+  select * from heap_page('t', 0);
+#+end_src
+
+更新
+
+更新的方式是删除当前元组，然后插入一个新元组：
+
+#+begin_src sql
+  begin;
+  update t set s='BAR';
+  select pg_current_xact_id();
+#+end_src
+
+该查询返回一行
+
+#+begin_src sql
+  select * from t;
+#+end_src
+
+但页中保存了所有版本
+
+#+begin_src sql
+  select * from heap_page('t', 0);
+#+end_src
+
+先前删除版本的 xmax 字段包含当前事务 ID。该值写在旧值之上，因为前一个事务已被中止。由于当前事务的状态仍然未知，
+因此 xmax_aborted 位未被置位。
+
+完成这个实验，提交这个事务
+
+#+begin_src sql
+  commit;
+#+end_src
+
+** 索引
+
+无论其类型如何，索引都不使用行版本控制；每一行都由一个元组表示。换句话说，索引行标头不包含 xmin 和 xmax 字段。
+索引项指向相应表行的所有版本。要想知道哪一行的版本是可见的，事务必须访问表（除非所需页面出现在可见性映射中）。
+
+为了方便起见，让我们创建一个简单的函数，使用 pageinspect 显示页面中的所有索引项（B 树索引页面以平面列表的形式存
+储索引项）：
+
+#+begin_src sql
+  create function index_page(relname text, pageno integer)
+  returns table(itemoffset smallint, htid tid)
+  as $$
+  select itemoffset,
+    htid -- ctid before v.13
+  from bt_page_items(relname, pageno)
+  $$ language sql;
+#+end_src
+
+该页引用了所有的堆元组，当前的和旧版本的
+
+#+begin_src sql
+  select * from index_page('t_s_idx', 1);
+#+end_src
+
+由于 BAR < FOO，因此第二个元组的指针在索引中排在首位。
+
+** TOAST
+
+TOAST 表实际上是一个普通表，它有自己的版本控制，不依赖于主表的行版本。不过，TOAST 表的行处理方式是永不更新；它们
+可以被添加或删除，因此它们的版本是人为的。
+
+每次数据修改都会在主表中创建一个新元组。但是，如果更新不影响任何存储在 TOAST 中的 long 值，那么新的元组将引用现
+有的 toasted 值。只有当长数据值被更新时，PostgreSQL 才会在主表中创建新的元组和新的 "toast"。
+
+** COMMENT 虚拟事务
+
+为了减少使用事务 ID，PostgreSQL 提供了一种特殊的优化方法。
+
+如果事务是只读的，那么它不会以任何方式影响行的可见性。这就是为什么这样的事务一开始会被赋予一个虚拟 XID，它由后台
+进程 ID 和一个顺序号组成。分配虚拟 XID 不需要在不同进程间进行同步，因此速度非常快。此时，事务还没有真正的 ID：
+
+#+begin_src sql
+  begin;
+  -- txid_current_if_assigned() before v.13
+  select pg_current_xact_id_if_assigned();
+  
+#+end_src
+
+在不同的时间点，系统可能包含一些已经被使用过的虚拟 XID。这是完全正常的：虚拟 XID 只存在于 RAM 中，而且只在相应的
+事务处于活动状态时才存在；它们永远不会被写入数据页，也永远不会进入磁盘。
+
+一旦事务开始修改数据，它就会收到一个实际的唯一 ID：
+
+#+begin_src sql
+  update accounts
+  set amount=amount-1.00;
+  select pg_current_xact_id_if_assigned();
+  commit;
+#+end_src
+
+** 子事务
+
+保存点
+
+SQL 支持保存点（savepoints），可以取消事务中的部分操作，而不会中止整个事务。但这种情况并不符合上文描述的操作过
+程：事务的状态适用于其所有操作，不会执行物理数据回滚。
+
+为了实现这一功能，一个包含保存点的事务会被分割成几个子事务，以便分别管理它们的状态。
+
+子事务有自己的 ID（比主事务的 ID 大）。子事务的状态会以通常的方式写入 CLOG；不过，已提交的子事务会同时收到已提交
+位和已中止位。最终的决定取决于主事务的状态：如果主事务被中止，其所有子事务也将被视为中止。
+
+子事务信息存储在 PGDATA/pg_subtrans 目录下。文件访问通过缓冲区进行，缓冲区位于实例的共享内存中，结构与 CLOG
+缓冲区相同。
+
+#+begin_comment
+  不要混淆子事务和自主事务。与子事务（subtransactions）不同，自主事务（autonomous transactions）不会以任何
+  方式相互依赖。Vanilla PostgreSQL 不支持自主事务，这也许是最好的选择：在极少数情况下需要自主事务，但在其他数据
+  库系统中，自主事务往往会被误用，从而带来很多麻烦。
+#+end_comment
+
+清除一个表，开始一个新的事务，插入一个新的行
+
+#+begin_src sql
+  truncate table t;
+  begin;
+  insert into t(s) values ('FOO');
+  select pg_current_xact_id();
+#+end_src
+
+创建一个保存点，插入另一条记录
+
+#+begin_src sql
+  savepoint sp;
+  insert into t(s) values ('XYZ');
+  select pg_current_xact_id();
+#+end_src
+
+请注意，pg_current_xact_id 函数返回的是主事务的 ID，而不是子事务的 ID。
+
+#+begin_src sql
+  select *
+  from heap_page('t', 0) p
+  left join t on p.ctid=t.ctid;
+#+end_src
+
+让我们回滚到保存点，插入第三行：
+
+#+begin_src sql
+  rollback to sp;
+  insert into t(s) values ('BAR');
+  select *
+  from heap_page('t', 0) p
+  left join t on p.ctid=t.cid;
+#+end_src
+
+页面仍包含子事务中止时添加的行。
+
+提交这个修改
+
+#+begin_src sql
+  commit;
+  select * from t;
+  select * from heap_page('t', 0);
+#+end_src
+
+现在我们可以清楚地看到，每个子事务都有自己的状态。
+
+SQL 不允许直接使用子事务，也就是说，在完成当前事务之前不能启动新事务：
+
+#+begin_src sql
+  begin;
+
+  begin;
+
+  commit;
+
+  commit;
+#+end_src
+
+子事务是隐式使用的：用于实现保存点、处理 PL/pgSQL 中的异常以及其他一些更特殊的情况。
+
+错误和原子性
+
+如果在执行语句过程中出现错误，会发生什么情况？
+
+#+begin_src sql
+  begin;
+  select * from t;
+  update t set s=repeat('X', 1/(id-4));
+#+end_src
+
+失败后，整个事务将被视为中止，不能执行任何其他操作：
+
+#+begin_src sql
+  select * from t;
+#+end_src
+
+即使尝试提交更改，PostgreSQL 也会报告事务已回滚：
+
+#+begin_src sql
+  commit;
+#+end_src
+
+为什么禁止在失败后继续执行事务？因为已经执行的操作永远不会回滚，我们会访问错误发生前的一些更改--这会破坏语句的原子
+性，从而破坏事务本身的原子性。
+
+例如，在我们的实验中，操作员在故障发生前成功更新了两行中的一行：
+
+#+begin_src sql
+  select * from heap_page('t', 0);
+#+end_src
+
+顺便提一句，psql 提供了一种特殊模式，可以让你在失败后继续事务，就像错误语句被回滚一样：
+
+#+begin_src sql
+  \set ON_ERROR_ROLLBACK on
+  begin;
+  update t set s=repeat('X', 1/(id-4));
+  commit;
+#+end_src
+
+正如你所猜测的那样，psql 在该模式下运行时，只是在每条命令前添加一个隐式保存点；如果出现故障，则会启动回滚。默认情
+况下不使用该模式，因为发出保存点（即使不回滚）会产生大量开销。
 
 
 
@@ -2180,32 +2753,6 @@ Logical
 
 如果我们看一下 WAL 条目，就会发现这一级几乎与复制相同：它添加了与复制源相关的条目， 以及应用程序可能生成的一些任
 意逻辑条目。在大多数情况下，逻辑解码依赖于活动事务信息（RUNNING_XACTS），因为它需要捕获快照来跟踪系统目录的变化。
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 * 表级锁
