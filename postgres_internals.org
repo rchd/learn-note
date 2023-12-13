@@ -1658,24 +1658,313 @@ pg_export_snapshot 函数返回一个快照 ID，该 ID 可以传递给另一个
   commit;
 #+end_src
 
+* 页剪枝和HOT更新
+
+** 页剪枝
+
+在读取或更新堆页面时，PostgreSQL 可以执行一些快速页面清理或修剪。它发生在以下情况：
+
++ 之前的 UPDATE 操作没有找到足够的空间将新元组放入同一页面。该事件反映在页头中。
++ 堆页面包含的数据超出 fillfactor 存储参数允许的范围。
+
+  INSERT 操作只有在页面被填满的百分比小于 fillfactor 时，才能在页面中添加新行。其余空间将保留给 UPDATE 操作（
+  默认情况下不保留此类空间）。
+
+页面剪枝会删除在任何快照中都不再可见的元组（即超出数据库范围的元组）。它永远不会超出单个堆页面，但执行速度却非常快。
+被剪切的元组的指针会保留在原处，因为它们可能会被索引引用，而索引已经是不同的页面了。
+
+出于同样的原因，可见性映射和可用空间映射都不会被刷新（因此恢复的空间是为更新预留的，而不是为插入预留的）。
+
+由于在读取过程中可以剪切页面，因此任何 SELECT 语句都可能导致页面修改。这是信息位延迟设置之外的另一种情况。
+
+让我们来看看页面剪枝的实际工作原理。我们将创建一个双列表，并为每一列建立一个索引：
+
+#+begin_src sql
+  create table hot(id integer, s char(2000)) with (fillfactor=75);
+  create index hot_id on hot(id);
+  create index hot_s on hot(s);
+#+end_src
+
+如果 s 列只包含拉丁字母，则每个堆元组的固定大小为 2004 字节，外加 24 字节的标题。填充因子存储参数设置为 75%。这意
+味着页面的可用空间足够容纳四个图元，但我们只能插入三个。
+
+插入一行并更新几次
+
+#+begin_src sql
+  insert into hot values(1, 'A');
+  update hot set s='B';
+  update hot set s='C';
+  update hot set s='D';
+#+end_src
+
+现在页包含四个元组
+
+#+begin_src sql
+  select * from heap_page('hot', 0);
+#+end_src
+
+可以预见的是，我们刚刚超过了填充因子阈值。你可以通过页面大小和上限值之间的差值来判断--它大于页面大小的 75%，即 6144
+字节：
+
+#+begin_src sql
+  select upper, pagesize from page_header(get_raw_page('hot', 0));
+#+end_src
+
+下一次页面访问会触发页面剪枝，删除所有过时的元组。然后，一个新的元组（0,5）会被添加到释放的空间中：
+
+#+begin_src sql
+  update hot set s='E';
+  select * from heap_page('hot', 0);
+#+end_src
+
+剩余的堆元组会被物理移动到最高地址，这样所有的空闲空间就会被合并成一个连续的块。元组指针也会相应修改。因此，页面中不
+会出现空闲空间碎片。
+
+指向被剪切元组的指针还不能被删除，因为它们仍被索引引用；PostgreSQL 会将它们的状态从正常变为死亡。让我们看看 hot_s
+索引的第一页（零页用于元数据）：
+
+#+begin_src sql
+  select * from index_page('hot_s', 1);
+#+end_src
+
+我们在其他指数中也可以看到同样的情况：
+
+#+begin_src sql
+  select * from index_page('hot_id', 1);
+#+end_src
+
+索引扫描可以返回 (0,1)、(0,2) 和 (0,3) 作为元组标识符。服务器尝试读取相应的堆元组，但发现指针处于死状态；这意味着
+该元组已不存在，应被忽略。同时，服务器也会改变索引页中的指针状态，以避免重复访问堆页。
+
+让我们扩展显示索引页的函数，使其也能显示指针是否已死：
+
+#+begin_src sql
+  drop function index_page(text, integer);
+
+  create function index_page(relname text, pageno integer)
+  returns table(itemoffset smallint, htid tid, dead boolean)
+  as $$
+  select itemoff,
+      htid,
+      dead  -- starting from v.13
+  from bt_page_items(relname, pageno);
+  $$ language sql;
+  select * from index_page('hot_id', 1);
+#+end_src
+
+到目前为止，索引页中的所有指针都处于活动状态。但一旦进行第一次索引扫描，它们的状态就会改变：
 
 
+#+begin_src sql
+  explain (analyze, costs off, timing off, summary off)
+  select * from hot where id=1;
+#+end_src
+
+#+begin_src sql
+  select * from index_page('hot_id', 1);
+#+end_src
+
+虽然第四个指针引用的堆元组仍未剪枝，状态正常，但它已经超出了数据库的范围。这就是为什么这个指针在索引中也被标记为死指
+针的原因。
+
+** HOT更新
 
 
+在索引中保留对所有堆元组的引用效率非常低。
 
+首先，每次修改行都会触发对表创建的所有索引的更新：一旦出现新的堆元组，每个索引都必须包含对该元组的引用，即使修改的
+字段没有索引。
 
+此外，索引会累积对历史堆元组的引用，因此必须连同这些元组一起剪枝。
 
+在表上创建更多索引后，情况会变得更糟。
 
+但如果更新的列不属于任何索引的一部分，那么创建另一个包含相同键值的索引项就没有意义了。为了避免这种冗余，PostgreSQL
+提供了一种名为 "仅堆元组更新"（Heap-Only Tuple updates）的优化方法。
 
+如果执行了这样的更新，索引页中每一行只包含一个条目。该条目指向第一行的版本；位于同一页面的所有后续版本通过元组标头
+中的 ctid 指针绑定成一个链。
 
+未被任何索引引用的行版本会被标记为 Heap-Only Tuple 位。如果某个版本包含在 HOT 链中，则标记为 Heap Hot
+Updated 位。
 
+如果索引扫描访问了堆页面，并发现了标记为堆热更新的行版本，这就意味着扫描应该继续，因此要沿着 HOT 更新链进一步扫描。
+显然，在将结果返回给客户端之前，会对所有获取的行版本进行可见性检查。
 
+为了了解 HOT 更新是如何执行的，让我们删除其中一个索引并截断表。
 
+#+begin_src sql
+  drop index hot_s;
+  truncate table hot;
+#+end_src
 
+为了方便起见，我们将重新定义 heap_page 函数，使其输出包括另外三个字段：ctid 和与 HOT 更新相关的两个位：
 
+#+begin_src sql
+  drop function heap_page(text, integer);
+  create function heap_page(relname text, pageno integer)
+  return table(
+     ctid tid, state text,
+     xmin text, xmax text,
+     hhu text, hot text, t_ctid tid 
+  ) as $$
+  select (pageno, lp)::text::tid as ctid,
+    case lp_flags
+      when 0 then 'unused'
+      when 1 then 'normal'
+      when 2 then 'redirect to ' || lp_off
+      when 3 then 'dead'
+    end as state,
+    t_xmin || case
+      when (t_infomask & 256) > 0 then ' c'
+      when (t_infomask & 512) > 0 then ' a'
+      else ''
+    end as xmin,
+    t_xmax || case
+      when (t_infomask & 1024) > 0 then ' c'
+      when (t_infomask & 2048) > 0 then ' a'
+      else ''
+    end as xmax,
+    case when (t_infomask2 & 16384) > 0 then 't' and as hhu,
+    case when (t_infomask2 & 32768) > 0 then 't' and as hot,
+    t_ctid
+  from heap_page_items(get_raw_page(relname, pageno))
+  order by lp;
+  $$ language sql;
+#+end_src
 
+让我们重复插入和更新操作：
 
+#+begin_src sql
+  insert into hot values(1, 'A');
+  update hot set s='B';
+#+end_src
 
+该页面现在包含一连串的 HOT 更新：
+
++ Heap Hot Updated（堆热更新）位表示执行器应遵循 CTID 链。
++ Heap Only Tuple（仅堆元组）位表示该元组不被任何索引引用。
+
+  #+begin_src sql
+    select * from heap_page('hot', 0);
+  #+end_src
+
+随着我们的进一步更新，链条将不断扩大，但仅限于页面限制范围内：
+
+#+begin_src sql
+  update hot set s='C';
+  update hot set s='D';
+  select * from heap_page('hot', 0);
+#+end_src
+
+索引仍然只包含一个引用，指向该链的首部：
+
+#+begin_src sql
+  select * from index_page('hot_id', 1);
+#+end_src
+
+如果修改的字段不属于任何索引的一部分，则可以进行 HOT 更新。否则，某些索引将包含对出现在链中间的堆元组的引用，这就
+违背了优化的初衷。由于 HOT 链只能在单个页面内增长，因此遍历整个链不需要访问其他页面，因此不会影响性能。
+
+** 修剪页面以实现 HOT 更新
+
+页面修剪的一个特例是 HOT 更新链的修剪，这一点非常重要。
+
+在上面的例子中，已经超过了fillfactor阈值，所以下一次更新应该触发页面剪枝。但这次页面包含一连串的 HOT 更新。该
+链的首部必须始终保持原位，因为它是从索引中引用的，但其他指针可以释放，因为它们肯定没有外部引用。
+
+为了避免移动头部，PostgreSQL 使用了双重寻址：从索引（本例中为 (0,1)）引用的指针接收重定向状态，因为它指向当前启
+动链的元组：
+
+#+begin_src sql
+  update hot set s='E';
+  select * from heap_page('hot', 0);
+#+end_src
+
+元组 (0,1)、(0,2) 和 (0,3) 已被剪枝；头部指针 1 保留用于重定向，而指针 2 和 3 已被去分配（收到未使用状态），
+因为它们保证没有来自索引的引用。新的元组将作为元组 (0,2) 写入释放的空间。
+
+执行更新
+
+#+begin_src sql
+  update hot set s='F';
+  update hot set s='G';
+  select * from heap_page('hot', 0);
+#+end_src
+
+下一次更新将触发页面修剪：
+
+#+begin_src sql
+  update hot s='H';
+  select * from heap_page('hot', 0);
+#+end_src
+
+同样，一些元组会被剪切，指向链头的指针也会相应移动。
+
+如果未编入索引的列经常被修改，那么降低 fillfactor 值是有意义的，这样可以在页面中为更新保留一些空间。显然，你必
+须记住，fillfactor 值越小，页面中剩余的空闲空间就越多，因此表的物理大小就会增大。
+
+** HOT链分裂
+
+如果页面没有更多的空间来容纳新的元组，链就会被切断。PostgreSQL 将不得不添加一个单独的索引条目，以引用位于另一页
+中的元组。
+
+为了观察这种情况，让我们用一个快照启动一个并发事务，该快照会阻止页面剪枝：
+
+#+begin_src sql
+  | begin isolation level repeatable read;
+  | select 1;
+#+end_src
+
+现在，我们将在第一个会话中执行一些更新：
+
+#+begin_src sql
+  update hot set s='I';
+  update hot set s='J';
+  update hot set s='K';
+  select * from heap_page('hot', 0);
+#+end_src
+
+当下一次更新发生时，该页面将无法容纳另一个元组，页面修剪也无法释放任何空间：
+
+#+begin_src sql
+  update hot set s='L';
+  | commit; -- the snapshot is not required anymore
+  select * from heap_page('hot', 0);
+#+end_src
+
+元组 (0,5) 包含指向第 1 页的 (1,1) 引用：
+
+#+begin_src sql
+  select * from heap_page('hot', 1);
+#+end_src
+
+但是，这个引用并没有被使用：元组 (0,5) 的 Heap Hot Updated 位没有被设置。至于元组 (1,1)，我们可以通过索引来
+访问它，索引现在有两个条目。每个条目都指向各自 HOT 链的首部：
+
+#+begin_src sql
+  select * from index_page('hot_id', 1);
+#+end_src
+
+** 索引的页剪枝
+
+我已经声明，页面剪枝仅限于单个堆页面，不影响索引。不过，索引也有自己的剪枝，它也会清理单个页面--在本例中就是索引
+页面。
+
+索引剪枝发生在插入到 B 树中的内容即将把页面一分为二时，因为原始页面已经没有足够的空间了。问题在于，即使后来删除了
+一些索引条目，两个独立的索引页也不会合并成一个。这会导致索引臃肿，而一旦臃肿，即使删除大部分数据，索引也无法缩小。
+但如果剪枝可以删除部分数据元组，则可以推迟拆页。
+
+有两类元组可以从索引中剪除。
+
+首先，PostgreSQL 会删除那些被标记为死亡的元组。 正如我已经说过的，如果 PostgreSQL 检测到一个索引条目指向的元组
+在任何快照中都不再可见或根本不存在，它就会在索引扫描过程中设置这样一个标签。
+
+如果没有已知的死元组，PostgreSQL 会检查那些引用同一表行的不同版本的索引项。由于 MVCC 的存在，更新操作可能会产生
+大量的行版本，而其中许多版本可能很快就会消失在数据库的视野中。HOT 更新可以缓冲这种影响，但并不总是适用：如果要更新
+的列是索引的一部分，则相应的引用会传播到所有索引。在拆分页面之前，搜索那些尚未被标记为死亡但已经可以被剪切的记录是
+很有意义的。为此，PostgreSQL 必须检查堆元组的可见性。这种检查需要访问表，因此只针对 "有希望 "的索引元组执行，这
+些元组是为 MVCC 目的而创建的现有元组的副本。执行这种检查比允许额外的页面拆分要便宜。
 
 
 
