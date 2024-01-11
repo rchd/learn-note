@@ -2589,19 +2589,338 @@ pg_stat_progress_vacuum.max_dead_tuples 显示，但实际使用的空间总是�
 加间隙之间的工作量（autovacuum_vacuum_cost_limit）来加快速度。此外，还必须提高并行程度
 （autovacuum_max_workers）。
 
+* 冻结
+
+** 事务ID回卷
+
+在 PostgreSQL 中，事务 ID 占用 32 位。40 亿看起来是个不小的数字，但如果系统被频繁使用，这个数字就会很快耗尽。
+例如，如果平均每秒负载 1,000 个事务（不包括虚拟事务），那么连续运行大约六周就会耗尽。
+
+一旦所有的数字都用完了，计数器就必须重置以开始下一轮（这种情况被称为 "循环"）。但是，只有当分配的数字一直在增加
+时，ID 值较小的交易才能被认为比ID 值较大的交易时间更长。因此，计数器在重置后不能简单地重新开始使用相同的数字。
+
+为事务 ID 分配 64 位可以完美地解决这个问题，那么 PostgreSQL 为什么不利用它呢？问题在于每个元组头必须存储两个事
+务的 ID：xmin 和 xmax。元组头已经相当大了（如果考虑到数据对齐，至少有 24 个字节），如果再增加位，就会多出 8
+个字节。
+
+#+begin_comment
+  PostgreSQL 确实实现了 64 位事务 ID，通过 32 位纪元扩展了常规 ID，但它们只在内部使用，从不进入数据页。
+#+end_comment
+
+为了正确处理回卷，PostgreSQL 必须比较事务的年龄（定义为自该事务开始后出现的后续事务的数量），而不是事务 ID。因
+此，我们不应该使用小于和大于这两个术语，而应该使用更老（在前）和更年轻（在后）这两个概念。
+
+在代码中，这种比较通过简单的 32 位运算来实现：首先找出 32 位事务 ID 之间的差值，然后将该结果与零进行比较。
+
+为了更直观地理解这个概念，可以把一连串的交易 ID 想象成一个钟面。对于每次事务，顺时针方向的圆圈中一半是未来，另一半
+是过去。
+
+[[./images/lEW4Sq.png]]
+
+然而，这种可视化有一个令人不快的缺陷。与最近的事务相比，旧事务（T1）处于遥远的过去。但是，新的事务迟早会在与未来相
+关的半圆中看到它。如果真的是这样，就会产生灾难性的影响：从现在起，所有较新的事务都看不到事务 T1 所做的更改。
+
+** 元组冻结和可见性规则
+
+为了防止这种 "时间旅行"，回收还执行了一项任务（除了页面清理）：它会搜索超出数据库范围的元组（因此它们在所有快照中都
+是可见的），并以一种特殊的方式标记它们，即冻结它们。
+
+对于冻结的元组，可见性规则无需考虑 xmin，因为已知这类元组在所有快照中都是可见的，所以可以安全地重复使用该事务 ID。
+
+可以想象，在冻结的元组中，xmin 事务 ID 被一个假想的 "负无穷大"（如下图所示的雪花）所取代；这表明该元组是由一个事
+务创建的，而该事务已经过去很久，其实际 ID 已经不再重要。然而在现实中，xmin 保持不变，而冻结属性则由两个提示位组合
+定义：已提交和已中止。
+
+[[./images/ey7FN1.png]]
+
+#+begin_comment
+  很多资料（包括文档）都提到了 FrozenTransactionId = 2。 这就是我之前提到的 "减去无穷大"--在 9.4 之前的版本
+  中，这个值曾经取代了 xmin，但现在改用了 hint bits。因此，原始事务 ID 仍保留在元组中，这对调试和支持都很方便。
+  旧系统即使已升级到更高版本，仍可能包含过时的 FrozenTransactionId。
+#+end_comment
+
+xmax 事务 ID 不会以任何方式参与冻结。它只存在于过期的元组中，一旦这些元组在所有快照中都不再可见（这意味着 xmax
+ID 已超出数据库范围），它们就会被清空。
+
+让我们为实验创建一个新表。应将 fillfactor 参数设置为最低值，这样每个页面只能容纳两个元组--这样会更容易跟踪进度。
+我们还将禁用自动回收，以确保只在需要时才清理表。
+
+#+begin_src sql
+  create table tfreeze(
+    id integer,
+    s char(300)
+  )with (fillfactor=10, autovacuum_enabled=off);
+#+end_src
+
+我们将使用 pageinspect 创建另一种显示堆页面的函数。在处理一系列页面时，它将显示冻结属性 (f) 的值和每个元组的
+xmin 事务年龄（它必须调用年龄系统函数--当然，年龄本身并不存储在堆页面中）：
+
+#+begin_src sql
+  create function heap_page(
+     relname text, pageno_from integer, pageno_to integer
+  )
+  returns table (
+     ctid tid, state text,
+     xmin text, xmin_age integer, xmax text 
+  ) as $$
+  select (pageno, lp)::text::tid as ctid,
+     case lp_flags
+       when 0 then 'unused'
+       when 1 then 'normal'
+       when 2 then 'reditect to ' || lp_off
+       when 3 then 'dead'
+     end as state,
+     t_xmin || case
+       when (t_infomask & 256+512)=256+512 then 'f'
+       when (t_infomask & 256) > 0 then ' c'
+       when (t_infomask & 512) > 0 then ' a'
+       else ''
+     end as xmin,
+     age(t_xmin) as xmin_age,
+     t_xmax || case
+       when (t_infomask & 1024) > 0 then ' c'
+       when (t_infomask & 2048) > 0 then ' a'
+       else ''
+     end as xmax
+  from generate_series(pageno_from, pageno_to) p(pageno),
+       heap_page_items(get_raw_page(relname, pageno))
+  order by pageno, lp;
+  $$ language sql;
+#+end_src
+
+现在，让我们在表中插入几行，然后运行 VACUUM 命令，立即创建可见性映射。
+
+#+begin_src sql
+  create extension if not exists pg_visibility;
+
+  insert into tfreeze(id, s)
+  select id, 'FOO' || id from generate_series(1, 100) id;
+#+end_src
+
+我们将使用 pg_visibility 扩展来观察前两个堆页面。吸尘完成后，这两个页面都会被标记到可见性映射（all_visible）
+中，但不会被标记到冻结映射（all_frozen）中，因为它们仍然包含一些未冻结的元组：
+
+#+begin_src sql
+  vacuum tfreeze;
+  select *
+  from generate_series(0, 1) g(blkno),
+       pg_visibility_map('tfreeze', g.blkno)
+  order by g.blkno;
+#+end_src
+
+创建记录的事务的 xmin_age 等于 1，因为它是系统中执行的最新事务：
+
+#+begin_src sql
+  select * from heap_page('tfreeze', 0, 1);
+#+end_src
+
+** 管理冻结
+
+控制冻结的主要参数有四个。所有这些参数都代表事务时间，并定义以下事件发生的时间：
+
++ 开始冻结(vacuum_freeze_min_age)
++ 进行冻结(vacuum_freeze_table_age)
++ 强制进行冻结(autovacuum_freeze_max_age)
++ 接受冻结的优先级(vacuum_failsafe_age)
+
+最低冻结年龄
+
+vacuum_freeze_min_age 参数定义了 xmin 事务的最小冻结时间。它的值越小，开销就越大：如果一行是 "热 "的，正在被
+积极更改，那么冻结其所有新创建的版本将是白费力气。如果将该参数设置为相对较高的值，则可以等待一段时间。
+
+为了观察冻结过程，让我们把这个参数值降为 1：
+
+#+begin_src sql
+  alter system set vacuum_freeze_min_age=1;
+  select pg_reload_conf();
+#+end_src
+
+现在更新零页中的一行。由于填充因子值很小，新的行版本将进入同一页面：
+
+#+begin_src sql
+  update tfreeze set s='BAR' where id=1;
+#+end_src
+
+所有事务的年龄都增加了一个，堆页面现在看起来如下：
+
+#+begin_src sql
+  select * from heap_page('tfreeze', 0, 1);
+#+end_src
+
+此时，年龄大于 vacuum_freeze_min_age = 1 的图元将被冻结。但 vacuum 不会处理任何在可见性映射中标记的页面：
+
+#+begin_src sql
+  select * from generate_series(0, 1) g(blkno),
+     pg_visibility_map('tfreeze', g.blkno)
+  order by g.blkno;
+#+end_src
+
+上一条 UPDATE 命令删除了零页的可见性位，因此该页中具有适当 xmin 年龄的元组将被冻结。但第一页将被完全跳过：
+
+#+begin_src sql
+  vacuum tfreeze;
+  select * from heap_page('tfreeze', 0, 1);
+#+end_src
+
+冻结的年龄
+
+正如我们刚才所看到的，如果一个页面只包含所有快照中都可见的当前元组，那么回收将不会冻结它们。为了克服这一限制，
+PostgreSQL 提供了 vacuum_freeze_table_age 参数。它定义了允许回收忽略可见性映射的事务年龄，因此任何堆页面都
+可以被冻结。
+
+对于每个表，系统目录都会保存一个事务 ID，已知所有旧事务都会被冻结。它被存储为 relfrozenxid：
+
+#+begin_src sql
+  select relfrozenfxid, age(relfrozenfxid)
+  from pg_class
+  where relname='tfreeze';
+#+end_src
+
+将该事务的时间与 vacuum_freeze_table_age 值进行比较，以决定是否到了积极冻结的时候。
+
+有了冻结图，在吸尘过程中就无需执行全表扫描：只需检查未出现在冻结图中的页面即可。除了这项重要的优化之外，冻结映射还
+带来了容错性：如果吸尘被中断，下一次运行将不必返回到已经处理过并标记在映射中的页面。
+
+当系统中的事务数达到 vacuum_freeze_table_age - vacuum_freeze_min_age 的限制时，PostgreSQL 会主动冻结表
+中的所有页面（如果使用默认值，则每 1 亿个事务后冻结一次）。因此，如果 vacuum_freeze_min_age 的值过大，就会导致
+过度冻结，增加开销。
+
+#+begin_src sql
+  alter system set vacuum_freeze_table_age=4;
+  select pg_reload_conf();
+#+end_src
+
+运行VACUUM命令
+
+#+begin_src sql
+  vacuum verbose tfreeze;
+#+end_src
+
+既然已经对整个表进行了分析，就可以提前设置 relfrozenxid 值--保证堆页面中没有旧的解冻 xmin 事务：
+
+#+begin_src sql
+  select relfrozenfxid, age(relfrozenxid)
+  from pg_class
+  where relname='tfreeze';
+#+end_src
+
+现在第一页只包含冻结的元组：
+
+#+begin_src sql
+  select * from heap_page('tfreeze', 0, 1);
+#+end_src
+
+此外，该页面还在冻结地图中做了标记：
+
+#+begin_src sql
+  select * from generate_series(0, 1) g(blkno),
+   pg_visibility_map('tfreeze', g.blkno)
+   order by g.blkno;
+#+end_src
+
+强制回收年龄
+
+有时，仅配置上述两个参数还不足以及时冻结元组。自动回收可能会被关闭，而常规的 VACUUM 根本不会被调用（这是个非常糟
+糕的想法，但技术上是可行的）。此外，一些不活动的数据库（如 template0）可能不会被回收。PostgreSQL 可以通过强制自
+动回收模式来处理这种情况。
+
+当数据库中某些未冻结的事务 ID 的年龄有可能超过 2 亿 autovacuum_freeze_max_age 值时，会强制使用自动真空（即使
+已关闭）。这个决定是根据所有表中最老的 pg_class.relfrozenxid 事务的年龄做出的，因为所有较老的事务都保证会被冻
+结。该事务的 ID 保存在系统目录中：
+
+#+begin_src sql
+  select datname, datfrozenxid, age(datfrozenxid) from pg_database;
+#+end_src
+
+[[./images/KFX9ju.png]]
 
 
+autovacuum_freeze_max_age 的限制被设置为 20 亿个事务（略少于半个圈），而默认值则小 10 倍。这样做是有道理的：
+一个大值会增加事务 ID 封装的风险，因为 PostgreSQL 可能无法及时冻结所有需要的图元。在这种情况下，服务器必须立即停
+止，以防止可能出现的问题，并且必须由管理员重新启动。
 
 
+autovacuum_freeze_max_age 值也会影响 CLOG 的大小。 无需保留冻结事务的状态，集群中最老的 datfrozenxid 之前
+的所有事务都会被冻结。那些不再需要的 CLOG 文件会被 autovacuum 删除。
 
+更改 autovacuum_freeze_max_age 参数需要重启服务器。不过，上面讨论的所有冻结设置也都可以通过相应的存储参数在表
+级别上进行调整。请注意，所有这些参数的名称都以 "auto "开头：
 
++ autovacuum_freeze_min_age和toast.autovacuum_freeze_min_age
++ autovacuum_freeze_table_age和toast.autovacuum_freeze_table_age
++ autovacuum_freeze_max_age和toast.autovacuum_freeze_max_page
 
+故障安全冻结年龄
 
+如果 autovacuum 已经在竭力防止事务 ID 回卷，而且明显需要争分夺秒，那么就会启动一个安全开关：autovacuum 会忽
+略 autovacuum_vacuum_cost_delay (vacuum_cost_delay) 值，并尽快停止回收索引以冻结堆图元。
 
+如果数据库中未冻结事务的年龄有可能超过 vacuum_failsafe_age 值，则会启用故障安全冻结模式。假设该值必须高于
+autovacuum_freeze_max_age。
 
+** 手动冻结
 
+有时，手动管理冻结比依赖自动回收更方便。
 
+vacuum进行冻结
 
+可以通过调用带有 FREEZE 选项的 VACUUM 命令来启动冻结。它会冻结所有堆元组，而不管其事务年龄如何，就像
+vacuum_freeze_min_age = 0 一样。
+
+如果这种调用的目的是尽快冻结堆元组，那么禁用索引吸尘（就像在故障安全模式下那样）是有意义的。你可以通过运行
+VACUUM（freeze, index_cleanup false）命令或通过 vacuum_index_cleanup 存储参数显式地禁用索引吸尘。很明
+显，这不应该定期执行，因为在这种情况下，VACUUM 将无法很好地完成页面清理这一主要任务。
+
+在初始化加载的时候冻结数据
+
+预计不会更改的数据可以在加载到数据库时立即冻结。方法是运行带有 FREEZE 选项的 COPY 命令。
+
+只有在同一事务中创建或截断了生成的表时，才可以在初始加载期间冻结元组，因为这两种操作都会获取对表的独占锁。这一限制
+是必要的，因为无论隔离级别如何，冻结的元组都会在所有快照中可见；否则，事务会在上传新冻结的元组时突然看到它们。但如果
+锁被获取，其他事务将无法访问该表。
+
+不过，从技术上讲，打破隔离还是有可能的。让我们在另一个会话中以可重复读取隔离级别启动一个新事务：
+
+#+begin_src sql
+  begin isolation level repeatable read;
+  select 1; -- the snapshot is built 
+#+end_src
+
+截断 tfreeze 表，并在同一事务中向该表插入新行。(如果只读事务已经访问过 tfreeze 表，TRUNCATE 命令将被阻塞）。
+
+#+begin_src sql
+  begin;
+  truncate tfreeze;
+  copy tfreeze from stdin with freeze;
+  1 FOO
+  2 BAR
+  3 BAZ
+  \.
+  commit;
+#+end_src
+
+现在，读取事务也能看到新数据：
+
+#+begin_src sql
+  | select count(*) from tfreeze;
+  | commit;
+#+end_src
+
+这确实会破坏隔离，但由于数据加载不太可能经常发生，因此在大多数情况下不会造成任何问题。
+
+如果使用冻结功能加载数据，则会立即创建可见性映射，页头也会收到可见性属性：
+
+#+begin_src sql
+  select * from pg_visibility_map('tfreeze', 0);
+#+end_src
+
+#+begin_src sql
+  select flags & 4 > 0 as all_visible
+  from page_header(get_raw_page('tfreeze', 0));
+#+end_src
+
+因此，如果数据在加载时被冻结，真空将不会处理该表（只要数据保持不变）。遗憾的是，TOAST 表还不支持这一功能：如果加
+载了过大的值，回收将不得不重写整个 TOAST 表，在所有页头中设置可见性属性。
 
 
 
