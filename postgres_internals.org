@@ -2922,6 +2922,274 @@ VACUUM（freeze, index_cleanup false）命令或通过 vacuum_index_cleanup 存�
 因此，如果数据在加载时被冻结，真空将不会处理该表（只要数据保持不变）。遗憾的是，TOAST 表还不支持这一功能：如果加
 载了过大的值，回收将不得不重写整个 TOAST 表，在所有页头中设置可见性属性。
 
+* 重建表和索引
+
+** 全回收
+
+常规回收为何不够？
+
+例行回收可以释放比页面修剪更多的空间，但有时可能还是不够。
+
+如果表或索引文件变大，VACUUM 可以清理页内的一些空间，但很少能减少页数。只有在文件末尾出现多个空页时，才能将回收的
+空间归还给操作系统，而这种情况并不常见。
+
+过大的尺寸会导致不愉快的后果：
+
++ 全表（或索引）扫描需要更长的时间。
++ 可能需要更大的缓冲缓存（页面作为一个整体缓存，因此数据密度会降低）。
++ B 树会多出一级，从而降低索引访问速度。
++ 文件会占用磁盘和备份的额外空间。
+
+在这种情况下，表及其所有索引都将从头开始重建，数据将尽可能密集地打包（将 fillfactor 参数考虑在内）。  
+
+还需注意的是，该操作会完全阻止对表的访问，包括读取和写入。
+
+估算数据密度
+
+为了便于说明，让我们在表格中插入几行：
+
+#+begin_src sql
+  truncate vac;
+  insert into vac(id, s)
+  select id, id::text from generate_series(1, 500000) id;
+#+end_src
+
+可以使用 pgstattuple 扩展估算存储密度：
+
+#+begin_src sql
+  create extension pgstattuple;
+  select * from pgstattuple('vac') \gx
+#+end_src
+
+该函数读取整个表，并显示其文件中空间分布的统计数据。tuple_percent 字段显示有用数据（堆元组）所占空间的百分比。
+由于页面中存在各种元数据，该值不可避免地小于 100%，但在本例中仍然相当高。
+
+对于索引，显示的信息略有不同，但 avg_leaf_density 字段的含义相同：它显示有用数据的百分比（以 B 树叶页为单位）。
+
+#+begin_src sql
+  select * from pgstatindex('vac_s') \gx
+#+end_src
+
+以前使用的 pgstattuple 函数会全文读取表或索引，以获得精确的统计数据。对于大型对象来说，这样做的成本可能太高，因此
+扩展程序还提供了另一个名为 pgstattuple_approx 的函数，它可以跳过可见性映射中跟踪的页面，显示近似值。
+
+一种更快但更不准确的方法是使用系统目录粗略估计数据量和文件大小之间的比率。
+
+下面是表格及其索引的当前大小：
+
+#+begin_src sql
+  select pg_size_pretty(pg_table_size('vac')) as table_size,
+      pg_size_pretty(pg_indexes_size('vac')) as index_size;
+#+end_src
+
+删除90%的记录
+
+#+begin_src sql
+  delete from vac where id % 10 != 0;
+#+end_src
+
+例行回收不会影响文件大小，因为文件末尾没有空页：
+
+#+begin_src sql
+  vacuum vac;
+#+end_src
+
+#+begin_src sql
+  select pg_size_pretty(pg_table_size('vac')) as table_size,
+        pg_size_pretty(pg_indexes_size('vac')) as index_size;
+#+end_src
+
+然而，数据密度却下降了约 10 倍：
+
+#+begin_src sql
+  select vac.tuple_percent, vac_s.avg_leaf_density
+  from pgstattuple('vac') vac, pgstatindex('vac_s') vac_s;
+#+end_src
+
+表格和索引目前位于以下文件中：
+
+#+begin_src sql
+  select pg_relation_filepath('vac') as vac_filepath,
+         pg_relation_filepath('vac_s') as vac_s_filepath \gx
+#+end_src
+
+让我们来看看 VACUUM FULL 之后的结果。当命令运行时，可以在 pg_stat_progress_cluster 视图（与 VACUUM 提供的
+pg_stat_progress_vacuum 视图类似）中跟踪其进度：
+
+#+begin_src sql
+  vacuum full vac;
+  | select * from pg_stat_progress_cluster \gx
+  
+#+end_src
+
+因此，VACUUM FULL 阶段与常规回收阶段有所不同。
+
+全面回收用新文件取代了旧文件：
+
+#+begin_src sql
+  select pg_relation_filepath('vac') as vac_filepath,
+        pg_relation_filepath('vac_s') as vac_s_filepath \gx
+#+end_src
+
+现在索引和表格的大小都小了很多：
+
+#+begin_src sql
+  select pg_size_pretty(pg_table_size('vac')) as table_size,
+        pg_size_pretty(pg_indexes_size('vac')) as index_size;
+#+end_src
+
+因此，数据密度增加了。就索引而言，其密度甚至比原始索引更高：根据现有数据从头开始创建一棵 B 树比在已有索引中逐行插入
+条目更有效：
+
+#+begin_src sql
+  select vac.tuple_percent,
+       vac_s.avg_leaf_density
+  from pgstattuple('vac') vac,
+       pgstatindex('vac_s') vac_s;
+#+end_src
+
+冻结
+
+在重建表时，PostgreSQL 会冻结其元组，因为与其他工作相比，这一操作的成本几乎为零：
+
+#+begin_src sql
+  select * from heap_page('vac', 0, 0) limit 5;
+#+end_src
+
+但是，页面既没有在可见性映射中登记，也没有在冻结映射中登记，页头也不会收到可见性属性（就像使用 FREEZE 选项执行
+COPY 命令时一样）：
+
+#+begin_src sql
+  select * from pg_visibility_map('vac', 0);
+#+end_src
+
+#+begin_src sql
+  select flags & 4 > 0 all_visible
+  from page_header(get_raw_page('vac', 0));
+#+end_src
+
+只有在调用 VACUUM（或触发自动回收）后，情况才会有所改善：
+
+#+begin_src sql
+  vacuum vac;
+  select * from pg_visibility_map('vac', 0);
+  select flags & 4 > 0 as all_visible
+  from page_header(get_raw_page('vac', 0));
+#+end_src
+
+这基本上意味着，即使页面中的所有元组都超出了数据库的范围，这样的页面仍然需要重写。
+
+** 其他重建方法
+
+全面回收的替代方法
+
+除了 VACUUM FULL 之外，还有其他几种命令可以完全重建表和索引。所有这些命令都只能锁定表，删除旧数据文件并重新创建。
+
+CLUSTER 命令与 VACUUM FULL 完全类似，但它也会根据其中一个可用索引对文件中的元组重新排序。在某些情况下，它可以帮
+助规划器更有效地使用索引扫描。但需要注意的是，我们不支持群集化：所有进一步的表更新都将打破元组的物理顺序。
+
+在程序上，VACUUM FULL 只是 CLUSTER 命令的一个特殊实例，不需要对元组重新排序。
+
+REINDEX 命令用于重建一个或多个索引。事实上，在重建索引时，VACUUM FULL 和 CLUSTER 都会使用该命令。
+
+TRUNCATE 命令会删除所有表行；它在逻辑上等同于不带 WHERE 子句的 DELETE。但 DELETE 只是将堆元组标记为已删除（因
+此仍需对其进行清理），而 TRUNCATE 会创建一个新的空文件，通常会更快一些。
+
+减少重建期间的停机时间
+
+VACUUM FULL 不适合定期运行，因为它会在整个运行期间锁定表（即使是查询）。对于高可用性系统来说，这通常是不可行的。
+
+有几种扩展（如 pg_repack）可以在几乎不停机的情况下重建表和索引。独占锁仍然是必需的，但只是在这个过程的开始和结束
+时才需要，而且只需要很短的时间。它是通过一种更复杂的执行方式实现的：在重建原始表时，对原始表所做的所有更改都会被触
+发器保存，然后应用到新表。为了完成操作，实用程序会在系统目录中用另一个表替换一个表。
+
+pgcompacttable 工具提供了一种非常规的解决方案。它执行多个假的行更新（不改变任何数据），使当前行的版本逐渐向文件
+的起始位置移动。
+
+在这些更新系列之间，回收会删除过时的元组，并一点一点地截断文件。这种方法需要花费更多的时间和资源，但它不需要额外的
+空间来重建表，也不会导致负载峰值。在表被截断的过程中，短时独占锁仍会被获取，但回收处理起来会比较顺利。
+
+** 预防措施
+
+只读查询
+
+文件臃肿的原因之一是在执行密集型数据的同时，执行了长时间运行的事务，这些事务会占用数据库水平线。
+
+因此，长期运行的（只读）事务不会造成任何问题。因此，一种常见的方法是在不同系统之间分担负载：在主服务器上保留快速
+OLTP 查询，将所有 OLAP 事务导向副本。虽然这样做会使解决方案更加昂贵和复杂，但这些措施可能是必不可少的。
+
+在某些情况下，冗长的事务处理是应用程序或驱动程序错误造成的，而非必要。如果无法以文明的方式解决问题，管理员可以使用
+以下两个参数：
+
++ old_snapshot_threshold 参数定义了快照的最长寿命。一旦超过这个时间，服务器就有权删除过期的元组；如果一个长期运
+  行的事务仍需要这些元组，就会出现错误（"快照太旧"）。
++ idle_in_transaction_session_timeout 参数限制了空闲事务的生命周期。当达到该阈值时，事务将被终止。
+
+数据更新
+
+臃肿的另一个原因是同时修改了大量元组。如果所有表行都被更新，那么元组的数量可能会翻倍，而回收将没有足够的时间进行干
+预。页面剪枝可以减少这个问题，但不能完全解决。
+
+让我们用另一列来扩展输出，以跟踪已处理的行：
+
+#+begin_src sql
+  alter table vac add processed boolean default false;
+  select pg_size_pretty(pg_table_size('vac'));
+#+end_src
+
+一旦更新了所有行，表格就会扩大近两倍：
+
+#+begin_src sql
+  update vac set processed=true;
+  select pg_size_pretty(pg_table_size('vac'));
+#+end_src
+
+要解决这种情况，可以减少单个事务执行的更改次数，将它们分散到不同的时间段；然后，真空处理可以删除过时的图元，并为现
+有页面中的新图元释放一些空间。假设每条记录的更新都可以单独提交，我们可以使用下面的查询来选择一批指定大小的记录作为
+模板：
+
+#+begin_src sql
+  select ID
+  from table
+  where filtering the already processed rows
+  limit batch size
+  for update skip locked
+#+end_src
+
+此代码片段选择并立即锁定一组不超过指定大小的记录。已被其他事务锁定的记录将被跳过：它们将在下一次进入另一个批次。这
+是一个相当灵活方便的解决方案，可以让你轻松改变批量大小，并在操作失败时重启操作。让我们取消已处理属性的设置，并执行
+完全回收以恢复表的原始大小：
+
+#+begin_src sql
+  update vac set processed=false;
+  vacuum full vac;
+#+end_src
+
+一旦更新了第一批数据，表的大小就会增加一些：
+
+#+begin_src sql
+  with batch as (
+    select id from vac where not processed limit 1000
+    for update skip locked 
+  )
+  update vac set processed=true
+  where id in (select id from batch);
+  select pg_size_pretty(pg_table_size('vac'));
+#+end_src
+
+但从现在起，由于新元组会取代被移除的元组，因此大小几乎保持不变：
+
+#+begin_src sql
+  vacuum vac;
+  with batch as (
+    select id from vac where not processed limit 1000
+    for update skip locked 
+  )
+  update vac set processed=true
+  where id in (select id from batch);
+  select pg_size_pretty(pg_table_size('vac'));
+#+end_src
+
 
 
 
