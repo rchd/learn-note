@@ -1735,8 +1735,6 @@ SQL 不允许直接使用子事务，也就是说，在完成当前事务之前�
 正如你所猜测的那样，psql 在该模式下运行时，只是在每条命令前添加一个隐式保存点；如果出现故障，则会启动回滚。默认情
 况下不使用该模式，因为发出保存点（即使不回滚）会产生大量开销。
 
-
-
 * 快照
 
 ** 快照是什么
@@ -8075,7 +8073,6 @@ InitPlan 的父节点不能参与并行执行（但接收 InitPlan 评估结果�
 只有在完全了解所有影响并仔细研究了所有施加的限制后，才能将您的功能标记为 PARALLEL RESTRICTED（更不用说
 PARALLEL SAFE）。
 
-
 * 索引访问方法
 
 ** 索引和可扩展性
@@ -9562,8 +9559,6 @@ Nested Loop Semi Join节点表示同名连接方法。该计划（就像上面�
 
 使用并行计划检索内集。每个工作员扫描自己在 ticket_flights 表中所占的行，并使用嵌套循环算法将它们与机票连接起来。
 
-
-
 * 哈希
 
 ** 哈希连接
@@ -10845,7 +10840,6 @@ REINDEX或VACCUM FULL命令重建它
 
 对数组中的元素的搜索也没有实现。
 
-
 * B-tree索引
 
 ** 概览
@@ -11453,7 +11447,6 @@ SEARCH NULLS 属性指示是否可以搜索 NULL 值。
 B树不支持排序运算符（DISTANCE ORDERABLE），尽管已经试图实现它们。
 
 B-树支持在一个数组中搜索多个元素（SEARCH ARRAY属性），并且可以在不访问堆的情况下返回结果数据（RETURNABLE）。
-
 
 * GiST
 
@@ -12169,6 +12162,439 @@ tsvector_ops类的排序运算符也没有定义。
    hstore 扩展提供了用于存储键值对的 hstore 数据类型。gist_hstore_ops 运算符类基于签名 RD 树实现了索引支持。
 8. Trigrams
    pg_trgm 扩展添加了 gist_trgm_ops 类，该类实现了对比较文本字符串和通配符搜索的索引支持。
+
+* SP-GiST
+
+** 简介
+
+SP-GiST 名称中的第一个字母代表空间分区（Space Partitioning）。这里的空间指的是进行搜索的任意值集，并不一定是
+传统意义上的空间（如二维平面）。名称中的 GiST 部分暗示了 GiST 和 SP-GiST 方法之间的某种相似性：它们都是广义搜
+索树，都是索引各种数据类型的框架。
+
+SP-GiST 方法背后的理念是将搜索空间分割成若干个不重叠的区域，而这些区域又可以递归分割成若干个子区域。这种分割产生
+非平衡树（不同于 B 树和 GiST 树），可用于实现四叉树、k-D 树和弧度树等著名结构。
+
+非平衡树通常分支较少，因此深度较大。例如，四叉树节点最多有四个子节点，而 k-D 树的节点只能有两个。如果将树保存在内
+存中，这不会造成任何问题；但如果存储在磁盘上，树节点就必须尽可能密集地打包到页面中，以减少 I/O，而这项任务并不轻松。
+B 树和 GiST 索引不需要处理这个问题，因为它们的每个树节点都占用整个页面。
+
+SP-GiST 树的内部节点包含一个值，该值满足其所有子节点均为真的条件。这样的值通常被称为前缀；它在 GiST 索引中扮演着
+与谓词相同的角色。指向 SP-GiST 子节点的指针可能带有标签。
+
+叶节点元素包含一个索引值（或其部分内容）和相应的 TID。
+
+与 GiST 一样，SP-GiST 访问方法只实现主要算法，而不涉及并发访问、锁和日志等底层细节。新的数据类型和空间分割算法可
+通过操作符类接口添加。操作符类提供了大部分逻辑，并定义了索引功能的许多方面。
+
+在 SP-GiST 中，搜索是深度优先的，从根节点开始。值得向下搜索的节点由一致性函数选出，该函数与 GiST 中使用的函数类
+似。对于树的内部节点，该函数会返回一组其值与搜索谓词不矛盾的子节点。一致性函数不会进入这些节点：它只是评估相应的标
+签和前缀。对于叶节点，它将确定该节点的索引值是否与搜索谓词相匹配。
+
+在非平衡树中，搜索时间会因分支深度而异。
+
+有两个支持函数参与将值插入 SP-GiST 索引。在从根节点开始遍历树的过程中，choose 函数会做出以下决定之一：将新值发
+送到现有的子节点中，为该值创建一个新的子节点，或者拆分当前节点（如果该值与该节点的前缀不匹配）。如果所选叶页没有足
+够的空间，则 picksplit 函数将决定哪些节点应被移至新页面。
+
+现在，我将举例说明这些算法。
+
+
+** 四叉树的点
+
+四叉树用于索引二维平面上的点。相对于所选点，平面被递归分割成四个区域（象限）。
+
+这个点被称为中心点；它是节点的前缀，即定义子值位置的条件。
+
+根节点将平面分成四个象限。
+
+[[./images/V45va3.png]]
+
+然后，每个象限又被进一步划分为各自的象限。
+
+[[./images/BcDr7R.png]]
+
+
+这个过程一直持续到达到所需的分区数为止。
+
+[[./images/PqsTXI.png]]
+
+本示例使用的是基于扩展机场表的索引。插图显示，分支深度取决于相应象限中的点密度。为了视觉清晰，我设置了一个较小的填
+充因子存储参数值，这使得树更深：
+
+#+begin_src sql
+  create index airports_quad_idx on airports_big
+  using spgist(coordinates) with (fillfactor=10);
+#+end_src
+
+点的默认运算符类是 quad_point_ops。
+
+操作类
+
+我已经提到过 SP-GiST 的支持功能：用于搜索的一致性功能和用于插入的 picksplit 功能。
+
+现在，让我们来看看 quad_point_ops 运算符类的支持函数列表。
+
+#+begin_src sql
+  select amprocnum, amproc::regproc
+  from pg_am am
+    join pg_opclass opc on opcmethod=am.oid
+    join pg_amproc amop on amprocfamily=opcfamily
+  where amname='spgist'
+  and opcname='quad_point_ops'
+  order by amprocnum;
+#+end_src
+
+这些功能执行以下任务：
+
+1. config函数向访问方法报告操作符类的基本信息。
+2. choose函数选择要插入的节点。
+3. 页面分割后，picksplit 函数会在页面之间分配节点。
+4. inner_consistent 函数检查内部节点的值是否满足搜索谓词。
+5. leaf_consistent 函数用于确定叶节点中存储的值是否满足搜索谓词。
+
+此外，还有几项可选功能。
+
+quad_point_ops 运算符类支持与 GiST 相同的策略：
+
+#+begin_src sql
+  select
+  from pg_am am
+    join pg_opclass opc on opcmethod=am.oid
+    join pg_amop amop on amopfamily=opcfamily
+    join pg_operator opr on opr.oid=amopopr
+  where amname='spgist'
+  and opcname='quad_point_ops'
+  order by amopstrategy;
+#+end_src
+
+例如，您可以使用上述运算符 >^ 查找位于迪克森以北的机场：
+
+#+begin_src sql
+  select airport_code, airport_name->>'en'
+  from aiports_big
+  where coordinates >^ '(80.3817, 73.5167)'::point;
+#+end_src
+
+#+begin_src sql
+  explain (costs off) select airport_code
+  from airports_big
+  where coordinates >^ '(80.3817, 73.5167)'::point;
+#+end_src
+
+让我们来仔细看看四叉树的结构和内部运作。我们将使用与 GiST 相关章节中讨论的几个要点相同的简单示例。
+
+下面是这种情况下平面的划分方法：
+
+[[./images/JnuDO8.png]]
+
+左侧插图显示的是树的一个层次的象限编号；在接下来的插图中，为了清晰起见，我将按照从左到右的顺序排列子节点。位于边界
+上的点被归入编号较小的象限。右图是最终的分区图。
+
+下面是这种索引的可能结构。每个内部节点最多引用四个子节点，每个指针都标有象限编号：
+
+[[./images/O9tKPM.png]]
+
+页面布局
+
+与 B 树和 GiST 索引不同，SP-GiST 在树节点和页面之间没有一一对应的关系。由于内部节点通常不会有太多的子节点，因此
+必须将多个节点打包到一个页面中。不同类型的节点存放在不同的页面中：内节点存放在内页中，而叶节点则存放在叶页中。
+
+内页中存储的索引项包含用作前缀的值，以及一组指向子节点的指针；每个指针都可能带有一个标签。
+
+叶页条目由一个值和一个 TID 组成。
+
+与特定内部节点相关的所有叶节点都存储在一个页面中，并绑定成一个列表。如果该页面无法容纳另一个节点，则可将该列表移至
+其他页面 或分割该页面；无论哪种方式，列表都不会延伸至多个页面。
+
+为了节省空间，该算法会尝试将新节点添加到相同的页面中，直到这些页面被完全填满。最后使用过的页面的编号会被后端缓存起
+来，并定期保存在零页中，这被称为元页（metapage）。元页不包含对根节点的引用，这在 B 树中是可以看到的；SP-GiST 索
+引的根节点总是位于第一页。
+
+#+begin_comment
+  遗憾的是，pageinspect 扩展没有提供任何用于探索 SP-GiST 的功能，但我们可以使用一个名为 gevel 的外部扩展。我
+  们曾尝试将其功能集成到 pageinspect 中，但没有成功。
+#+end_comment
+
+让我们回到我们的例子。下图显示了树节点如何在页面之间分布。quad_point_ops 运算符类实际上并不使用标签。由于一个节
+点最多可以有四个子节点，因此索引会保留一个固定大小的四个指针数组，其中一些指针可能是空的。
+
+[[./images/VIcqPt.png]]
+
+
+搜索
+
+让我们用同样的例子来看看搜索位于点（3,7）上方的点的算法。
+
+[[./images/Ofc2Qd.png]]
+
+
+搜索从根节点开始。内部一致性函数决定了要下降的子节点。将点（3,7）与根节点的中心点（5,5）进行比较，以选择可能包含搜
+索点的象限；在本例中，这些象限是象限 I 和象限 IV。
+
+进入中心点为(7,7)的节点后，我们必须再次选择要进入的子节点。它们分别属于象限 I 和象限 IV，但由于象限 IV 是空的，我
+们只需检查一个叶子节点。叶子一致性函数会比较该节点的点和查询中指定的点 (3,7)。只有 (8,9) 满足上述条件。
+
+现在，我们只需返回一级，检查与根节点第 IV 象限相对应的节点。它是空的，因此搜索完成。
+
+[[./images/x9iB21.png]]
+
+插入
+
+当一个数值插入 SP-GiST 树时，接下来的每个操作都由选择函数决定。在这种特殊情况下，它只是将点指向与其象限相对应的一
+个现有节点。
+
+示例，新增一个值(7,1)
+
+[[./images/kRSxSt.png]]
+
+该值属于第二象限，将被添加到相应的树节点中：
+
+[[./images/N8dhzT.png]]
+
+如果所选象限的叶子节点列表在插入后变得过大（必须能容纳一个页面），页面就会被分割。picksplit 函数通过计算所有点坐
+标的平均值来确定新的中心点，从而将子节点或多或少均匀地分配到新的象限中。
+
+下图说明了插入点 (2,1) 所导致的页面溢出：
+
+[[./images/f4Pze2.png]]
+
+树中新增了一个中心点为 (1,1) 的内节点，而点 (0,0)、(1,2) 和 (2,1) 则在新的象限之间重新分配：
+
+属性
+
+*访问方法属性* spgist 方法会报告以下属性：
+
+#+begin_src sql
+  select a.amname, p.name, pg_indexam_has_property(a.oid, p.name)
+  from pg_am a, unnest(array[
+    'can_order', 'can_unique', 'can_multi_col',
+    'can_exclude', 'can_include'
+  ]) p(name)
+  where a.amname='spgist';
+#+end_src
+
+不支持排序和唯一性属性。也不支持多列索引。
+
+支持排除限制，就像在 GiST 中一样。
+
+创建 SP-GiST 索引时可附加 INCLUDE 列。
+
+*索引级属性* 与 GiST 不同，SP-GiST 索引不支持聚类：
+
+#+begin_src sql
+  select p.name, pg_index_has_property('airports_quad_idx', p.name)
+  from unnest(array[
+    'clusterable', 'index_scan', 'bitmap_scan', 'backward_scan'
+  ]) p(name);
+#+end_src
+
+支持两种获取 TID 的方式（逐个获取或以位图形式获取）。反向扫描不可用，因为它对 SP-GiST 没有任何意义。
+
+*列级属性* 在大多数情况下，列级属性是相同的：
+
+#+begin_src sql
+  select p.name,
+  pg_index_column_has_property('airports_quad_idx', 1, p.name)
+
+  from unnest(array[
+    'orderable', 'search_array', 'search_nulls'
+  ]) p(name);
+#+end_src
+
+不支持排序，因此所有相关属性都没有意义并被禁用。
+
+到目前为止，我还没有提到过 NULL 值，但我们可以从索引属性中看到，它们是受支持的。与 GiST 不同，SP-GiST 索引不会
+在主索引树中存储 NULL 值。相反，我们会创建一棵独立的树，其根位于第二个索引页面。因此，前三页始终具有相同的含义：元
+页、主树的根以及 NULL 值的树根。
+
+某些列级属性可能取决于特定的操作符类别：
+
+#+begin_src sql
+  select p.name,
+    pg_index_column_has_property('airports_quad_idx', 1, p.name)
+  from unnest(array[
+    'returnable', 'distance_orderable'
+  ]) p(name);
+#+end_src
+
+与本章所有其他示例一样，该索引可用于仅索引扫描。
+
+但一般来说，操作符类并不一定要在叶页中存储完整的值，因为它可以通过表来重新检查这些值。例如，它允许在 PostGIS 中使
+用 SP-GiST 索引来处理可能很大的几何值。
+
+支持近邻搜索；我们在操作符类中看到了排序操作符 <->。
+
+** K 维点树
+
+平面上的点也可以使用另一种分区方法进行索引：我们可以将平面分成两个子区域，而不是四个。这种分割方法由
+kd_point_ops 运算符类实现：
+
+#+begin_src sql
+  create index airports_kd_idx on airports_big
+  using spgist(coordinates kd_point_ops);
+#+end_src
+
+请注意，索引值、前缀和标签可能具有不同的数据类型。对于该操作符类，值用点表示，前缀是实数，而标签不提供（与
+quad_point_ops 相同）。
+
+让我们选择 Y 轴上的某个坐标（在有机场的示例中它定义了纬度）。该坐标将平面分为上下两个子区域：
+
+[[./images/jjc6AD.png]]
+
+
+为每个子区域选择 X 轴（经度）上的坐标，将其分为左右两个子区域：
+
+[[./images/v0WNxZ.png]]
+
+我们将继续分割所得到的每个子区域，轮流进行横向和纵向分割，直到每个部分的点都适合一个索引页：
+
+[[./images/c4cExV.png]]
+
+这样构建的树的所有内叶节点都只有两个子节点。这种方法很容易推广到任意维度的空间，因此这种树通常被称为 k 维树（k-d
+树）。
+
+** strings的前缀树
+
+SP-GiST 的 text_ops 运算符类实现了字符串的 radix 树。在这里，内部节点的前缀实际上是一个前缀，它是子节点中所有
+字符串的共同前缀。
+
+指向子节点的指针由前缀后的值的第一个字节标记。
+
+#+begin_comment
+  为清晰起见，我使用单字符表示前缀，但这只适用于 8 字节编码。一般来说，操作符类将字符串作为字节序列处理。此外，一
+  个前缀还可以包含多个具有特殊语义的值，因此每个前缀实际上需要分配两个字节。
+#+end_comment
+
+子节点存储前缀和标签之后的部分值。叶节点只保存后缀。
+
+下面是一个在多个名称上建立前缀树的例子：
+
+[[./images/u1VXgm.png]]
+
+要重建叶页中索引键的完整值，我们可以从根节点开始，将所有前缀和标签连接起来。
+
+操作类
+
+text_ops 运算符类支持通常用于序数数据类型（包括文本字符串）的比较运算符：
+
+#+begin_src sql
+  select
+  from pg_am am
+    join pg_opclass opc on opcmethod=am.oid
+    join pg_amop amop on opfamily=opcfamily
+    join pg_operator opr on opr.oid=amopopr
+  where amname='spgist'
+  and opcname='text_ops'
+  order by amopstrategy;
+#+end_src
+
+常规运算符处理字符，而带斜线的运算符处理字节。它们不考虑校对（就像 B-tree 的 text_pattern_ops 运算符类），因此
+可以用来加快 LIKE 条件的搜索速度：
+
+#+begin_src sql
+  create index tickets_spgist_idx on tickets
+  using spgist(passenger_name);
+  explain (costs off) select *
+  from tickets
+  where passenger_name like 'IVAN%';
+#+end_src
+
+
+#+begin_comment
+  如果使用常规运算符 >= 和 <，同时使用 "C "以外的校对方式，索引就会变得毫无用处，因为它处理的是字节而不是字符。
+#+end_comment
+
+在这种前缀搜索情况下，操作符类提供了更合适的 ^@ 操作符：
+
+#+begin_src sql
+  explain (costs off) select
+  from tickets
+  where passenger_name ^@ 'IVAN';
+#+end_src
+
+弧度树表示法有时比 B 树更紧凑，因为它不保留完整的值：而是在遍历树时根据需要重建它们。
+
+搜索
+
+让我们在names表上运行下面的查询：
+
+#+begin_src sql
+  select *
+  from names
+  where name ~>=~ 'VALERIY'
+    and name ~<~ 'VLADISLAV';
+#+end_src
+
+首先，在根节点上调用内部一致性函数，以确定要进入的子节点。该函数将前缀 V 和标签 A、L 连接起来。接收到的值 VA 会进
+入查询条件；字符串文字会被截断，以使其长度不超过被检查值的长度： VA ~>=~ 'VA' 和 VA ~<~'VL' 。条件已满足，因此
+需要检查带有标签 A 的子节点。以同样的方式检查 VL 值。它也是一个匹配值，因此也必须检查带有标签 L 的节点。
+
+现在我们来看看与 VA 值相对应的节点。它的前缀是空的，因此对于三个子节点，内部一致性函数会通过连接上一步收到的 VA 和
+标签来重构值 VAD、VAL 和 VAS。条件 VAD ~>=~'VAL' AND VAD ~<~'VER' 不成立，但其他两个值是合适的。
+
+在树的遍历过程中，算法会过滤掉不匹配的分支，然后到达叶节点。叶一致性函数会检查在树遍历过程中重建的值是否满足查询条
+件。匹配值将作为索引扫描的结果返回。
+
+[[./images/kKtAvq.png]]
+
+请注意，虽然查询使用了 B 树常用的大于和小于运算符，但 SP-GiST 的范围搜索效率要低得多。在 B 树中，只需进入范围的
+单个边界值，然后扫描叶页列表即可。
+
+插入
+
+点运算符类的选择函数总是可以将新值导向现有的子区域（象限或半象限之一）。但对于半径树则不然：新值可能与现有的任何前
+缀都不匹配，在这种情况下，内部节点必须拆分。
+
+让我们把 VLADA 这个名字添加到一棵已经建好的树上。
+
+选择函数成功地从根节点下降到下一个节点（V + L），但 ADA 值的剩余部分与 ADI 前缀不匹配。节点必须一分为二：其中一
+个节点将包含前缀的公共部分 (AD)，而前缀的其余部分将下移一级：
+
+[[./images/CL4u44.png]]
+
+然后在同一节点上再次调用选择函数。现在前缀与值相对应，但没有合适标签（A）的子节点，因此函数决定创建这样一个节点。最
+终结果如下图所示；在插入过程中添加或修改的节点被高亮显示。
+
+[[./images/hP5Ic1.png]]
+
+属性
+
+上面我已经介绍了访问方法和索引级属性，它们对所有类都是通用的。大部分列级属性也保持不变。
+
+#+begin_src sql
+  select p.name,
+    pg_index_column_has_property('tickets_spgist_idx', 1, p.name)
+  from unnest(array[
+    'returnable', 'distance_orderable'
+  ])p(name);
+#+end_src
+
+即使索引值没有显式地存储在树中，也支持仅索引扫描，因为从根节点到叶节点的树遍历过程中会重建索引值。
+
+至于距离运算符，它没有为字符串定义，因此该运算符类不提供近邻搜索功能。
+
+#+begin_comment
+  这并不意味着字符串不能实现距离的概念。例如，pg_trgm 扩展增加了一个基于三爻的距离运算符：在两个字符串中找到的共
+  同三爻越少，就认为它们之间的距离越远。还有列文士坦距离，它被定义为将一个字符串转换为另一个字符串所需的最小单字符
+  编辑数。fuzzystrmatch 扩展中提供了一个计算这种距离的函数。但没有一个扩展提供支持 SP-GiST 的操作符类。  
+#+end_comment
+
+** 其他数据类型
+
+SP-GiST 运算符类并不局限于上文讨论的索引点和文本字符串。
+
+*几何类型* box_ops 运算符类实现了矩形的四叉树。矩形由四维空间中的点表示，因此区域被分成 16 个部分。
+
+poly_ops 类可用于多边形索引。这是一个模糊运算符类：它实际上使用的是边框而不是多边形，就像 box_ops 一样，然后通
+过表格重新检查结果。
+
+选择 GiST 还是 SP-GiST 主要取决于要索引的数据的性质。例如，PostGIS 文档建议对有大量重叠的对象（也称为 "意大利
+面条数据"）使用 SP-GiST。
+
+*区间类型* 区间的四叉树提供 range_ops 运算符类。区间由一个二维点定义：X 轴代表下边界，Y 轴代表上边界。
+
+*网络地址类型* 对于 inet 数据类型，inet_ops 运算符类实现了一个 radix 树。
+
 
 * GIN
 
