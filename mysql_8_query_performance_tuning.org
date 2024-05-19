@@ -1136,4 +1136,737 @@ MySQL 支持几种不同的索引类型。最重要的是 B 树索引，这也�
 
 
 
+* 索引统计
+
+在上一章中，我们学习了索引。其中提到，优化器会评估每个索引，以决定是否使用该索引。它是如何做到这一点的呢？这主要是本
+章的主题，包括索引统计、如何查看索引统计信息以及如何维护统计。
+
+** 什么是索引统计？
+
+当 MySQL 决定是否使用索引时，归根结底要看 MySQL 认为索引对查询有多有效。请记住，当你使用二级索引时，实际上会有一
+个额外的主键查询来获取数据。二级索引的排序方式也与行的排序方式不同，因此使用索引一般意味着随机 I/O（使用覆盖索引可
+以帮助解决这个问题）。另一方面，表扫描在很大程度上是顺序 I/O。因此，逐行进行表扫描要比使用二级索引查找同一行便宜。
+
+这意味着，要使索引有效，必须过滤掉表的大部分内容。具体要过滤掉多少，取决于硬件的性能特性、缓冲池中表的容量、表的定
+义等。在老式旋转磁盘时代，经验法则是如果需要的行超过 30%，则首选表扫描。内存中的行越多，磁盘的随机 I/O 性能越好，
+这个阈值就越高。
+
+#+begin_comment
+  覆盖索引可以减少从跳转到实际行数据所需的随机 I/O 量，从而改变这种情况。
+#+end_comment
+
+这就是索引统计的作用所在。优化器（MySQL 中决定使用哪种查询计划的部分）需要一些简单的方法来确定给定查询计划的索引
+好坏。优化器显然知道索引包含哪些列，但它还需要知道索引过滤行的效果如何。这些信息正是索引统计信息所提供的。因此，索
+引统计信息是索引选择性的衡量标准。主要有两种统计数据：唯一值的数量和某个范围内的值的数量。
+
+在讨论索引统计时，人们最常想到的是唯一值的数量。这就是索引的卡入度。卡片性越高，唯一值越多。对于主键和其他不允许
+NULL 值的唯一索引来说，由于所有值都必须是唯一的，因此卡片性就是表中的行数。
+
+优化程序会根据逐个查询请求给定范围内的行数。这对范围条件（如 WHERE val > 5）、IN()条件或一系列 OR 条件都很有
+用。为单个查询临时收集这些信息的一个例外是直方图，MySQL 8 支持直方图。下一章将讨论直方图。
+
+简而言之，索引统计是关于索引中数据分布的近似信息。在 MySQL 中，负责提供索引统计信息的是存储引擎。因此，InnoDB
+如何处理索引统计是值得深入研究的。
+
+** InnoDB和索引统计
+
+正是存储引擎向服务器层和优化器提供了索引统计数据。因此，了解 InnoDB 如何确定其统计数据非常重要。InnoDB 支持两种
+存储统计数据的方式：持久性和瞬时性。无论哪种方式，统计信息的确定方法都是一样的。本节将首先讨论如何收集统计数据，然
+后介绍持久和瞬时统计数据的具体细节。
+
+** 统计是怎样收集的
+
+InnoDB 通过分析索引的随机叶页来计算索引统计数据。例如，可能会随机抽取 20 个索引页（这也被称为 20 个索引潜入），
+并检查这些页包含哪些索引值。然后，InnoDB 会根据索引的总大小进行缩放。
+
+这意味着 InnoDB 索引统计数据并不精确。当你看到某个查询条件意味着将读取 100 条记录时，这只是根据分析样本得出的估
+计值。这甚至包括主键和其他唯一索引，以及在 information_schema.TABLES视图。表中的估计行数与主键的估计卡长度相
+同。
+
+另一个考虑因素是如何处理 NULL 值，因为 NULL 具有不等于 NULL 的属性。因此，在收集统计数据时，是将所有 NULL 值归
+入一个数据桶，还是将它们分开处理？最佳解决方案取决于您的查询。将所有 NULL 值视为不同的值会增加索引的卡入度，尤其是
+在索引列有很多 NULL 行的情况下。这对查找非 NULL 值的查询很有帮助。另一方面，如果将所有 NULL 都视为相同值，则会降
+低索引的核心数量，这对于包含 NULL 的查询来说是有意义的。你可以使用 innodb_stats_method 选项来选择 InnoDB 处理
+NULL 值的方式。该选项有三种取值：
+
++ nulls_equal 在这种情况下，所有 NULL 值都被视为相同。这是默认值。如果不确定选择哪个值，请选择 nulls_equal。
++ nulls_unequal 在这种情况下，NULL 值被视为不同的值。
++ nulls_ignored 在这种情况下，收集统计数据时将忽略 NULL 值。
+
+为什么使用估算值而不是精确统计值（即全索引扫描）？原因在于性能。对于大型索引，执行完整的索引扫描需要很长时间。一般
+还包括磁盘 I/O，这使得性能问题更加严重。为了避免计算索引统计量对查询性能产生不利影响，我们选择将扫描限制在相对较少
+的页数上。
+
+** 样本页
+
+使用近似统计量的缺点是，它们并不总是能很好地代表值的实际分布。出现这种情况时，优化器可能会选择错误的索引或错误的连
+接顺序，导致查询速度慢于所需。不过，也可以调整随机索引下潜的次数。如何调整取决于使用的是持久统计还是瞬时统计：
+
++ 持久性统计使用 innodb_stats_persistent_sample_ pages 选项作为默认的采样页数。表选项 STATS_SAMPLE_PAGES
+  可以用来指定特定表的页数。
+
++ 暂态统计使用 innodb_ stats_transient_sample_pages 选项为所有表指定的页数。
+
+关于持久统计和瞬时统计的两个小节详细介绍了处理索引统计的两种方法。
+
+将样本页数设置为给定值是什么意思？这取决于索引中的列数。如果只有一列，该值的字面意思就是采样该数量的叶页。但是，对
+于多列索引，页数是按列计算的。例如，如果将样本页数设置为 20，而索引中有四列，则总共采样 4*20=80 页。
+
+#+begin_comment
+  实际上，索引统计采样比本章描述的更为复杂。例如，并不总是需要一直向下到叶页。如果两个相邻的非叶子节点具有相同的
+  值，那么可以得出结论：最左边（按照排序）的所有叶子页都具有相同的值。如果你有兴趣了解更多，源代码中
+  storage/innobase/ dict/dict0stats.cc 文件顶部的注释是一个很好的起点：
+  https://github.com/mysql/mysql-server/blob/8.0/ storage/innobase/dict/dict0stats.cc。
+#+end_comment
+
+必须检查多少页才能得到准确的估计？这取决于表格。如果数据是均匀的，即每个索引值的行数大致相同，那么只需要检查相对较
+少的页数，默认页数通常就足够了。另一方面，如果数据分布很不规则，则可能需要增加采样页数。队列中任务的状态就是非常不
+规则的数据的一个例子。随着时间的推移，大多数任务都会处于完成状态。在最糟糕的情况下，你可能会遇到所有随机潜水都看到
+相同状态的情况，这使得 InnoDB 得出结论：只有一个值，索引作为过滤器毫无价值。
+
+#+begin_comment
+  对于仅有几行数据的过滤值，下一章将讨论的直方图对于改进查询计划非常有用。
+#+end_comment
+
+表格的大小也是一个需要考虑的因素。一般来说，表越大，必须检查的页数就越多，才能获得良好的估算结果。原因是表越大，整
+个叶页就越有可能指向具有相同索引值的行。这就降低了每个取样页的值，因此为了弥补这一缺陷，有必要对更多页面进行取样。
+
+一种特殊情况是 InnoDB 被配置为索引下潜次数多于叶子页的数量。在这种情况下，InnoDB 会检查所有叶子页，并在此时停止。
+这将提供尽可能准确的统计数据。如果在分析过程中没有活动事务，那么该时间点的统计数据将是准确的。这包括表中的页数。您
+将在本章稍后部分学习如何查找使用持久性统计的索引和表中的页数。
+
+实际上，不可能使用精确的值。InnoDB 支持多版本，允许事务的高并发性，即使这些事务涉及写入。由于每个事务都有自己的数
+据视图，精确的统计数据意味着每个事务都有自己的索引统计数据。这是不可行的，那么InnoDB是如何处理的呢？这是下一个
+要考虑的问题。
+
+** 事务隔离级别
+
+与此相关的一个问题是，收集统计数据时使用的是哪种事务隔离级别。InnoDB 支持四种隔离级别：已读未提交、已读已提交、可
+重复读（默认）和可序列化。在收集索引统计数据时，我们选择使用未提交读取。这是有道理的，因为可以很好地假定大多数事务
+最终都会提交，或者如果提交失败会重试。这些统计信息将用于未来的查询，因此没有必要在收集统计信息时增加维护读视图的开
+销。
+
+不过，这对于对表进行较大更改的事务确实有影响。一个极端（但并非不可能）的例子是，考虑一个缓存表，其中的数据由一个包
+含两个步骤的事务刷新：
+
+1. 删除表中的所有现有数据。
+2. 用更新的数据重建表格。
+
+默认情况下，当表的 "大部分 "内容发生变化时，会更新索引统计信息。(本章后面的 "持久索引统计 "和 "瞬时索引统计 "部
+分将介绍什么是 "大部分"）。这意味着步骤 1 完成后，InnoDB 将重新计算统计数据。这很简单--表是空的，所以没有统计数
+据。如果查询就在此时执行，优化器会认为表是空的。不过，除非查询是在 "读取未提交事务 "隔离级别下执行的，否则查询仍会
+读取所有旧行，而且查询计划很可能会导致查询执行效率低下。   
+
+对于像刚才讨论的问题，你需要持久统计数据，因为有更好的配置选项来处理特殊情况。在讨论持久统计数据的细节之前，值得学
+习的是如何在持久统计数据和瞬时统计数据之间做出选择。
+
+** 配置统计类型
+
+如前所述，InnoDB 有两种方式来存储索引统计信息。它可以使用持久存储，也可以使用暂存存储。你可以使用
+innodb_stats_persistent 选项为表设置默认方法。设置为 1 或 ON（默认值）时，将使用持久性统计；设置为 0 或
+OFF 时，将改为瞬时统计。还可以使用 STATS_ PERSISTENT 表选项为每个表配置统计方法。例如，要为 world.city 表启
+用持久统计，可以使用 ALTER TABLE 这样的命令
+
+#+begin_src sql
+  alter table world.city STATS_PREPARED=1;
+#+end_src
+
+使用 CREATE TABLE 语句创建新表时，也可以设置 STATS_PERSISTENT 选项。对于 STATS_PERSISTENT，只能使用 0 和
+1 作为值。
+
+持久索引统计自推出以来一直是默认设置，也是推荐选择，除非遇到测试表明瞬态统计可以解决的问题。持久统计与瞬态统计之间
+存在一些差异，必须加以了解。接下来将讨论这些差异。
+
+** 持久性索引统计
+
+持久索引统计是在 MySQL 5.6 中引入的，目的是使查询计划比旧的瞬时索引统计更稳定。顾名思义，启用持久索引统计后，统
+计信息将被保存，因此在重启 MySQL 时不会丢失。不过，除了持久性之外，还有更多不同之处，我们将一一道来。
+
+除了稳定的查询计划外，持久统计数据还允许对采样页数进行详细配置，并具有良好的监控功能，甚至可以直接查询保存统计数据
+的表。由于监控与瞬态统计有很大的重叠，因此将在本章稍后部分讨论，本节将重点讨论持久统计的配置和存储统计的表。
+
+** 配置
+
+可以对持久统计数据进行配置，以便在收集统计数据的成本和统计数据的准确性之间取得良好的平衡。与瞬时统计不同的是，可以
+在全局级别和每个表上配置行为。在未设置表特定选项时，全局配置将作为默认设置。
+
+有三个全局选项专门针对持久性统计。它们是
+
++ innodb_stats_persistent_sample_pages： 要采样的页面数。页数越多，统计数据越准确，但成本也越高。如果该值大
+  于索引的叶子页数，则对整个索引进行采样。默认值为 20。
++ innodb_stats_auto_recalc： 当表中超过 10%的行被更改时，是否自动更新统计信息。默认为启用 (ON)。
++ innodb_stats_include_delete_marked： 是否在统计中包含已标记为删除但尚未提交的记录。稍后将详细讨论这个选
+  项。默认为禁用（OFF）。
+
+innodb_stats_persistent_sample_pages 和 innodb_stats_auto_recalc 选项也可以按表设置。这样就可以根据特
+定表的大小、数据分布和工作量来微调需求。虽然不建议进行微调，但可以用来处理前面讨论过的缓存表等情况，以及一般默认值
+无法覆盖的其他表。
+
+我们的建议是，尽量为 innodb_stats_ persistent_sample_pages 找到一个折中方案，既能提供足够好的统计数据，让优
+化器确定最佳查询计划，又能避免为计算统计数据而进行过多的扫描。如果你发现由于索引统计数据不准确导致优化器选择了低效
+计划，从而导致查询性能下降，那么你就需要增加采样页面的数量。另一方面，如果 ANALYZE TABLE 耗时过长，可以考虑减少
+采样页数。然后，可以使用即将介绍的特定表选项，根据需要减少或增加特定表的采样页数。
+
+对于大多数表，建议启用 innodb_stats_auto_recalc。这将有助于确保统计数据不会因为大量变更而过时。自动校验在后台
+进行，因此不会延迟触发更新的应用程序的响应。当表中超过 10% 的内容发生变化时，表将排队等待索引统计更新。为避免不断
+重新计算小表的统计数据，还要求每次索引统计数据更新之间至少间隔 10 秒。
+
+当然，也有不希望自动重新计算统计数据的例外情况，例如，如果您有一个缓存表来加快报告查询的执行速度，而缓存表中的数据
+会不时完全重建，但其他方面不会发生变化。在这种情况下，禁用统计数据的自动重新计算，并在重建完成后显式地重新计算统计
+数据，可能会有好处。另一种方法是在统计中包含删除标记的行。
+
+请记住，索引统计数据是使用读取未提交事务隔离级别计算的。虽然这在大多数情况下都能提供最佳统计数据，但也有例外。当事
+务暂时完全改变了数据分布时，可能会导致不正确的统计数据。完全重建表是最极端的情况，也是最常见的问题所在。
+innodb_stats_ include_delete_marked选项就是为这种情况而引入的。InnoDB 不会将未提交的已删除记录视为已删除，
+而是仍将其纳入统计。该选项仅作为全局选项存在，因此即使只有一个表存在这个问题，它也会影响所有表。如前所述，另一种方
+法是禁用受影响表的统计自动重新计算，然后自行处理。
+
+#+begin_comment
+  如果有事务会对表进行较大的更改，比如删除所有行然后重建表，那么可以考虑禁用表的索引统计自动重新计算功能，或者启用
+  innodb_stats_include_delete_marked。
+#+end_comment
+
+到目前为止，只提到了全局选项。如何更改表的索引统计设置？由于可以使用 STATS_PERSISTENT 表选项来覆盖表的
+innodb_stats_persistent 全局值，所以还有一些选项可以控制表的持久化统计行为。表选项包括
+
++ stats_auto_recalc： 重写表是否启用了自动重新计算索引统计量的功能。
++ stats_sample_pages： 重写表格的采样页数。
+
+可以在使用 CREATE TABLE 创建表格时设置这些选项，也可以在之后使用 ALTER TABLE 设置这些选项，如清单 15-1 所
+示。
+
+#+begin_src sql
+  create schema if not exists chapter_15;
+  use chapter_15
+  create table city(
+    City_ID int unsigned not null auto_increment,
+    City_Name varchar(40) not null,
+    State_ID int unsigned not null,
+    primary key(City_ID),
+    index(City_Name, State_ID, City_ID)
+  )STATS_AUTO_RECALC=0,
+  STATS_SAMPLE_PAGES=10;
+#+end_src
+
+#+begin_src sql
+  alter table city STATS_AUTO_RECALC=1,
+                   STATS_SAMPLE_PAGES=20;
+#+end_src
+
+首先，创建表格城市，禁用自动校正功能，并设置 10 个样本页。然后更改设置，启用自动重复计算，并将样本页数增加到 20
+页。请注意 ALTER TABLE 返回的受影响行数为 0。更改持久性统计选项只会更改表的元数据，因此会立即发生，不会影响数据。
+这意味着你可以根据需要更改设置，而不必担心执行昂贵的操作。例如，您可能希望在批量操作中禁用自动重新计算。
+
+有了调整指数统计的机会，对收集到的数据进行分析就显得尤为重要。在 "监控 "部分讨论瞬时统计数据后，将讨论一些一般方法。
+不过，持久统计数据之所以持久，是因为它们存储在表中，这些表也提供了有价值的信息。
+
+** 索引统计表
+
+InnoDB 在 mysql 模式中使用两个表来存储与持久统计数据相关的数据。这些表不仅有助于研究统计数据和采样数据，还有助于
+了解索引的总体情况。
+
+最常用的表是 innodb_index_stats 表。该表为每个 B 树索引提供了几行信息，包括索引各部分的唯一值数量
+（cardinality）、索引中的叶子页数量以及索引的总大小。表 15-1 总结了表中的列。
+
+| 列名              | 数据类型          | 描述                                       |
+|------------------+-----------------+-------------------------------------------|
+| database_name    | varchar(64)     | 模式中带有索引的表的位置。                     |
+| table_name       | varchar(199)    | 带索引的表名                                |
+| index_name       | varchar(64)     | 索引名                                     |
+| last_update      | timestamp       | 上一次索引统计更新                           |
+| stat_name        | varchar(64)     | 统计量的名称。另请参阅本表后的内容。            |
+| stat_value       | bigint unsigned | 统计值                                     |
+| sample_size      | bigint unsigned | 采样多个页                                  |
+| stat_description | varchar(1024)   | 统计量的描述。对于卡入度，它是计算卡入度时包含的列 |
+
+主键由列 database_name、table_name、index_name 和 stat_name 组成。数据库、表和索引名称定义了统计数据所针
+对的索引。last_update 列用于查看统计信息上次更新的时间。stat_name 和 stat_value 为实际统计数据。sample_size
+是为确定统计数据而检查的页数。这将是索引中的页数和为表设置的样本页数中较小的一个。最后，stat_description 列提供
+了有关统计量的更多信息。对于卡片式统计，说明将显示索引中包含哪些列，每列将有一行（稍后将提供示例）。
+
+如前所述，innodb_index_stats 表中包含多种统计信息。名称可以是以下值之一：
+
++ n_diff_pfxNN： 索引中前 NN 列的卡片数。NN 以 1 为单位，因此对于有两列的索引来说，n_diff_pfx01 和
+  n_diff_pfx02 是存在的。对于具有这些统计量的行，stat_ description 包括统计量所包含的列。
++ n_leaf_pages： 索引中叶页的总数。您可以将其与 n_diff_pfxNN 统计量的样本大小进行比较，以确定已采样索引的部分。
++ size： 索引的总页数。这包括非叶页。
+
+看一个示例可以更好地理解这些数据的含义。world.city 表有两个索引：ID 列上的主键和 CountryCode 列上的
+CountryCode 索引。清单 15-2 显示了这两个索引的统计信息。请注意，如果执行相同的查询，统计值可能会有所不同，如果
+仍有第 14 章中添加的额外索引，则会有更多记录。
+
+#+begin_src sql
+  select index_name, stat_name,
+         stat_value, sample_size,
+         stat_description
+   from mysql.innodb_index_stats
+   where database_name='world'
+         and table_name='city'\G;
+#+end_src
+
+第 1-4 行是 CountryCode 索引，而第 5-7 行是主键。首先要注意的是，CountryCode 索引同时存在 n_diff_pfx01
+和 n_diff_pfx02 统计量。为什么索引只包含一列？请记住，InnoDB 使用的是聚类索引，而非唯一索引总是会附加主键，因
+为无论如何都需要它来定位实际行。这就是 n_diff_pfx01 代表 CountryCode 列，n_diff_pfx02 代表 CountryCode
+列和 ID 列的组合。
+
+CountryCode 索引共有 8 页，其中 7 页是叶节点。这意味着索引有两级，叶节点为第 0 级，根节点为第 1 级。我们建议你
+回顾上一章关于 B 树索引的讨论，并在查看表中某些索引的大小统计时复习一下。
+
+主键比较简单，因为它只有一列。这里有 24 个叶页，因此只对索引的一个子集进行了采样（记住，对于主键来说，索引就是表）。
+(记住，对于主键来说，索引就是表。）这样做的后果是统计数据并不精确。主键的 n_diff_pfx01 预测值为 4188 个唯一值。
+由于它是主键，这也是对总行数的估计。但是，如果查看 CountryCode 的统计信息，就会发现 CountryCode 和 ID 值有
+4079 种不同的组合。由于 CountryCode 索引只有 7 个叶页，所有页都已检查过，因此行数估算是准确的。
+
+另一个与持久化统计相关的表是 innodb_table_stats 表。它与 innodb_index_stats类似，不同之处在于它包含的是整
+个表的汇总统计。表 15-2 概括了 innodb_table_stats 的列。
+
+
+#+NAME: innodb_table_stats
+| 列名                      | 数据类型          | 描述              |
+|--------------------------+-----------------+------------------|
+| database_name            | varchar(64)     | 表所在的模式名      |
+| table_name               | varchar(199)    | 表名              |
+| last_update              | timestamp       | 上次表统计更新的时间 |
+| n_rows                   | bigint unsigned | 表中行的估算数据    |
+| clustered_index_size     | bigint unsigned | 聚簇索引的页数      |
+| sum_of_other_index_sizes | bigint unsigned | 二级索引的总计页数        |
+
+主键由列 database_name 和 table_name 组成。需要注意的一点是，表统计量与索引统计量一样都是近似值。表中的行数只
+是主键的估计卡入度。同样，聚类索引的大小与 innodb_index_stats 表中主键的大小相同。二级索引页数是每个二级索引大
+小的总和。清单 15-3 以 world.city 表为例，展示了 innodb_table_stats 表的内容，使用的索引统计量与前面的示例
+相同。
+
+#+begin_src sql
+  select *
+     from mysql.innodb_table_stats
+     where database_name='world'
+       and table_name='city'\G
+#+end_src
+
+#+begin_comment
+  innodb_index_stats和innodb_table_stats是常规表。在备份中包含这些表是很有用的，这样如果查询计划突然发生
+  变化，就可以回过头来比较统计数据。
+
+  还可以为具有 UPDATE 权限的用户更新表。这似乎是一个非常有用的属性，但要小心。如果不知道正确的统计信息，查询计划
+  将非常糟糕。几乎不应该手动修改索引统计信息。如果进行了修改，只有在刷新表后才会生效。
+#+end_comment
+
+如果你觉得innodb_index_stats和innodb_table_stats中的信息与SHOW INDEX语句、TABLES和STATISTICS
+信息模式表中的信息听起来很相似，那你就对了。两者有一些重叠。由于这些数据源也适用于瞬态统计，因此对它们的讨论将推迟到
+介绍完瞬态索引统计之后。
+
+** 暂态指数统计
+
+瞬态索引统计是 InnoDB 最初实现的处理索引统计的方法。顾名思义，这种统计不是持久性的，也就是说，当 MySQL 重新启动
+时，它们不会持久存在。相反，统计信息是在表首次打开时（还有其他时间）计算的，并且只保存在内存中。由于统计数据不持
+久，因此稳定性较差，查询计划更容易发生变化。
+
+有两个配置选项可以影响瞬态统计的行为。它们是
+
++ innodb_stats_transient_sample_pages： 更新索引统计时采样的页数。默认值为 8。
++ innodb_stats_on_metadata： 查询表的元数据时是否重新计算统计数据。默认值为 OFF，自 MySQL 5.6 起一直如此。
+
+innodb_stats_transient_sample_pages选项等同于innodb_stats_ persistent_sample_pages，但它适用于使用
+瞬态统计的表。使用瞬态统计的表不仅会在首次打开时重新计算统计量，而且还会在仅有 6.25% (1/16) 行发生变化时重新计算
+统计量，并要求至少有 16 次更新。此外，在自动重新计算统计数据时，瞬态统计数据不使用后台线程，因此更新更有可能影响性
+能。因此，innodb_stats_ transient_sample_pages 的默认值只有 8 页。
+
+如果想更频繁地更新瞬时索引统计信息，可以启用 innodb_stats_on_metadata 选项。启用该选项后，查询信息模式中的
+TABLES 表和 STATISTICS 表，或使用与之相当的 SHOW 语句，都会触发索引统计信息的更新。在实际操作中，很少会出现这
+种情况，因此关闭该选项是安全的。
+
+暂态统计没有专门的表。不过，MySQL 中的所有表都有可用的表和语句。
+
+** 监控
+
+索引统计信息对于优化器帮助确定执行查询的最佳方式非常重要。因此，了解如何检查表的索引统计也很重要。前面已经讨论过，
+有 mysql.innodb_index_stats 表和 mysql.innodb_table_stats 表可用于持久化统计。不过，也有一些通用方法，本
+文将讨论这些方法。
+
+#+begin_comment
+  请记住，information_schema_stats_expiry 变量会影响数据字典刷新索引统计相关数据视图的频率。
+#+end_comment
+
+** 信息模式 STATISTICS 视图
+
+获取索引统计详细信息的主要表格是信息模式中的 STATISTICS 视图。该视图不仅包含索引统计信息本身，还包含索引的元信
+息。事实上，你可以根据 STATISTICS 视图中的数据重新创建索引定义。这就是上一章中用来查找表中索引名称的视图。
+
+表 15-3 包含视图中各列的摘要。您通常只需要其中的一部分列，但在需要时访问所有信息还是很方便的。CARDINALITY 列是
+唯一受 information_schema_stats_expiry 变量影响的列。
+
+#+NAME:STATISTICS
+| 列名           | 数据类型       | 描述                                                             |
+|---------------+--------------+-----------------------------------------------------------------|
+| TABLE_CATALOG | varchar(64)  | 表格所属的目录。                                                   |
+| TABLE_SCHEMA  | varchar(64)  | 表格所在的模式。                                                   |
+| TABLE_NAME    | varchar(64)  | 索引所在的表。                                                     |
+| NON_UNIQUE    | int          | 索引是否唯一（0）或不唯一（1）。                                     |
+| INDEX_SCHEMA  | varchar(64)  | 与 TABLE_SCHEMA 相同（因为索引总是与表同处）。                        |
+| INDEX_NAME    | varchar(64)  | 索引名                                                           |
+| SEQ_IN_INDEX  | int unsigned | 列在索引中的位置。对于单列索引，该值始终为 1。                          |
+| COLUMN_NAME   | varchar(64)  | 列名                                                             |
+| COLLATION     | varchar(1)   | 索引的排序方式。值可以是 NULL（不排序）、a（升序）或 d（降序）。          |
+| CARDINALITY   | bigint       | 该行中包含列的索引部分的唯一值的估计数量。                             |
+| SUB_PART      | bigint       | 对于前缀索引，它是被索引的字符数或字节数。如果整个列都被索引，则值为 NULL。 |
+| PACKED        | binary(0)    | 对于 InnodB 表，该值始终为空。                                      |
+| NULLABLE      | varchar(3)   | 是否允许 NULL 值，该列要么为空字符串，要么为 "是"。                    |
+| INDEX_TYPE    | varchar(11)  | 索引类型，比如BTree索引                                            |
+| COMMENT       | varchar(8)   | 关于索引的额外信息。                                                |
+| IS_VISIBLE    | varchar(3)   | 索引是可见（是）还是不可见（否）。                                    |
+| EXPRESSION    | longtext     | 对于功能索引，此列包含用于生成索引值的表达式。对于非功能索引，该值始终为空。                                                                |
+
+STATISTICS 视图不仅对索引统计有用，而且对索引本身也很有用，它包含了所有索引的信息，与索引类型无关。例如，你可以用
+它来查找不可见索引和用于功能索引的表达式。关于索引统计，最有趣的列是 CARDINALITY，它是索引中估计存在的唯一值的数
+量。
+
+查询 STATISTICS 视图时，建议按照 TABLE_SCHEMA、TABLE_NAME、INDEX_NAME 和 SEQ_IN_INDEX 列对结果进行排序。
+这将把相关行归类在一起，对于多列索引，将按照索引中列的顺序返回行。清单 15-4 显示了 world.countrylanguage 表索
+引的示例。在这种情况下，由于表模式和表名是固定的，因此排序只取决于索引名和索引中的顺序。由于值的性质并不精确，因此
+结果可能会有所不同。
+
+#+begin_src sql
+  select INDEX_NAME, NON_UNIQUE,
+         SEQ_IN_INDEX, COLUMN_NAME,
+         CARDINALITY, INDEX_TYPE,
+         IS_VISIBLE
+  from information_schema.STATISTICS
+  where TABLE_SCHEMA='world' and
+       TABLE_NAME='countrylanguage'
+   order by INDEX_NAME, SEQ_IN_INDEX\G
+#+end_src
+
+countrylanguage 表有两个索引。CountryCode 和 Language 列上有一个主键，CountryCode 单独有一个辅助索引。在
+mysql.innodb_index_stats 表中，主键被附加到二级非唯一索引的时间也有记录，但 STATISTICS 视图与此不同，不包含
+该信息。
+
+#+begin_comment
+  由于 CountryCode 列是主键中的第一列，因此仅在 CountryCode 列上使用二级索引是多余的。最佳做法是避免冗余索引。
+#+end_comment
+
+您可能希望在统计视图中记录数据，并比较数据随时间的变化情况。突然的变化可能表明数据发生了意外，或者最新的索引统计重
+新计算会导致不同的查询计划。
+
+STATISTICS 视图中的某些信息也可通过 SHOW INDEX 语句获得。
+
+** show index语句
+
+SHOW INDEX 语句是获取 MySQL 中索引信息的最初方法。如今，它与 information_schema. STATISTICS（统计）的相同
+来源获取数据，因此你可以使用其中任何一种最适合你的方式。STATISTICS 视图的一个主要优点是，你可以选择需要哪些信息以
+及如何排序；而使用 SHOW INDEX 语句时，你总是能获得单个表的索引，并根据可用字段进行排序和筛选。
+
+SHOW INDEX 返回的列与 STATISTICS 视图中的列相同，只是省略了表目录、表模式和索引模式。另一方面，SHOW INDEX 可
+以选择使用 EXTENDED 关键字，其中包括索引隐藏部分的信息。这不应与不可见索引混淆，而是附加部分，如附加到二级索引中
+的主键。标准输出和扩展输出的共同记录信息相同。
+
+清单 15-5 显示了针对 world.city 表的 SHOW INDEX 输出示例（结果假定第 14 章中的索引已被删除）。首先返回标准输
+出，然后是扩展输出。由于扩展输出长达数页，因此通过删除部分列和行对其进行了缩写。要查看完整输出，请自行执行语句或查
+看本书 GitHub 代码库中的 listing_15_5.txt 文件。
+
+#+begin_src sql
+  show index from world.city\G
+#+end_src
+
+请注意，列名与统计视图使用的列名并不相同。不过，列的顺序相同，名称相似，因此很容易将这两种输出映射到对方。
+
+在扩展输出中，主键有两个 InnoDB 内部的隐藏列：DB_TRX_ID（6 字节事务标识符）和 DB_ROLL_PTR（7 字节回滚指针，
+指向写入回滚段的撤销日志记录）。这两个字段是 InnoDB 多版本支持的一部分。1 在这两个内部字段之后，表中的其余每一列
+都会被添加。这表明 InnoDB 对其行使用了聚类索引，因此主键就是行。
+
+对于 CountryCode 的二级索引，主键现在显示为索引的第二部分。这在意料之中，也反映了在 mysql.innodb_index_stats
+表中看到的情况。
+
+虽然在研究性能问题时，扩展输出通常不会引起很大兴趣，但在探索 InnoDB 如何工作时，它却很有价值。
+
+INNODB_TABLESTATS 视图是另一个在处理索引统计时非常有用的信息模式视图。
+
+** Information_scheam  INNODB_TABLESTATS 视图
+
+信息模式中的 INNODB_TABLESTATS 视图是 InnoDB 内部内存结构顶部的一个视图，其中包含有关索引的信息。该视图不包
+含任何可用于验证索引的卡片性和大小的信息，这些信息没有包含在已经描述过的表和视图中。不过，它可以提供一些索引统计
+状态的信息，以及自上次分析表以来的修改次数。该视图包含所有 InnoDB 表的信息，无论它们使用的是持久统计还是瞬时统
+计。表 15-4 总结了 INNODB_TABLESTATS 视图的列。
+
+#+NAME: INNODB_TABLESTATS
+| 列名              | 数据类型          | 描述                                                                                   |
+|------------------+-----------------+---------------------------------------------------------------------------------------|
+| TABLE_ID         | bigint unsigned | 内部 InnodB 表 Id。例如，可以用它在 INNODB_ TABLES 信息模式视图中查找表。                     |
+| NAME             | varchar(193)    | 表格名称，格式为 <schema>/<table>，例如，world/city。                                      |
+| STAT_INITIALIZED | varchar(193)    | 内存结构是否已为表初始化，这与索引统计是否存在不同。                                           |
+| NUM_ROWS         | bigint unsigned | 表格中的估计行数。                                                                       |
+| CLUST_INDEX_SIZE | bigint unsigned | 聚类索引中的页数。                                                                       |
+| OTHER_INDEX_SIZE | bigint unsigned | 二级索引页数的总和。                                                                      |
+| MODIFIED_COUNTER | bigint unsigned | 自上次更新索引统计信息以来使用 DML 语句更改的记录数。                                         |
+| ATUOINC          | bigint unsigned | 自动递增计数器的值。对于没有自动递增列的表，该值为 0。                                         |
+| ERF_COUNT        | int             | 元数据的引用次数。当引用计数器的引用次数为零时，InnodB 可能会驱逐数据，初始化状态也会恢复为未初始化。 |
+
+初始化状态可能会引起混淆。它显示索引统计信息和相关元数据（在此视图中显示）是否已加载到内存中。即使存在统计数据，状
+态一开始也总是未初始化。当某个连接或后台线程需要这些数据时，InnoDB 会将其加载到内存中，此时状态就会变成
+Initialized。每当没有线程持有对表的引用时，InnoDB 就会再次释放信息，状态也就变成了 "未初始化"。例如，当表被刷新
+或对表执行 ANALYZE TABLE 时，就会发生这种情况。
+
+修改计数器很有意思，因为它可以用来查看自上次更新索引统计信息以来有多少行被修改。只有当 DML 查询影响到索引时，计数
+器才会增加。这就意味着，如果更新了非索引列，但保持行的原样，计数器就不会增加。该计数器与自动更新有关，当发生一定量
+的更改时会触发自动更新。
+
+清单 15-6 是 INNODB_TABLESTATS 视图对 world.city 表的输出示例。如果执行相同的查询，表 ID、行数和引用计数可
+能会有所不同。
+
+#+begin_src sql
+  select *
+  from information_schema.INNODB_TABLESTATS;
+#+end_src
+
+输出结果显示，索引统计信息是最新的，因为自上次分析以来没有修改过记录。集群索引和二级索引的行数和大小与使用
+mysql.innodb_index_ stats 表找到的相同。这些与表大小相关的数字也用于 information_ schema.TABLES 视图和
+SHOW TABLE STATUS 语句。
+
+** information_schema中的TABLES视图和show table status
+
+索引统计信息也用于填充 information_schema.TABLES 视图和 SHOW TABLE STATUS 语句所用表中的某些列。这包括估计
+行数以及数据和索引的大小。
+
+表 15-5 显示了 TABLES 视图中列的摘要。SHOW TABLE STATUS 语句的输出中除了 TABLE_CATALOG、TABLE_SCHEMA、
+TABLE_TYPE 和 TABLE_COMMENT 列外，其他列都是相同的，有几列的名称略有不同。标有星号 (*) 的列受
+information_schema_stats_expiry 变量的影响。
+
+#+NAME: TABLES
+| 列名             | 数据类型          | 描述                                                                                                                          |
+|-----------------+-----------------+------------------------------------------------------------------------------------------------------------------------------|
+| TABLE_CATALOG   | varchar(64)     | 表格所属的目录。                                                                                                                |
+| TABLE_SCHEMA    | varchar(64)     | 表格所在的模式。                                                                                                                |
+| TABLE_NAME      | varchar(64)     | 表名                                                                                                                          |
+| TABLE_TYPE      | enum            | 可能的值有基础表、视图和系统视图。基础表通过 CREATE TABLE 创建，视图通过 CREATE VIEW 创建，系统视图是视图，如 MySQL 创建的信息模式视图。      |
+| ENGINE          | varchar(64)     | 表所用存储引擎                                                                                                                  |
+| VERSION         | int             | 在 MySQL 8 中未使用，因为它与 MySQL 5.7 及更早版本中的 .frm 文件有关。版本值现在硬编码为 10。                                           |
+| ROW_FORMAT      | enum            | 表格使用的行格式。可能的值有Fixed、Dynamic、Compressed、Redundant、Compact和Paged。                                                 |
+| TABLE_ROWS      | bigint unsigned | 估计行数。对于 InnodB 表，这来自主键或聚类索引的卡长度。                                                                             |
+| AVG_ROW_LENGTH  | bigint unsigned | 估计数据长度除以估计行数。                                                                                                        |
+| DATA_LENGTH     | bigint unsigned | 行数据的估计大小。对于 InnodB，它是聚类索引的大小，即聚类索引中的页数乘以页大小。                                                         |
+| MAX_DATA_LENGTH | bigint unsigned | 允许的最大数据长度。InnodB 不使用该值，因此该值为 NULL。                                                                             |
+| INDEX_LENGTH    | bigint unsigned | 二级索引的估计大小。对于 InnodB，这是非聚类索引中的页面总和乘以页面大小。                                                               |
+| DATA_FREE       | bigint unsigned | 表所属表空间中可用空间的估计值。对于 InnodB，这是完全可用的扩展空间大小减去安全系数。                                                     |
+| AUTO_INCREMENT  | bigint unsigned | 表格自动递增计数器的下一个值。                                                                                                    |
+| CREATE_TIME     | timestamp       | 表创建的时间                                                                                                                   |
+| UPDATE_TIME     | datetime        | 表空间文件最后一次更新的时间。对于 InnodB 系统表空间中的表，该值为 NULL。由于数据是异步写入表空间的，因此时间一般不会反映最后一次更改数据的语句的时间。 |
+| CHECK_TIME      | datetime        | 上次检查表的时间（CHECK TABLE）。对于分区表，InnodB 总是返回 NULL。                                                                  |
+| TABLE_COLLATION | varchar(64)     | 用于对字符串列的值进行排序和比较的默认校对方式（如果没有为列明确设置）。                                                                 |
+| CHECKSUM        | bigint          | 表格校验和。InnodB 不使用该值，因此该值为 NULL。                                                                                   |
+| CREATE_OPTIONS  | varchar(256)    | 表选项，如 STATS_AUTO_RECALC 和 STATS_SAMPLE_PAGES。                                                                            |
+| TABLE_COMMENT   | text            | 创建表格时指定的注释。                                                                                                                             |
+
+在可用信息中，数据和索引的行数和大小与索引统计关系最为密切。TABLES 视图不仅可用于查询表大小的估计值，还可用于查询
+哪些表明确设置了持久性统计变量。清单 15-7 显示了一个 chapter_15.t1 表示例，该表填充了整整 100 万行，然后查询了
+该表的 TABLES 视图内容。
+
+#+begin_src sql
+  create table chapter_15.t1(
+    id int unsigned not null auto_increment,
+    val varchar(36) not null,
+    primary key(id)
+  ) STATS_PRESISTENT=1,
+    STATS_SAMPLE_PAGES=50,
+    STATS_AUTO_RECALC=1;
+#+end_src
+
+#+begin_src sql
+  set session ctx_max_recursion_depth=1000000;
+#+end_src
+
+#+begin_src sql
+  start transaction;
+  insert into chapter_15.t1(val)
+  with recursive seq(i) as (
+    select 1
+      union all
+    select i+1
+      from seq where i<1000000
+  )
+  select uuid() from seq;
+  commit;
+#+end_src
+
+#+begin_src sql
+  select *
+    from information_schema.TABLES
+    where TABLE_SCHEM='chapter_15'
+    and TABLE_NAME='t1'\G
+#+end_src
+
+该表使用递归普通表表达式填充随机数据，以确保准确插入 100 万行。为此，有必要将 cte_max_recursion_depth 设置为
+1000000，否则普通表表达式会因递归深度过高而失败。
+
+请注意，估计的行数只有 996442 行，比实际行数少了约 0.3%。这在预期范围内--10% 或更大的差异并不罕见。该表还设置了
+几个表选项，以明确配置表使用持久统计，并启用自动计算和使用 50 个样本页。
+
+如果希望使用 SHOW TABLE STATUS 语句，可以不带参数地使用该语句，这样就会返回默认模式中所有表的状态。或者，也可以
+添加 LIKE 子句，只包含表的子集。要检索非默认模式中表的状态，可使用 FROM 子句指定模式名称。例如，将 "世界 "模式视
+为默认模式，那么以下查询都将返回城市表的表状态：
+
+#+begin_src sql
+  use world
+  show table status like 'city';
+  show table status like 'ci%';
+  show table status from world like 'city';
+#+end_src
+
+前两个查询依赖默认模式来知道在哪里查找表。第三个查询明确地在世界模式中查找城市表。
+
+如果指数统计没有数据了，如何更新？这是本章结束前要探讨的最后一个话题。
+
+** 更新统计
+
+最新的索引统计信息对于优化器获得最佳查询执行计划非常重要。索引更新有两种方式：自动更新，因为表有足够的变化来触发统
+计数据的重新计算；手动更新。
+
+** 自动更新
+
+在介绍持久性和瞬时统计时，我们已经在一定程度上讨论了自动更新机制。表 15-6 总结了基于索引统计类型的功能。
+
+#+NAME: InnoDB 索引统计自动重新计算摘要
+| 属性                          | 持久                                                  | 暂存                               |
+|------------------------------+------------------------------------------------------+-----------------------------------|
+| 缓存行                        | 10%的表                                               | 6.25%的表                          |
+| 因记录更改而进行更新的最短间隔时间 | 10秒                                                  | 16次更新                           |
+| 其他动作触发的更改              |                                                      | 表的首次打开，查询表元数据时可选择使用。 |
+| 后台更新                       | 是                                                    | 否                                 |
+| 配置                          | innodb_stats_auto_recalc变量和STATS_AUTO_ RECALC表选项 | 空                                 |
+
+总结显示，持久统计数据的更新频率一般较低，影响也较小，因为自动更新是在后台进行的。持久性统计数据也有更好的配置选项。
+
+也可以手动触发索引统计更新。你可以使用 ANALYZE TABLE 语句或 mysqlcheck 命令行程序，这将在接下来的章节中讨论。
+
+** analyze table语句
+
+在使用 mysql 命令行客户端或 MySQL Shell 或由存储过程触发更新时，使用 ANALYZE TABLE 语句非常方便。该语句既可
+以更新索引统计信息，也可以更新直方图。后者将在下一章讨论，因此这里只涉及索引统计信息的更新。
+
+ANALYZE TABLE 有一个参数，即是否将语句记录到二进制日志中。如果在 ANALYZE 和 TABLE 之间指定
+NO_WRITE_TO_BINLOG 或 LOCAL，语句将只应用于本地实例，而不会写入二进制日志。
+
+执行 ANALYZE TABLE 时，会强制刷新索引统计信息和表缓存值，否则这些值将受制于 information_schema_stats_expiry
+变量。因此，如果强制更新了索引统计信息，则无需更改 information_schema_stats_expiry，就能让
+information_schema.STATISTICS 视图同样反映更新后的值。
+
+可以选择指定多个表更新其索引统计信息。为此，可以用逗号分隔的列表列出这些表。更新世界模式中三个表的统计信息的示例见
+清单 15-8。
+
+#+begin_src sql
+  analyze local table
+    world.city, world.country,
+    world.countrylanguage\G
+#+end_src
+
+在示例中，使用 LOCAL 关键字是为了避免将语句记录到二进制日志中。如果不在指定表名的同时指定模式名（例如，用 city
+代替 world.city），MySQL 将在当前默认模式中查找表。
+
+#+begin_comment
+  虽然可以使用 ANALYZE TABLE 同时查询表，但请注意，作为最后一步（返回客户端后），分析过的表将被刷新（隐式 FLUSH
+  TABLES 语句）。表刷新只能在所有正在进行的查询完成后进行，因此在进行长时间查询时，不应使用 ANALYZE TABLE（或
+  mysqlcheck）。
+#+end_comment
+
+ANALYZE TABLE 语句非常适合临时更新，以及准确知道要分析哪些表的情况。对于分析给定模式中的所有表或实例中的所有表，
+它的作用就没那么大了。为此，接下来讨论的 mysqlcheck 是更好的选择。
+
+** mysqlcheck程序
+
+如果你想通过 shell 脚本、cron 守护进程或 Windows 任务调度程序触发更新，那么 mysqlcheck 程序就非常方便。它不仅
+可以像 ANALYZE TABLE 那样用于更新单个表或多个表的索引统计信息，还可以让 mysqlcheck 更新模式中所有表或实例中所
+有表的索引统计信息。mysqlcheck 所做的是为符合你的条件的表执行 ANALYZE TABLE，因此从索引统计的角度来看，手动执行
+ANAYZE TABLE 和使用 mysqlcheck 没有什么区别。
+
+#+begin_comment
+  mysqlcheck 程序的功能远不止分析表以更新索引统计。这里只介绍分析功能。要阅读 mysqlcheck 程序的完整文档，请参
+  阅 https://dev.mysql.com/doc/refman/en/mysqlcheck.html。
+#+end_comment
+
+使用--analyze选项可以让mysqlcheck更新索引统计，而--write-binlog/-skip-write-binlog参数可以告诉你是否
+要将语句记录到二进制日志中。默认情况下记录语句。你还需要说明如何连接到 MySQL；为此需要使用标准连接选项。
+
+有三种方法可以指定要分析的表。默认情况下，分析同一模式下的一个或多个表，就像分析 TABLE 语句一样。如果选择这种方式，
+就不需要添加任何额外选项，指定的第一个值将被解释为模式名称，可选参数将被解释为表名称。清单 15-9 展示了如何以两种方
+式分析世界模式中的所有表：明确列出表名和不列出表名。
+
+如果你想通过 shell 脚本、cron 守护进程或 Windows 任务调度程序触发更新，那么 mysqlcheck 程序就非常方便。它不仅
+可以像 ANALYZE TABLE 那样用于更新单个表或多个表的索引统计信息，还可以让 mysqlcheck 更新模式中所有表或实例中所
+有表的索引统计信息。mysqlcheck 所做的是为符合你的条件的表执行 ANALYZE TABLE，因此从索引统计的角度来看，手动执行
+ANAYZE TABLE 和使用 mysqlcheck 没有什么区别。
+
+#+begin_comment
+  mysqlcheck 程序的功能远不止分析表以更新索引统计。这里只介绍分析功能。要阅读 mysqlcheck 程序的完整文档，请参
+  阅 https://dev.mysql.com/doc/refman/en/mysqlcheck.html。
+#+end_comment
+  
+使用--analyze选项可以让mysqlcheck更新索引统计，而--write-binlog/-skip-write-binlog参数可以告诉你是否
+要将语句记录到二进制日志中。默认情况下记录语句。你还需要说明如何连接到 MySQL；为此需要使用标准连接选项。
+
+有三种方法可以指定要分析的表。默认情况下，分析同一模式下的一个或多个表，就像分析 TABLE 语句一样。如果选择这种方式，
+就不需要添加任何额外选项，指定的第一个值将被解释为模式名称，可选参数将被解释为表名称。清单 15-9 展示了如何以两种方
+式分析world模式中的所有表：明确列出表名和不列出表名。
+
+#+begin_src sh
+  mysqlcheck --user=root --password --host=localhost --port=3306 --analyze world city country countrylanguage
+#+end_src
+
+#+begin_src sh
+  mysqlcheck --user=root --password --host=localhost --analyze world
+#+end_src
+
+在这两种情况下，输出结果都会列出分析过的三个表格。
+
+如果要分析多个模式中的所有表，但仍要列出包括哪些模式，可以使用 --databases 参数。使用该参数时，命令行中列出的所
+有对象名称都会被解释为模式名称。清单 15-10 显示了分析 sakila 和 world 模式中所有表的示例。
+
+#+begin_src sh
+  mysqlcheck --user=root --password --host=localhost --port=3306 --analyze --database sakila world
+#+end_src
+
+最后一个选项是使用 --all-databases 选项来分析所有表，而不管它们位于哪个模式中。除了信息模式和性能模式外，这也包
+括系统表。清单 15-11 显示了使用 mysqlcheck 和 --all-databases 的示例。
+
+注意有两张表回复说它们的存储引擎不支持分析。mysqlcheck 程序会尝试分析所有表，而不管它们的存储引擎如何，因此出现示
+例中这样的信息是意料之中的。mysql.general_log 和 mysql.slow_log 表默认使用的都是 CSV 存储引擎，它不支持索引，
+因此也不支持 ANALYZE TABLE。
+
+** 总结
+
+本章接着上一章的内容，介绍 InnoDB 如何处理索引统计。InnoDB有两种存储统计信息的方式：在
+mysql.innodb_index_stats表和mysql.innodb_table_stats表中持久存储，或者在内存中临时存储。一般来说，持
+久性统计更受欢迎，因为它们能提供更一致的查询计划，允许对更多页面进行采样，在后台更新，而且可以在更大程度上进行配置，
+包括支持表级选项。
+
+有几个表、视图和 SHOW 语句可用于调查和了解 InnoDB 索引及其统计信息。其中，information_schema.STATISTICS 视
+图具有 MySQL 中所有索引的详细信息。此外，还讨论了 information_schema.INNODB_TABLESTATS 和
+information_schema.TABLES 视图、SHOW INDEX 和 SHOW TABLE STATUS 语句。
+
+更新索引统计信息有两种方法：使用 ANALYZE TABLE 语句或 mysqlcheck 程序。前者适用于交互式客户端或存储过程，而后
+者更适用于 shell 脚本和更新一个或多个模式中的所有表。这两种方法都会强制更新 MySQL 数据字典中表元数据和索引卡入度
+的缓存值。
+
+在讨论 ANALYZE TABLE 语句时，有人提到 MySQL 还支持直方图。这与索引有关，是下一章的主题。
+
+* 直方图
+
+在前两章中，我们学习了索引和索引统计。索引的目的是减少访问查询所需记录的读取次数，而索引统计则是为了帮助优化器确定
+最佳查询计划。这些都很好，但索引并不是免费的，在有些情况下，索引并不十分有效，也不值得花费大量的开销，但优化器仍然
+需要了解数据的分布情况。这就是直方图的作用所在。
+
+本章首先讨论什么是直方图以及直方图对哪些工作负载有用。然后介绍直方图的实用性，包括添加、维护和检查直方图数据。最后，
+以一个查询为例，说明添加直方图后查询计划会发生哪些变化。
+
+** 直方
+
+
+
+
+
+
+
+
+
+
+
+
+
 
