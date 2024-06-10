@@ -2465,6 +2465,1629 @@ length 和 first_name 列上没有索引，因此优化器无法知道这些列�
 在查询示例中，有人提到优化器对各种条件的估计过滤效果有一些默认值。迄今为止，在关于索引和直方图的讨论中，优化器大多
 被忽略。现在是改变这种状况的时候了：下一章的主题就是查询优化器。
 
+* 查询优化器
+
+当你向 MySQL 提交查询以供执行时，并不像读取数据并返回数据那么简单。诚然，对于请求单个表中所有数据的简单查询来说，如
+何检索数据的选择并不多。但是，大多数查询都比较复杂，有些甚至要复杂得多，而且完全按照所写的查询执行绝不是获取结果的最
+有效方法。在阅读有关索引的内容时，我们已经接触到了这种复杂性。除了索引的选择、连接顺序、用于执行连接的算法、各种连接
+优化等之外，还有更多。这就是优化器发挥作用的地方。
+
+优化器的主要工作是为执行查询做好准备，并确定最佳查询计划。第一阶段包括对查询进行转换，目的是使改写后的查询能以比原始
+查询更低的成本执行。第二阶段包括计算执行查询的各种方式的成本，并确定最便宜的方案。
+
+#+begin_comment
+  必须认识到，由于数据及其分布的变化，优化器所做的工作并非精确科学。优化器选择的转换和计算的成本在某种程度上都是基于
+  估计的。通常情况下，这些估计值足以获得良好的查询计划，但有时也需要提供提示。本章后面的 "配置优化器 "一节将讨论如何
+  配置优化器。
+#+end_comment
+
+本章首先讨论转换和基于成本的优化。然后，本章继续讨论基本的连接算法，接着讨论其他优化功能，如批量密钥访问。本章的最后
+一部分涉及如何配置优化器以及如何使用资源组来优先处理查询。
+
+** 转换
+
+人类认为自然的查询书写方式可能与在 MySQL 中执行查询的最佳方式不同。优化器知道有几种转换可以用来改变查询，同时返回
+相同的结果，这样查询对 MySQL 来说就变得更优化了。
+
+当然，最重要的是原始查询和改写后的查询返回相同的结果。幸运的是，关系数据库以数学集合论为基础，因此许多转换都可以使
+用标准数学规则，确保两个版本的查询返回相同的结果（排除执行错误）。
+
+常量传播是优化器最简单的转换类型之一。举例来说，请看下面的查询：
+
+#+begin_src sql
+  select *
+  from world.country
+    inner join world.city
+      on city.CountryCode=country.Code
+  where city.CountryCode='AUS';
+#+end_src
+
+该查询有两个条件：city.CountryCode 列必须等于 "AUS"，city表的 CountryCode 列必须等于country表的 Code
+列。根据这两个条件，可以得出 country.Code 列也必须等于 "AUS"。优化器利用这一知识直接过滤Country表。由于
+"Code"列是Country表的主键，这意味着优化器知道只有一条记录符合条件，因此优化器可以将Country表视为常数。实际
+上，查询最终是以国家表中的列值作为常量在选择列表中执行的，并以 CountryCode = 'AUS' 对城市表中的条目进行扫描：
+
+#+begin_src sql
+  select 'AUS' as `Code`,
+         'Australia' as `Name`,
+         'Ocenia' as `Continent`,
+         'Austrialia and New Zealand' as `Region`,
+         7741220.00 as `SurfacaeArea`,
+         1901 as `IndepYear`,
+         18886000 as `Population`,
+         79.8 as `LifeExpectancy`,
+         351182.00 as `GNP`,
+         392911.00 as `GNPOld`,
+         'Australia' as `LocalNmae`,
+         'Constitutional Monarchy, Federation' as `GovernmentForm`,
+         'Elisabeth II' as `HeadOfState`,
+         135 as `Capital`,
+         'AU' as `Code2`,
+         city.*
+   from world.city
+   where CountryCode ='AUS';
+#+end_src
+
+从性能角度来看，这是一种安全的转换。其他转换更为复杂，并不总能提高性能。因此，可以配置是否启用优化。配置可以使用
+optimizer_switch 选项和优化器提示来完成，这将在介绍优化和如何配置优化器时讨论。
+
+一旦优化器决定了要进行哪些转换，就需要确定如何执行重写后的查询，这将在下文中讨论。
+
+** 基于代价的优化
+
+MySQL 使用基于成本的查询优化。这意味着优化器会计算执行查询所需的各种操作的成本，然后将这些部分成本结合起来，计算出
+可能的查询计划的总体查询成本，并选择最便宜的计划。本节将介绍估算查询计划成本的原则。
+
+** 基础单表select
+
+无论查询如何，计算成本的原则都是一样的，但显然查询越复杂，成本估算就越复杂。举个简单的例子，假设一个查询使用索引列
+上的 WHERE 子句查询一个表：
+
+#+begin_src sql
+  select *
+    from world.city
+  where CountryCode='IND';
+#+end_src
+
+从表的定义中可以看出，world.city 表的 CountryCode 列上有一个二级非唯一索引：
+
+#+begin_src sql
+  show create table world.city\G
+#+end_src
+
+优化程序可以选择两种方式获取匹配的记录。一种方法是使用 CountryCode 索引查找索引中的匹配记录，然后查找请求的记录
+值。另一种方法是进行全表扫描，检查每条记录以确定其是否满足筛选条件。
+
+在这些接入方法中，哪种成本最低（速度最快）并不像看起来那么简单。这取决于几个因素：
+
++ 索引的选择性如何？通过二级索引读取一条记录，首先要在索引中找到该行，然后可能（参见下一条）要进行主键查找才能获得
+  该行。这意味着，使用二级索引检查和检索记录比直接读取记录的成本更高，要使索引访问的总体成本低于表扫描，索引必须显
+  著减少需要检查的记录数量。索引的选择性越强，使用索引的成本就相对越低。
++ 索引是覆盖索引吗？如果索引包含查询所需的所有列，就有可能跳过实际行的读取，从而更有利于使用索引。
++ 读取记录的成本有多高？这同样取决于多个因素，例如索引和行数据是否已经在缓冲池中，如果没有，从磁盘读取记录的速度有
+  多快。考虑到读取索引和读取聚类索引之间的切换，使用索引将需要更多随机 I/O，因此定位记录所需的寻道时间变得非常重要。
+
+MySQL 8的新功能之一是，优化器可以询问InnoDB，查询所需的记录是否可以在缓冲池中找到，或者是否有必要从磁盘读取。这
+对改进查询计划大有帮助。
+
+读取记录的成本问题比较复杂，因为 MySQL 不知道硬件的性能特征。MySQL 8 默认假定从磁盘读取记录的成本是内存的四倍。
+可以按照 "配置优化器 "一节中的 "引擎成本 "进行配置。
+
+一旦在查询中引入第二个表，优化器还需要决定以何种顺序连接这些表。
+
+** 表连接顺序
+
+对于比单表 SELECT 语句更复杂的查询，优化器不仅需要考虑访问每个表的成本，还需要考虑每个表的包含顺序，以及每个表使
+用哪个索引。
+
+对于外连接和直连接，连接顺序是固定的，但对于内连接，优化器可以自由选择顺序，因此优化器必须计算每种组合的成本。可能
+的组合数为 N！(阶乘），扩展性非常差。如果有五张表参与内部连接，优化器可以选择五张表作为第一张表，然后四张表作为第
+二张表，三张表作为第三张表，两张表作为第四张表，最后一张表为一张表：
+
+#+begin_comment
+  Combinations = 5 * 4 * 3 * 2 * 1 = 5! = 120
+#+end_comment
+
+MySQL 支持连接多达 61 张表，在这种情况下，计算成本可能需要 5.1E83 种组合，成本过高，可能比执行查询本身花费更多
+时间。因此，优化器默认根据对成本的部分评估来修剪查询计划，这样只有最有希望的计划才会得到全面评估。也可以让优化器在
+包含一定数量的表后停止计算成本。剪枝和搜索深度分别通过 optimizer_prune_level 和 optimizer_search_depth 选
+项进行配置，"配置优化器 "部分将对此进行讨论。
+
+最佳连接顺序与表有多大以及过滤器在减少每个表所含记录数方面的效果有关。
+
+** 默认过滤效果
+
+连接两个或多个表时，优化程序需要知道每个表中包含多少行，才能确定最佳连接顺序。这绝不是一件小事。
+
+当使用索引时，优化器可以非常准确地估算出，当过滤器与其他表无关时，有多少行会与索引匹配。如果没有索引，则可以使用直
+方图统计来获得良好的过滤估计值。如果没有被过滤列的统计数据，就会出现困难。在这种情况下，优化器会使用内置的默认估计
+值。表 17-1 列出了在没有索引或直方图统计数据时使用的默认过滤效果示例。
+
+#+NAME: 无统计数据条件的默认过滤效果
+| 类型        |            过滤数 | 示例                                    |
+|------------+------------------+----------------------------------------|
+| ALL        |              100 | 在按索引筛选或没有筛选条件时使用。           |
+| Equality   |               10 | Name='Sydney'                          |
+| Not Euqal  |               90 | Nmae <> 'Sydney'                       |
+| Inequality |            33.33 | Population>4000000                     |
+| Between    |            11.11 | Population between 1000000 and 4000000 |
+| IN         | min(#item*10,50) | Nmae IN('Sydeny', 'Melbourne')                                       |
+
+过滤效果基于 Selinger 等人撰写的文章 "关系数据库管理系统中的访问路径选择 "1。例如
+
++ 已知不同值：包括枚举和位数据类型。考虑一下 world.country 表中的 Continent 列。这是一个有 7 个值的枚举，因此
+  优化器会估计 WHERE 子句（如 Continent = 'Europe'）的过滤效果为 1/7。
++ 行数少： 如果表格中的行数少于 10 行，并添加了相等条件，则过滤估计值将为 1/行数，不相等过滤估计值也是如此。
++ 组合筛选器： 如果将多个非索引列上的筛选器组合在一起，估计的筛选效果就是组合效果。例如，在 world.city 表中，
+  Name = 'Sydney' AND Population > 3000000 这个筛选条件由于在 Name 上是相等的，所以估计会占用 10%的行，
+  而由于在 Population 上是不相等的，所以会占用 33%的行，因此综合效果为 P(Equality on Name) * P(Inequality
+   on Population) = 0.1 * 0.33 = 0.0333 = 3.33%。
+
+这个列表并不详尽，但可以让你很好地了解 MySQL 是如何得出过滤估计值的。默认过滤效果显然不是很准确，尤其是对于大型表，
+因为数据并不遵循如此严格的规则。这就是为什么索引和直方图对于获得良好的查询计划如此重要。
+
+在确定查询计划的最后，会对各个部分和整个查询进行成本估算。这些信息有助于了解优化器是如何得出查询执行计划的。
+
+** 查询代价
+
+如果要检查优化器发现的成本，则需要使用树形（包括 EXPLAIN ANALYZE）或 JSON 格式的 EXPLAIN 输出、MySQL
+Workbench Visual Explain 图表或优化器跟踪。第 20 章将详细介绍这些方法。
+
+举个简单的例子，请看连接世界样本数据库的国家表和城市表的查询：
+
+#+begin_src sql
+  select *
+    from world.country
+      inner join world.city
+        on CountryCode=Code;
+#+end_src
+
+图 17-1 显示了查询的 Visual Explain 图表，包括城市表的额外详细信息。
+
+[[./images/xyfB7m.png]]
+
+该图显示了优化器是如何决定执行查询的。如何读图将在第 20 章讨论。这里最重要的部分是箭头所指的数字。这些是优化器为查
+询执行的各个部分得出的成本估算，成本越低越好。从示例中可以看出，成本估算是针对读取数据、评估过滤条件等非常具体的任
+务计算得出的。在图表顶端，总查询成本估计为 1535.43。
+
+#+begin_comment
+  由于计算出的成本取决于索引统计信息等，而索引统计信息并不精确，因此成本不会随着时间的推移而变化。这也意味着，如果
+  执行相同的查询，您可能会看到与本书示例中显示的不同的成本估算。
+#+end_comment
+
+执行查询后，还可以从 Last_query_cost 状态变量中获取估计成本。清单 17-1 展示了对图 17-1 中相同查询进行此操作的
+示例。
+
+#+begin_src sql
+  select *
+    from world.country
+      inner join world.city
+        on CountryCode=Code;
+
+  show session status like 'Last_query_cost';
+#+end_src
+
+查询结果已从输出中删除，因为它对本讨论并不重要。关于 Last_query_cost，需要注意的一点是它是估计成本，这也是为什么
+它在 Visual Explain 图表中显示的值与总成本相同。如果想了解执行查询的实际成本，则需要使用 EXPLAIN ANALYZE。
+
+Visual Explain 图中提到查询是使用嵌套循环执行的。这只是 MySQL 支持的连接算法之一。
+
+** 连接算法
+
+在 MySQL 中，"连接 "是一个非常宽泛的概念，以至于可以说所有东西都是连接。甚至查询单个表也被认为是连接。也就是说，
+最有趣的连接是两个或多个表之间的连接。在本讨论中，表也可以是派生表。
+
+执行查询时，如果需要连接两个表，MySQL 支持三种不同的算法。这些算法是
+
++ Nested loop
++ Block nested loop
++ Hash join
+
+#+begin_comment
+  本节所示时序仅供参考。您在自己系统上看到的时序会有所不同，时序之间也可能存在差异。
+#+end_comment
+
+本节和下一节将引用几个优化开关和优化提示的名称。优化器开关指的是 optimizer_switch 配置选项，优化器提示指的是
+/*+ ... 注释。*/ 注释，这些注释可以添加到查询中，告诉优化器你希望查询如何执行。本章后面的 "配置优化器 "一节将进
+一步讨论这两个概念以及如何使用它们。
+
+** 嵌套循环
+
+嵌套循环算法是 MySQL 中使用的最简单的算法。在 MySQL 5.6 之前，它也是唯一可用的算法。顾名思义，它是通过嵌套循环
+工作的，在连接中每个表都有一个循环。嵌套连接算法不仅非常简单，而且还能很好地进行索引查找。
+
+#+begin_src sql
+  select CountryCode, country.Name as Country,
+    city.Name as City, city.District
+  from world.country
+    inner join world.city
+      on city.CountryCode=country.Code
+   where Continent='Asia';
+#+end_src
+
+在执行该查询时，将使用嵌套循环对country表进行表扫描，在country表中应用 WHERE 子句中的过滤器，然后对city
+表进行索引查找。查询用树形符号表示如下
+
+[[./images/NgO7k4.png]]
+
+您也可以将其写成伪代码。使用类似 Python 的语法，嵌套循环连接可以写成下面的代码片段：
+
+#+begin_src python
+  result = []
+  for country_row in country:
+      if country_row.Continent == 'Asia':
+          for city_row in city.CountryCode['country_row.Code']:
+              result.append(join_rows(country_row, city_row))
+#+end_src
+
+在伪代码中，country 和 city 分别代表国家表和城市表，city.CountryCode 是城市表的 CountryCode 索引，
+country_ row 和 city_row 代表一条记录。join_rows() 函数用于表示将两行中所需列合并为结果集中一行的过程。
+
+图 17-2 使用图表显示了相同的嵌套循环连接。为了简单起见，同时也为了突出连接的重点，尽管所有记录都是从country表
+中读取的，但只包含了匹配记录的主键值。
+
+[[./images/BA1Dr7.png]]
+
+从图中可以看出，MySQL 会扫描country表，直到找到与 WHERE 子句匹配的记录。在图中，第一条匹配行是 AFG（阿富汗）。
+然后在city表中找到 CountryCode = AFG 的所有行（ID 分别等于 1、2、3 和 4），每个组合在结果中形成一行。继续
+查找国家代码等于 ARE（阿拉伯联合酋长国）的行，依此类推，直到 YEM（也门）。
+
+在country表和city表中的 CountryCode 索引中扫描记录的确切顺序取决于索引定义以及优化器、执行器和存储引擎的
+内部因素。除非有明确的 ORDER BY 子句，否则绝对不能指望排序保持不变。
+
+一般来说，连接可能比本例中的更复杂，因为可能会有额外的筛选器。但概念是相同的。
+
+嵌套循环连接虽然简单，但也有一些局限性。它不能用于执行完全外连接，因为嵌套循环连接要求第一个表返回记录，而完全外连
+接并不总是这样。解决方法是将全外连接写成左外连接和右外连接的结合。考虑一下查找所有国家和城市的查询，包括一个国家没
+有城市和一个城市没有国家的情况。这可以写成全外连接（在 MySQL 中无效）：
+
+#+begin_src sql
+  select *
+    from world.country
+      full outer join world.city
+        on city.CountryCode=country.Code;
+#+end_src
+
+要在 MySQL 中执行该操作，可以使用国家 LEFT JOIN 城市和国家 RIGHT JOIN 城市的联合，例如
+
+#+begin_src sql
+  select *
+    from world.country
+      left outer join world.city
+        on city.CountryCode=country.Code;
+  union
+  select *
+     from world.country
+       right outer join world.city
+         on city.CountryCode=country.Code;
+#+end_src
+
+另一个限制是嵌套循环连接对于不能使用索引的连接不是很有效。由于嵌套循环连接每次只处理连接中第一个表中的一条记录，因
+此必须对第一个表中的每一条记录进行第二个表的全表扫描。这很快就会变得过于昂贵。考虑一下前面研究过的查询，即查找亚洲
+的所有城市：
+
+#+begin_src sql
+  select PS_CURRENT_THREAD_ID();
+#+end_src
+
+#+begin_src sql
+  select CountryCode, country.Name as Country,
+    city.Name as City, city.District
+  from world.country
+    inner join world.city
+       on city.CountryCode=country.Code
+   where Continent='Asia';
+#+end_src
+
+通过对country表进行表扫描（239 行）和对city表进行索引查找，将总共检查 2005 行（在第二个连接中执行此查询）：
+
+#+begin_src sql
+  select rows_examined, rows_sent,
+     last_statement_latency as latency
+   from sys.session
+   where thd_id=30\G
+#+end_src
+
+thd_id 上的过滤器需要与执行查询的连接的性能模式线程 ID 相匹配（在 MySQL 8.0.16 及更高版本中可以使用
+PS_CURRENT_THREAD_ ID() 函数找到）。2005 条检查记录来自对国家表中的 239 条记录进行全表扫描，然后读取亚洲国
+家城市表中的 1766 条记录。
+
+如果 MySQL 不能为连接使用索引，那么查询性能就会发生巨大变化。您可以使用嵌套循环连接执行查询，而不使用索引，方法如
+下（NO_BNL(city) 注释是优化器提示）：
+
+#+begin_src sql
+  select /* NO_BNL(city) */
+    CountryCode, country.Name as Country,
+    city.Name as City, city.District
+  from world.country ignore index(Primary)
+    inner join world.city ignore index(CountryCode)
+      on city.CountryCode=country.Code
+  where Continent='Asia';
+#+end_src
+
+IGNORE INDEX () 子句是一个索引提示，它告诉 MySQL 忽略括号中的索引。该版本查询的查询统计结果显示，现在要检查
+200,000 多条记录，执行查询所需的时间是以前的 10 倍左右（执行该测试的方法与前面的测试方法相同，即在一个连接中执行
+查找亚洲城市的查询，在另一个连接中执行下面针对 sys.session 的查询，并将 thd_id = 30 改为使用第一个连接的线程
+id）：
+
+#+begin_src sql
+  select rows_examined, rows_sent,
+         last_statement_latency as latency
+  from sys.session
+  where thd_id=30\G
+#+end_src
+
+有 51 个国家的大陆 ="亚洲"，这意味着需要对城市表进行 51 次全表扫描。由于城市表中有 4079 条记录，因此必须检查的记
+录总数为 51 * 4079 + 239 = 208268。额外的 239 行来自国家表中 239 行的表扫描。
+
+为什么需要在示例中添加 NO_BNL(country,city)注释？BNL 代表块嵌套循环，它可以帮助改进无索引连接，而注释会禁用这种
+优化。通常情况下，我们希望保持启用状态，这将在下文中解释。
+
+** 块嵌套循环
+
+块嵌套循环算法是嵌套循环算法的扩展。它也被称为 BNL 算法。在连接中，不是逐条提交第一张表中的记录，而是使用连接缓冲区
+收集尽可能多的记录，并在对第二张表的一次扫描中进行比较。与嵌套循环算法相比，这可以大大提高某些查询的性能。
+
+如果使用与嵌套循环算法示例相同的查询，但禁止使用索引（以模拟两个没有索引的表），并且不允许哈希连接（在 8.0.18 及更
+高版本中），那么就可以使用块嵌套循环算法。该查询为
+
+#+begin_src sql
+  select /*+ NO_HASH_JOIN(country, city) */
+    CountryCode, country.Name as Country,
+    city.Name as City, city.District
+  from world.country ignore index(Primary)
+    inner join world.city ignore index(CountryCode)
+      on city.CountryCode=country.Code
+  where Continet='Asia';
+#+end_src
+
+在 MySQL 8.0.17 及更早版本中，删除带有 NO_HASH_JOIN() 优化器提示的注释。
+
+清单 17-2 展示了使用类 Python 代码实现块嵌套循环算法的伪代码示例。
+
+#+begin_src python
+  result=[]
+  join_buffer=[]
+  for country_row in country:
+      if country_row.Continent=='Asia':
+          join_buffer.append(country_row.Code)
+
+          if is_full(join_buffer):
+              for city_row in city:
+                  CountryCode=city_row.CountryCode
+                  if CountryCode in join_buffer:
+                      country_row=get_row(CountryCode)
+                      result.append(
+                          join_rows(country_row, city_row)
+                      )
+              join_buffer=[]
+      if len(join_buffer)>0:
+          for city_row in city:
+              CountryCode=city_row.CountryCode
+              if CountryCode in join_buffer:
+                  country_row=get_row(CountryCode)
+                  result.append(join_rows(country_row, city_row))
+          join_buffer=[]
+#+end_src
+
+join_buffer 列表表示连接缓冲区，其中存储连接所需的列。在伪代码中，列是用 required_columns() 函数提取的。在作为
+示例的查询中，只需要country表中的代码列。这一点很重要，稍后将进一步讨论。当连接缓冲区满时，将对city表进行表扫
+描；如果城市表中的 CountryCode 列与连接缓冲区中存储的其中一个 Code 值匹配，则将生成结果行。
+
+图 17-3 是表示连接的图表。为简单起见，只包含了连接所需行的主键值，尽管对两个表都执行了全表扫描。
+
+[[./images/9NKHfM.png]]
+
+图中显示了如何将country表中的记录一起读取并存储到连接缓冲区中。每次连接缓冲区满时，都会对city表进行一次全表扫
+描，并逐步建立结果。在图中，连接缓冲区一次可容纳六条记录。由于 "代码 "列每行只需要 3 个字节，因此实际上，除了使用尽
+可能小的 join_buffer_size 设置外，连接缓冲区将能够容纳所有国家代码。
+
+使用连接缓冲区缓冲多个国家代码对查询统计有什么影响？与前面的示例一样，首先在一个连接中执行查找亚洲城市的查询：
+
+图中显示了如何将country表中的记录一起读取并存储到连接缓冲区中。每次连接缓冲区满时，都会对city表进行一次全表扫
+描，并逐步建立结果。在图中，连接缓冲区一次可容纳六条记录。由于 "代码 "列每行只需要 3 个字节，因此实际上，除了使用尽
+可能小的 join_buffer_size 设置外，连接缓冲区将能够容纳所有国家代码。
+
+使用连接缓冲区缓冲多个国家代码对查询统计有什么影响？与前面的示例一样，首先在一个连接中执行查找亚洲城市的查询：
+
+#+begin_src sql
+  select /*+ NO_HASH_JOIN(country,city) */
+    CountryCode, country.Name as Country,
+    city.Name as City, city.District
+  from world.country ignore index (Primary)
+    inner join world.city ignore index(CountryCode)
+  where continent='Asia';
+#+end_src
+
+然后在另一个连接中查询 sys.session，以获得已检查行数和查询延迟（更改 thd_id = 30 以使用第一个连接的线程 ID）：
+
+#+begin_src sql
+  select rows_examined, rows_sent,
+    last_statement_latency as latency
+  from sys.session
+  where thd_id=30\G
+#+end_src
+
+结果假设 join_buffer_size 为默认值。统计数据显示，块嵌套循环的性能明显优于不使用索引的嵌套循环算法。相比之下，使
+用索引执行查询检查了 2005 条记录，耗时约 4 毫秒，而使用不带索引的嵌套循环连接检查了 208268 条记录，耗时约 45
+毫秒。这看似是查询执行时间上无关紧要的差异，但country表和city表都非常小。对于大型表来说，差异将呈非线性增长，
+这意味着查询完成与似乎永远运行之间的差异。
+
+关于块嵌套循环，你应该注意一些要点，因为这有助于你优化使用它。这些要点包括
+
++ 连接缓冲区中只存储连接所需的列。这意味着，连接缓冲区所需的内存比最初预计的要少。
++ 连接缓冲区的大小由 join_buffer_size 变量配置。join_buffer_size 的值是缓冲区的最小大小！在讨论的示例中，如
+  果 join_buffer_size 设置为 1 GiB，即使在连接缓冲区中存储的国家代码值小于 1 KiB，也将分配 1 GiB。因此，应
+  保持较低的 join_buffer_size 值，只在需要时才增加。配置优化器 "部分包含如何更改单个查询的连接缓冲区大小的信息。
++ 使用块嵌套循环算法为每个连接分配一个连接缓冲区。
++ 每个连接缓冲区在整个查询过程中都会被分配。
++ 块嵌套循环算法可用于全表扫描、全索引扫描和范围扫描。
++ 块嵌套循环算法绝不会用于常量表以及第一个非常量表。这意味着，要使用块嵌套循环算法，需要在使用唯一索引过滤后，在两
+  个有一条以上记录的表之间进行连接。
+
+通过设置 block_nested_loop 优化开关，可以配置是否允许优化器选择块嵌套循环算法。默认情况下是启用。对于单个查询，
+可以使用 BNL() 和 NO_BNL() 优化器提示为特定连接启用或禁用块嵌套循环。
+
+虽然块嵌套循环对非索引连接有很大改进，但在大多数情况下，使用哈希连接可以做得更好。
+
+** 哈希连接
+
+散列连接算法是 MySQL 最新添加的算法，在 MySQL 8.0.18 及更高版本中受支持。它标志着嵌套循环连接（包括块嵌套循环
+变体）传统的重大突破。它特别适用于无索引的大型连接，在某些情况下甚至优于索引连接。
+
+MySQL 实现了经典内存散列连接和磁盘 GRACE 散列连接算法之间的混合算法。如果可以将所有哈希值存储在内存中，则使用纯
+内存实现。加入缓冲区用于内存部分，因此可用于哈希值的内存大小受 join_buffer_ size的限制。当连接无法在内存中完成
+时，连接会溢出到磁盘，但实际连接操作仍在内存中执行。
+
+内存散列连接算法包括两个步骤：
+
+1. 在连接表中选择一个表作为构建表。计算连接所需列的哈希值并加载到内存中。这就是构建阶段。
+2. 连接中的另一个表是探针输入表。对于这个表，每次读取一条记录并计算哈希值。然后对构建表计算出的哈希值进行哈希键查
+   找，并从匹配的行中生成连接结果。这就是所谓的探测阶段。
+
+当构建表的哈希值无法放入内存时，MySQL 会自动切换到使用磁盘实现（基于 GRACE 哈希连接算法）。如果在构建阶段连接缓
+冲区已满，就会从内存算法切换到磁盘算法。磁盘上算法包括三个步骤：
+
+1. 计算构建表和探测表中所有记录的哈希值，并将其存储到磁盘上的多个小文件中，文件以哈希值为分区。分区数量的选择是为
+   了让探测表的每个分区都能放入连接缓冲区，但最多只能有 128 个分区。
+
+2. 将构建表的第一个分区加载到内存中，然后遍历探测表中的哈希值，方法与内存中算法的探测阶段相同。由于步骤 1 中的分
+   区对构建表和探测表使用了相同的哈希函数，因此只需遍历探测表的第一个分区即可。
+
+3. 清除内存缓冲区，然后继续逐个处理其余分区。
+
+内存算法和磁盘算法都使用 xxHash64 哈希函数，该函数以速度快而著称，同时还能提供高质量的哈希值（减少哈希碰撞次数）。
+为了获得最佳性能，连接缓冲区必须足够大，以容纳构建表中的所有哈希值。也就是说，哈希连接和块嵌套循环连接需要考虑的
+join_buffer_size 问题是一样的。
+
+只要不选择块嵌套循环，并且查询支持散列连接算法，MySQL 就会使用散列连接。在撰写本文时，使用散列连接算法有以下要求：
+
+1. 连接必须是内连接。
+2. 无法使用索引执行连接，要么是因为没有可用索引，要么是因为索引在查询中被禁用。
+3. 查询中的所有连接必须在连接中的两个表之间至少有一个等连接条件，且条件中只引用两个表中的列和常量。
+4. 自 8.0.20 起，还支持反连接、半连接和外部连接。如果连接两个表 t1 和 t2，哈希连接支持的连接条件示例包括
+   t1.t1_val=t2.t2_val
+   t1.t1_val=t2.t2_val+2
+   t1.t1_val1=t2.t2_val and t1.t1_val2>100
+   MONTH(t1.t1_val)=MONTH(t2.t2_val)
+
+如果考虑本节中的循环示例查询，可以忽略可用于连接的表上的索引，使用哈希连接执行该查询：
+
+#+begin_src sql
+  select CountryCode, country.Name as Country,
+    city.Name as City, city.District
+  from world.country ignore index(primary)
+    inner join world.city ignore index(CountryCode)
+      on city.CountryCode=country.Code
+  where Coninent='Asia';
+#+end_src
+
+执行此连接的伪代码与块嵌套循环的伪代码类似，但连接所需的列是散列，并且支持溢出到磁盘。伪代码如清单 17-3 所示。
+
+#+begin_src python
+  result=[]
+  join_buffer=[]
+  partitions=0
+  on_disk=False
+  for country_row in country:
+      if country_row.Continent='Asia':
+          hash=xxHash64(country_row.Code)
+          if not on_disk:
+              join_buffer.append(hash)
+
+              if is_full(join_buffer):
+                  # Create partitions on disk
+                  on_disk=True
+                  partitions=write_buffer_to_disk(join_buffer)
+                  join_buffer=[]
+              else:
+                  write_hash_to_disk(hash)
+  if not on_disk:
+      for city_row in city:
+          hash=xxHash64(city_row.CountryCode)
+          if hash in join_buffer:
+              country_row=get_row(hash)
+              city_row=get_row(hash)
+              result.append(join_rows(country_row, city_row))
+  else:
+      for city_row in city:
+          hash=xxHash64(city_row.CountryCode)
+          write_hash_to_disk(hash)
+
+      for partition in range(partitions):
+          join_buffer=load_build_from_disk(partition)
+          for hash in load_hash_from_disk(partition):
+              if hash in join_buffer:
+                  country_row=get_row(hash)
+                  city_row=get_row(hash)
+                  result.append(join_rows(country_row, city_row))
+
+      join_buffer=[]
+#+end_src
+
+伪代码首先从country表中读取记录，然后计算代码列的哈希值，并将其存储在连接缓冲区中。如果缓冲区已满，代码就会切换
+到磁盘算法，并从缓冲区写出哈希值。这也是确定分区数的地方。在此之后，country表的其余部分将被散列。
+
+在下一部分中，对于内存算法，只需对city表中的行进行简单的循环，将哈希值与缓冲区中的哈希值进行比较。对于磁盘算法，
+首先计算城市表的哈希值并存储在磁盘上，然后逐一处理分区。
+
+#+begin_comment
+  与实际使用的算法相比，所述算法略有简化。实际算法必须考虑哈希碰撞，而且对于磁盘上算法来说，有些分区可能会变得太大，
+  无法放入连接缓冲区，在这种情况下，就会分块处理，以避免使用比配置更多的内存。
+#+end_comment
+
+图 17-4 显示了内存散列连接算法的示意图。为简单起见，只包含了连接所需行的主键值，尽管对两个表都执行了全表扫描。
+
+
+[[./images/YJkf7z.png]]
+
+
+country表中匹配行的代码列值被散列并存储在连接缓冲区中。然后对city表执行表扫描，对每一行的 CountryCode 计算
+哈希值，并从匹配行中生成结果。
+
+首先在一个连接中执行查询，检查查询统计数据的方法与前一种算法相同：
+
+#+begin_src sql
+  select CountryCode, country.Name as Country,
+    city.Name as city, city.District
+  from world.country ignore index(primary)
+    inner join world.city ignore index (CountryCode)
+      on city.CountryCode=country.Code
+  where Continent='Asia';
+#+end_src
+
+然后，您可以通过在第二个连接中查询 sys.session 视图（更改 thd_id = 30 以使用第一个连接的线程 ID）来查看查询的
+性能模式统计信息：
+
+#+begin_src sql
+  select rows_examined, rows_sent,
+    last_statement_latency as latency
+  from sys.session
+  where thd_id=30\G
+#+end_src
+
+我们可以看到，散列连接在检查与块嵌套循环相同数量的记录时，查询执行得非常好，但它比索引连接更快。这并不是错误：在某
+些情况下，散列连接甚至比索引连接更快。您可以使用以下规则来估算散列连接算法与索引连接和块嵌套循环连接相比的性能：
+
++ 对于不使用索引的连接，哈希连接通常比块嵌套连接快得多，除非添加了 LIMIT 子句。已观察到的改进超过 1000 倍。
++ 对于存在 LIMIT 子句的无索引连接，块嵌套循环可以在找到足够多的记录后退出，而散列连接将完成整个连接（但可以跳过获
+  取记录）。如果因 LIMIT 子句而包含的记录数与通过连接找到的记录总数相比很少，嵌套循环可能会更快。
++ 对于支持索引的连接，如果索引的选择性较低，散列连接算法的速度会更快。
+
+使用散列连接的最大好处是不带索引和 LIMIT 子句的连接。最后，只有测试才能证明哪种连接策略最适合您的查询。
+
+可以使用 hash_join 优化器开关启用或禁用散列连接支持。此外，还必须启用 block_nested_loop 优化器开关。这两个开
+关默认都已启用。如果要为特定连接配置散列连接的使用，可以使用 HASH_JOIN() 和 NO_HASH_JOIN() 优化器提示。
+
+关于 MySQL 支持的三种高级连接策略的讨论到此为止。还有一些低层次的优化也值得考虑。
+
+** 连接优化
+
+MySQL 可以使用连接优化来改进上一节讨论的连接算法的基本概念，或决定如何执行查询的部分内容。本节将详细介绍索引合并、
+多范围读取（MRR）和分批键访问（BKA）优化。这三种优化最有可能需要你帮助优化器使查询计划达到最优。其余可配置的优化将
+在本节末尾介绍，但不太详细。
+
+** 索引合并
+
+通常，MySQL 对每个表只使用一个索引。但是，如果您对同一表中的多个列都有条件，而您又没有涵盖所有列的单一索引，那么
+这样做并不是最佳选择。在这种情况下，MySQL 支持索引合并。
+
+#+begin_comment
+  使用多列索引覆盖带有过滤条件的列比使用索引合并优化更有效。你应该权衡性能差异和可能多出的索引。
+#+end_comment
+
+支持三种索引合并算法。表 17-2 总结了这些算法、使用时间以及查询计划中包含的信息。
+
+#+NMAE: 索引合并算法
+| 算法          | 用例            | Extra列              | json键值         |
+|--------------+----------------+---------------------+-----------------|
+| Intersection | and            | Using interset(...) | intersect(...)  |
+| Union        | or             | Using union(...)    | union(...)      |
+| Sort-Union   | or with ranges | sort_union(...)     | sort_union(...) |
+
+除了表中列出的 EXPLAIN 信息外，访问类型还被设置为index_merge
+
+用例指定了连接条件的运算符。联合算法和排序联合算法的区别在于，联合算法适用于相等条件，而排序联合算法适用于范围条件。
+对于 EXPLAIN 输出，括号内列出了与索引合并一起使用的索引名称。
+
+在讨论这三种算法时，可以考虑使用每种算法的实际查询。sakila 数据库中的payment表就是一个很好的例子。
+sakila.payment表的定义是
+
+#+begin_src sql
+  CREATE TABLE `payment` (
+  `payment_id` smallint unsigned NOT NULL,
+  `customer_id` smallint unsigned NOT NULL,
+  `staff_id` tinyint unsigned NOT NULL,
+  `rental_id` int(DEFAULT NULL, `amount` decimal(5,2) NOT NULL,
+  `payment_date` datetime NOT NULL,
+  `last_update` timestamp NULL,
+  PRIMARY KEY (`payment_id`),
+  KEY `idx_fk_staff_id` (`staff_id`),
+  KEY `idx_fk_customer_id` (`customer_id`),
+  KEY `fk_payment_rental` (`rental_id`)
+  )ENGINE=InnoDB DEFAULT CHARSET=utf8
+#+end_src
+
+表中的默认值、自动递增信息和外键定义已被删除，重点放在列和索引上。该表有四个索引，都在单列上，因此很适合进行索引合并
+优化。
+
+索引合并讨论的其余部分将讨论每种索引合并算法、性能注意事项以及如何配置使用索引合并。所有示例都只包含两列的条件，但
+这些算法确实支持涉及更多列的索引合并。
+
+#+begin_comment
+  优化器是否选择索引合并取决于索引统计信息。这意味着，对于同一个查询，WHERE 子句中的不同值可能会导致不同的查询计
+  划，而索引统计量的变化会使查询在使用索引合并和不使用索引合并的条件完全相同的情况下执行不同的计划，反之亦然。
+#+end_comment
+
+** Intersection算法
+
+当多个索引列上的条件用 AND 分隔时，就会使用交集算法。使用交集索引合并算法的两个查询示例是
+
+#+begin_src sql
+  select *
+  from sakila.payment
+  where staff_id=1 and customer_id=75;
+#+end_src
+
+#+begin_src sql
+  select *
+  from sakila.payment
+  where payment_id>10 and customer_id=318;
+#+end_src
+
+第一个查询在两个二级索引上有一个相等条件，第二个查询在主键上有一个范围条件，在二级索引上有一个相等条件。第二个查询
+的索引合并优化仅适用于 InnoDB 表。清单 17-4 显示了 EXPLAIN 输出，其中第一个查询使用了两种不同的格式。
+
+#+begin_src sql
+  explain select *
+  from sakila.payment
+  where staff_id=1 and customer_id=75\G
+#+end_src
+
+#+begin_src sql
+  explain format=tree
+  select *
+  from sakila.payment
+  where staff_id=1 and customer_id=75\G
+#+end_src
+
+注意 Extra 列和树形格式输出中索引范围扫描的 Using intersect(...) 信息。这表明索引合并使用了
+idx_fk_customer_id 和 idx_fk_staff_id 索引。传统输出还包括 key 列中的两个索引，并在 key_len 列中提供了两
+个键长度。
+
+** Union算法
+
+#+begin_src sql
+  select *
+  from sakila.payment
+  where staff_id=1 or customer_id=318;
+#+end_src
+
+#+begin_src sql
+  select *
+  from sakila.payment
+  where payment_id>15000 or customer_id=318;
+#+end_src
+
+第一个查询在二级索引上有两个相等条件，而第二个查询在主键上有一个范围条件，在二级索引上有一个相等条件。第二个查询只对
+InnoDB 表使用索引合并。清单 17-5 显示了第一个查询的相应 EXPLAIN 输出示例。
+
+#+begin_src sql
+  explain select * from sakila.payment where staff_id=1 or customer_id=318\G
+#+end_src
+
+#+begin_src sql
+  explain format=tree select * from sakila.payment where staff_id=1 or customer_id=318\G
+#+end_src
+
+注意在 Extra 列和树形格式输出中的索引范围扫描中使用了 union(...)。这表明索引合并使用了 idx_fk_staff_id 和
+idx_fk_customer_ id 索引。
+
+** Sort-Union算法
+
+排序联合算法用于类似使用联合算法的查询，但条件是范围条件而不是相等条件。可以使用排序联合算法的两个查询示例是
+
+#+begin_src sql
+  select * from sakila.payment
+  where customer_id<30 or rental_id<10;
+#+end_src
+
+#+begin_src sql
+  select * from sakila.payment
+  where customer_id<30 ro rental_id>16000;
+#+end_src
+
+这两个查询都在两个二级索引上设置了范围条件。清单 17-6 显示了使用传统格式和树形格式对第一个查询进行的相应
+EXPLAIN 输出。
+
+#+begin_src sql
+  explain select * from sakila.payment
+  where customer_id<30 or rental_id<10;
+#+end_src
+
+#+begin_src sql
+  explain format=tree
+  select * from sakila.payment
+  where customer_id<30 or rental_id<10;
+#+end_src
+
+注意在 Extra 列和树形格式输出中的索引范围扫描中使用了 sort_union(...)。这表明 idx_fk_customer_id 和
+fk_payment_ rental 索引用于索引合并。
+
+** 性能考虑因素
+
+优化器很难知道何时合并索引比只使用单个索引更优化。初看起来，为更多列使用索引总能取得胜利，但索引合并的开销很大，因
+此只有当索引的选择性组合正确时，索引合并才会有用。由于索引统计数据过期而选择索引合并，是导致性能严重下降的常见原因
+之一。
+
+如果优化器选择了索引合并，而查询的执行效果不佳（例如，与通常的执行效果相比），那么首先要做的就是对使用了索引合并的
+表执行 ANALYZE TABLE。这通常会改善查询计划。否则，可能需要更改优化器配置，以决定是否使用索引合并。
+
+** 配置
+
+索引合并功能由四个优化器开关控制，其中一个控制整体功能，其他三个分别控制三种算法。选项包括
+
++ index_merge： 是启用还是完全禁用索引合并。
++ index_merge_intersection： 是否启用交集算法。
++ index_merge_union： 是否启用联合算法。
++ index_merge_sort_union： 是否启用排序联合算法。
+
+默认情况下，所有索引合并优化器开关都已启用。
+
+此外，还有两个优化器提示： INDEX_MERGE() 和 NO_INDEX_MERGE()。这两个提示都将表名作为参数，并可选择考虑或忽略
+索引。例如，如果要执行查询，查找 staff_id 设置为 1、customer_id 设置为 75 的付款，而不使用索引合并，可以使用
+以下查询之一：
+
+#+begin_src sql
+  select /* NO_INDEX_MERGE(payment) */ *
+  from sakila.payment and customer_id=75
+#+end_src
+
+#+begin_src sql
+  select /* NO_INDEX_MERGE(payment
+            idx_fk_staff_id, idx_fk_customer_id) */
+      *
+  from sakila.payment
+  where staff_id=1 and customer_id=75;
+#+end_src
+
+由于索引合并被认为是范围优化的一种特殊情况，因此 NO_RANGE_OPTIMIZATION() 优化器提示也禁用了索引合并。可以通过
+EXPLAIN 输出确认不再使用索引合并，如清单 17-7 中第一个查询所示。
+
+
+#+begin_src sql
+  explain select /*+ NO_INDEX_MERGE(payment) */
+     ,*
+  from sakila.payment
+  where staff_id=1 and customer_id=75\G
+#+end_src
+
+#+begin_src sql
+  explain format=tree
+  select /*+ NO_INDEX_MERGE(payment) */
+     ,*
+  from sakila.payment
+  where staff_id=1 and customer_id=75\G
+#+end_src
+
+** 多范围读取(MRR)
+
+多范围读取（MRR）优化旨在减少由二级索引上的范围扫描引起的随机 I/O 量。该优化首先读取索引，根据行 id（InnoDB 的
+聚类索引）对键进行排序，然后按照行的存储顺序检索行。多范围读取优化可用于使用索引的范围扫描和等连接。虚拟生成列上的
+二级索引不支持该优化。
+
+InnoDB 多范围读取优化的主要用例是没有覆盖索引的磁盘绑定查询。优化的效果取决于需要多少行以及存储的寻道时间。MySQL
+会尝试估算优化何时有用；不过，成本估算偏向于过于悲观，而不是过于乐观，因此可能有必要提供信息，帮助优化器做出正确的
+决定。
+
+多范围读取优化由两个优化开关控制：
+
++ mrr 是否允许优化器使用多范围读取优化。默认为on
++ mrr_cost_based： 是否基于成本决定使用多范围读取优化。可以禁用此选项，以便在支持时始终使用该优化。默认为on
+
+另外，也可以使用 MRR() 和 NO_MRR() 优化器开关，按表或索引启用或禁用多范围读取优化。
+
+从查询计划中可以看到是否使用了多范围读取优化。在这种情况下，传统的 EXPLAIN 输出会在 Extra 列中指定使用 MRR，而
+JSON 输出会将 using_MRR 字段设置为 true。清单 17-8 显示了使用多范围读取优化时传统格式的完整 EXPLAIN 输出示
+例。
+
+#+begin_src sql
+  explain select /*+ MRR(city) */ from world.city
+  where CountryCode between 'AUS' and 'CHN' \G
+#+end_src
+
+有必要使用 MRR() 优化器提示或禁用 mrr_cost_based 优化器开关明确要求使用多范围读取优化，因为示例查询的估计行数太
+少，无法使用多范围读取优化和基于成本的优化来选择多范围读取优化。
+
+使用优化时，MySQL 会使用随机读取缓冲区来存储索引。缓冲区的大小由 read_rnd_buffer_size 选项设置。
+
+** 批量键访问(BKA)
+
+分批键访问 (BKA) 优化结合了分块嵌套循环和多范围读取优化。这样就能以与非索引连接类似的方式将连接缓冲区用于索引连接，
+并使用多范围读取优化来减少随机 I/O 量。
+
+对分批密钥访问最有用的查询类型是大型磁盘绑定查询，但并没有明确的指南来确定何时优化会有帮助，何时优化会导致性能下降。
+当优化效果最好时，查询执行时间会缩短 2-10 倍。但是，当优化效果最差时，查询执行时间会增加 2-3 倍。
+
+由于 "分批键访问 "优化只对范围相对较小的查询有效，而其他查询的性能可能会下降，因此默认情况下禁用了该优化。启用优
+化的最佳方法是在发现优化能带来收益的查询中使用 BKA() 优化器提示。
+
+如果要使用 optimizer_switch 变量启用优化，必须启用 batched_key_access 优化开关（默认已禁用），禁用
+mrr_cost_based 优化开关（默认已启用），并确保 mrr 优化开关已启用（默认已启用）。要为会话启用分批密钥访问，可以
+使用以下查询：
+
+#+begin_src sql
+  set session optimizer_switch='mrr=on,mrr_cost_based=off,batched_key_access=on';
+#+end_src
+
+以这种方式启用优化后，还可以使用 BKA() 和 NO_BKA() 优化器提示来影响是否使用该优化。使用该优化时，传统 EXPLAIN
+输出中的 Extra 列包括使用连接缓冲区（分批键访问），而在 JSON 输出中，using_join_buffer 字段被设置为分批键访
+问。清单 17-9 显示了使用分批键访问时完整 EXPLAIN 输出的示例。
+
+#+begin_src sql
+  explain select /*+ BKA(ci) */
+    co.Code, co.Name, as Country,
+    ci.Name as City
+  from world.country co
+    inner join world.city ci on ci.CountryCode=co.Code\G
+#+end_src
+
+在此示例中，使用优化器提示对使用 CountryCode 索引的城市 (ci) 表连接启用了分批键访问。
+
+连接缓冲区的大小由 join_buffer_size 选项配置。由于分批键访问优化主要用于大型连接，因此连接缓冲区通常应配置得相
+对较大，一般为 4 兆字节或更大。由于大型连接缓冲区对于大多数查询来说都不是好的选择，因此建议只在使用分批键访问优化
+的查询中增加连接缓冲区的大小。
+
+** 其他优化
+
+MySQL 还支持其他几种优化。优化程序会在有利于查询时自动使用这些优化，很少需要手动禁用这些优化。不过，了解这些优化
+是什么还是很有用的，这样在遇到这些优化（例如在 EXPLAIN 输出中）时，就能知道它们的含义，并且在优化程序偶尔需要向
+正确方向推动时，知道如何改变行为。
+
+本小节将按字母顺序介绍剩余的一些优化，重点是那些可以配置的优化。对于每种优化，都包括优化器开关、优化器提示以及传统
+格式（Extra 列）和 JSON 格式的 EXPLAIN 输出详情。
+
+** 条件过滤
+
+当一个表有两个或多个相关条件，且索引可用于部分条件时，就会使用条件过滤优化。启用条件过滤后，在估算表的整体过滤效果
+时会考虑其余条件的过滤效果。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: condition_fanout_filter 默认启用
++ Optimizer Hints: None
++ EXPLAIN Ouput: None
+
+
+** 派生合并
+
+优化器可以将派生表、视图引用和通用表表达式合并到它们所属的查询块中。优化的另一种方法是将表、视图引用或通用表表达式
+具体化。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: derived_merge 默认启用
++ Optimizer Hints: MERGE(), NO_MERGE()
++ EXPLAIN Output: 查询计划反映派生表已被合并。
+
+
+** 存储引擎条件下推
+
+该优化将条件向下推送到存储引擎。目前只有 NDBCluster 存储引擎支持该功能。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch:engine_condition_pushdown 默认启用
++ Optimizer Hints: None
++ EXPLAIN Output: 这些警告包括有关被下推的条件的信息。
+
+
+** 索引条件下推
+
+MySQL 可以向下推送通过使用单个索引中的列就能确定的条件，但索引只能直接过滤部分条件。例如，当你有一个条件，如
+Name LIKE '%abc%' 而 Name 是多列索引的一部分时，就会出现这种情况。这种优化也用于二级索引的范围条件。对于
+InnoDB，索引条件下推仅支持二级索引。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: index_condition_pushdown 默认启用
++ Optimizer Hints: NO_ICP()
++ EXPLAIN Output: 传统格式在 Extra 列中使用索引条件，而 JSON 格式则用推送的索引条件设置 index_condition
+  字段
+
+
+** 索引扩展
+
+InnoDB 中的所有二级非唯一索引都会将主键列附加到索引中。启用索引扩展优化后，MySQL 会将主键列视为索引的一部分。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: use_index_extensions 默认启用
++ Optimizer Hints: None
++ EXPLAIN Output: None
+
+
+** 索引可见性
+
+当表中有不可见索引时，默认情况下优化器在创建查询计划时不会考虑该索引。如果启用了索引可见性优化器开关，则会考虑不可
+见索引。例如，这对于测试已添加但尚未可见的索引的效果非常有用。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: use_invisible_indexes 默认禁用
++ Optimizer Hints: None
++ EXPLAIN Outpupt: None
+  
+
+** 松散索引扫描
+
+在某些情况下，MySQL 可以使用部分索引来提高聚合数据或包含 DISTINCT 子句的查询的性能。这就要求用于对数据分组的列与
+未用于分组的其他列组成多列索引的左前缀。使用 GROUP BY 子句时，只允许使用 MIN() 和 MAX() 聚合函数。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: None
++ Optimizer Hints: NO_RANGE_OPTIMIZATION() 会禁用松散索引扫描优化以及索引合并和范围扫描。
++ EXPLAIN Output: 传统格式在 Extra 列中设置了分组索引。JSON 格式将 using_ index_for_group_by 字段设置为
+  true。
+
+
+** 范围访问方法
+
+范围优化与其他优化有点不同，因为它被视为一种访问方法。MySQL 将只扫描表或索引的一个或多个部分，而不是进行完整的表
+或索引扫描。范围访问方法通常用于涉及运算符 >、>=、<、=<、BETWEEN.、IN()、IS NULL、LIKE 和类似运算符的过滤条
+件。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: None
++ Optimizer Hints: NO_RANGE_OPTIMIZATION() - 这也会禁用松散索引扫描和索引合并优化。不过，它不会禁用跳过扫
+  描优化，尽管跳过扫描也使用范围访问。
++ Explain Output: 访问方法设置为范围。
+
+可以使用 range_optimizer_max_mem_size 选项来限制范围访问所使用的内存大小。默认值为 8MB。如果将该值设为 0，则
+表示可以无限量使用内存。
+
+** 半连接
+
+半连接优化用于 IN 和 EXIST 条件。支持的策略有四种：具体化、重复剔除、首次匹配和松散扫描（不要与松散索引扫描优化
+混淆）。启用子查询实体化后，半连接优化会在可能的情况下使用实体化策略。对于 EXISTS，半连接优化仅在 MySQL 8.0.16
+及更高版本中支持，而对于 NOT EXISTS（以及类似的情况，这也称为反连接），则需要 MySQL 8.0.17 或更高版本。
+
+半连接优化可以使用半连接优化开关来控制，以启用或完全禁用该优化。可以使用一个或多个 MATERIALIZATION、
+DUPSWEEDOUT、FIRSTMATCH 和 LOOSESCAN 作为参数，在单个查询中使用 SEMIJOIN() 和 NO_SEMIJOIN() 优化器提
+示。  
+
+具体化策略与子查询具体化优化相同。详情请参见。
+
+重复剔除策略将半连接当作普通连接执行，并使用临时表删除重复数据。优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: duplicateweedout 默认启用
++ Optimizer Hints: SEMIJOIN(DUPSWEEDOUT),NO_SEMIJOIN(DUPSWEEDOUT)
++ EXPLAIN Output: 传统格式在相关表的 Extra 列中有Start temporary和End temporary。JSON 格式的输出使
+  用名为 duplicates_removal 的块。
+
+首次匹配策略返回每个值的首次匹配值，而不是所有值。优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: firstmatch默认启用
++ Optimizer Hints: SEMIJOIN(FIRSTMATCH), NO_SEMIJOIN(FIRSTMATCH)
++ EXPLAIN  Ouput: 传统格式的 Extra 列中有 FirstMatch(...)，括号之间的值是引用表的名称。JSON 格式将
+  first_ match 字段的值设置为引用表的名称。
+
+松散扫描策略使用索引从子查询的每个值组中选择一个值。优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: loosescan默认启用
++ Optimizer Hints: SEMIJOIN(LOOSESCAN), NO_SEMIJOIN(LOOSESCAN)
++ EXPLAIN Output: 传统格式的 Extra 列中有 LooseScan(m..n)，其中 m 和 n 表示松散扫描使用索引的哪些部分。
+  JSON 格式将 loosescan 字段设置为 true。
+
+
+** 跳过扫描
+
+跳过扫描优化是 MySQL 8.0.13 中的新功能，其工作原理与松散索引扫描类似。当多列索引的第二列上有范围条件，但第一列上
+没有条件时，就会使用它。跳过扫描优化将全索引扫描转化为一系列范围扫描（索引中第一列的每个值进行一次范围扫描）。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: skip_scan 默认启用
++ Optimizer Hints: SKIP(), NO_SKIP()
++ EXPLAIN Output: 传统格式在 Extra 列中设置了用于跳过扫描的使用索引，而 JSON 格式则将
+  using_index_for_skip_scan 字段设置为 true。
+
+
+** 子查询物化
+
+子查询实体化策略将子查询的结果存储在内部临时表中。在可能的情况下，优化程序会在临时表上添加一个自动生成的哈希索引，
+这样就能快速将临时表连接到查询的其他部分。
+
+优化器开关、提示和 EXPLAIN 详情如下：
+
++ Optimizer Switch: materialization 默认启用
++ Optimizer Switch: SUBQUERY(MATERALIZATION)
++ EXPLAIN Output: 传统格式的选择类型是 MATERIALIZED。JSON 格式创建了一个名为
+   materialized_ from_subquery 的块。
+
+启用子查询具体化成本优化器开关（默认）后，优化器将使用估计成本在子查询具体化优化和 IN 到 EXIST 子查询转换（将 IN
+条件重写为 EXISTS）之间做出选择。关闭开关后，优化器将始终选择子查询具体化。
+
+从上两节可以看出，优化器的配置有很多可能性。下一节将对此进行更深入的探讨。
+
+** 配置优化器
+
+有几种方法可以配置 MySQL 以影响优化器。你已经接触过一些配置选项、优化器开关和优化器提示。本节将首先介绍如何配置与
+不同操作相关的引擎和服务器成本，然后介绍配置选项以及有关优化器开关的更多细节。最后将讨论优化器提示。
+
+** 引擎代价
+
+引擎成本提供了读取数据的成本信息。由于数据可以从内存或磁盘读取，而不同的存储引擎读取数据的成本可能不同，因此不能一
+刀切。因此，MySQL 允许你配置每个存储引擎从内存和磁盘读取数据的成本。
+
+您可以使用 mysql.engine_cost 表来更改读取数据的成本。该表有以下列：
+
++ engine_name: 成本数据所针对的存储引擎。默认值用于表示没有特定数据的所有存储引擎。
++ device_type: 目前未使用，其值必须为 0。
++ cost_name: 成本名称。目前支持两种值：io_block_read_cost 用于基于磁盘的读取，memory_block_read_cost 用
+  于基于内存的读取。
++ cost_value: 读取操作的成本。如果值为 NULL（默认值），则表示使用 default_value 列中存储的值。
++ last_update: 记录最后更新的时间。时间以 time_zone 会话变量设置的时区返回。
++ comment: 可选注释，用于说明更改成本的原因。注释长度不超过 1024 个字符。
++ default_value: 操作使用的默认成本。这是一个只读列。io_block_read_cost 的默认值为 1，
+  memory_block_read_cost 的默认值为 0.25。
+
+主键由 engine_name、device_type 和 cost_name 列组成。引擎成本对 InnoDB 特别有用，因为在 MySQL 8 中，
+InnoDB 可以向优化程序提供估计值，以确定数据是在缓冲池中还是需要从磁盘读取。
+
+您可以使用 UPDATE 语句更新现有的成本估算。如果要为存储引擎插入估算值，则使用 INSERT 语句；如果要删除自定义成本
+值，则使用 DELETE 语句。无论哪种情况，都必须执行 FLUSH OPTIMIZER_COSTS 语句才能使更改对新连接生效（现有连接
+继续使用旧值）。例如，如果要在磁盘 I/O 速度较慢而内存速度很快的主机上添加 InnoDB 的特定数据，可以使用以下语句
+
+#+begin_src sql
+  insert into mysql.engine_cost
+    (engine_name, device_type, cost_name,
+    const_value, comment)
+    values('InnoDB', 0, 'io_block_read_cost',
+          '2', 'InnoDB on non-local cloud storage'),
+          ('InnoDB', 0, 'memory_block_read_cost',
+          0.15, 'InnoDB with very fast memory');
+#+end_src
+
+#+begin_src sql
+  flush optimizer_costs;
+#+end_src
+
+如果要更改成本值，建议先将成本值降低一倍或一半，然后评估效果。由于引擎成本是全局性的，因此应确保在更改前有一个良好
+的监控基线，并比较更改后的查询性能，以检测更改是否达到预期效果。
+
+MySQL 还有一些更通用的服务器成本，可用于影响与查询有关的各种操作。
+
+** 服务器代价
+
+MySQL 使用基于成本的方法来确定最佳查询计划。要使这种方法尽可能有效，必须知道各类操作的成本有多高。计算中最重要的部
+分是相对成本的正确性，幸运的是这一点很有帮助。然而，不同系统的相对成本及其对工作负载的影响可能存在差异。
+
+您可以使用 mysql.server_cost 表来更改多个操作的成本。该表有以下列：
+
++ cost_name: 操作名称
++ cost_value: 执行操作的成本。如果成本设置为 NULL，则使用默认成本（default_value 列）。代价以浮点数形式提供。
++ last_update: 代价最后一次更新的时间。时间以 time_zone 会话变量设置的时区返回。
++ comment: 可选注释，用于说明更改成本的原因。注释长度不超过 1024 个字符。
++ default_value: 操作使用的默认成本。此栏为只读栏。
+
+目前有六种操作可以在 server_cost 表中进行配置。它们是  
++ disk_temptable_create_cost: 在磁盘上创建内部临时表的成本。disk_temptable_create_cost 和
+  disk_temptable_row_cost 的成本越低，优化器就越有可能选择需要磁盘上临时表的查询计划。默认成本为 20。
++ disk_temptable_row_cost: 在磁盘上创建的内部临时表的行操作成本。默认成本为 0.5。
++ key_compare_cost: 比较记录键的成本。如果查询计划在使用文件排序按索引排序时遇到问题，而基于非索引的排序会更快，
+  那么可以增加这些操作的成本。默认成本为 0.05。
++ memory_temptable_create_cost: 在内存中创建内部临时表的成本。memory_temptable_create_cost 和
+  memory_temptable_row_cost 的成本越低，优化器就越有可能选择需要内存内部临时表的查询计划。默认成本为 1。
++ memory_temptable_row_cost: 内存中创建的内部临时表的行操作成本。默认成本为 0.1。
++ row_evaluate_cost: 评估行条件的一般成本。成本越低，MySQL 就越倾向于检查许多行，如使用全表扫描。成本越高，
+  MySQL 就越倾向于减少检查记录的数量，并使用更多的索引查找和范围扫描。默认成本为 0.1。
+
+如果确实要更改服务器的某项费用，则需要使用常规的 UPDATE 语句，并在后面加上 FLUSH OPTIMIZER_COSTS。更改将影响
+新的连接。例如，如果您将磁盘上的内部临时表存储在 RAM 磁盘（共享内存磁盘）上，并希望降低成本以反映以下情况
+
+#+begin_src sql
+  update mysql.server_cost
+    set cost_value=1,
+      Comment='Stored on memory disk'
+      where cost_name='disk_temptable_create_cost';
+#+end_src
+
+#+begin_src sql
+  update mysql.server_cost
+    set cost_value=0.1,
+      Comment='Stored on memory disk'
+      where cost_name='disk_temptable_row_cost';
+#+end_src
+
+#+begin_src sql
+  flush optimizer_costs;
+#+end_src
+
+更改成本可能并不总是会影响查询计划，因为优化器可能除了使用给定的查询计划外别无选择，或者计算出的成本差别太大，以至
+于更改服务器成本来影响查询计划会对其他查询造成太大影响。请记住，服务器成本对所有连接都是全局性的，因此只有在出现系
+统性问题时才应更改成本。如果问题只影响几个查询，最好使用优化器提示来影响查询计划。
+
+影响查询计划的另一个选项是优化器开关。
+
+** 优化器开关
+
+优化器开关在本章中已有提及。它们通过 optimizer_switch 选项进行配置。优化器开关的工作原理与其他配置选项有些不同，
+因此值得深入研究其使用方法。
+
+optimizer_switch 选项是一个复合选项，所有优化开关都使用同一个选项，但可以更改单个开关，而不包括不想更改的开关。
+你可以将想要更改的开关设置为 "开 "或 "关"，以启用或禁用它。优化器开关既可以在影响所有新连接的全局范围内更改，也可
+以在会话级别上更改。例如，如果要禁用当前连接的 derived_merge 优化器开关，可以使用以下语句：
+
+#+begin_src sql
+  set session optimizer_swith='derived_merge=off';
+#+end_src
+
+如果要永久更改值，可以使用 SET PERSIST 或 SET PERSIST_ONLY 进行更改：
+
+#+begin_src sql
+  set persist optimizer_switch='derived_merge=off';
+#+end_src
+
+如果希望将值存储在 MySQL 配置文件中，原则也是一样的：
+
+#+begin_comment
+[mysqld]
+optimizer_switch = "derived_merge=off"
+#+end_comment
+
+表 17-3 列出了自 MySQL 8.0.18 起可用的优化器开关及其默认值，以及开关作用的简要说明。优化器开关按照它们在
+optimizer_switch 选项中出现的顺序排列。
+
+#+NAME: 优化器开关
+| 优化器开关                              | 默认值 | 描述                                                                      |
+|---------------------------------------+-------+--------------------------------------------------------------------------|
+| index_merge                           | on    | 控制索引合并的总开关。                                                       |
+| index_merge_union                     | on    | 联合索引合并策略                                                            |
+| index_merge_sort_union                | on    | sort_union索引合并策略                                                     |
+| index_merge_intersection              | on    | intersection索引合并策略                                                   |
+| engine_condition_pushdown             | on    | NDBCluster的引擎条件下推                                                    |
+| index_condition_pushdown              | on    | 存储引擎的索引条件下推                                                       |
+| mrr                                   | on    | 多范围读取的优化                                                            |
+| mrr_cost_based                        | on    | 基于代价估算是否采用mrr                                                      |
+| block_nested_loop                     | on    | 块嵌套循环连接算法。它与 hash_join 开关一起控制是否可以使用散列连接。              |
+| batched_key_access                    | off   | 分批键访问优化。要使用分批键访问，还必须启用 mrr 开关，并禁用 mrr_cost_based 开关。 |
+| materialization                       | on    | 是否可以使用物化子查询。这也会影响物化半连接优化是否可用。                         |
+| semijoin                              | on    | 启用或禁用半连接优化的总开关。                                                |
+| loosescan                             | on    | 半连接损失扫描策略                                                          |
+| firstmatch                            | on    | 半连接的首次匹配                                                            |
+| duplicateweedout                      | on    | 半连接重复剔除策略                                                          |
+| subquery_ materialization_cost_ based | on    | 是否使用子查询具体化基于成本估算。                                             |
+| use_index_extensions                  | on    | InnoDB 添加到非唯一二级索引中的主键列是否作为索引的一部分使用。                    |
+| condition_fanout_filter               | on    | 访问方法未处理的条件是否包含在过滤估计中。                                      |
+| derived_merge                         | on    | 得出的合并优化结果。                                                         |
+| use_invisible_indexes                 | on    | 是否使用不可见索引。                                                         |
+| skip_scan                             | on    | 跳过扫描优化。                                                              |
+| hash_join                             | on    | 散列连接算法。要启用散列连接，必须同时启用 block_nested_loop 开关。              |
+
+本章前文对各种优化、策略和算法进行了详细介绍。
+
+如果你想在全局或整个会话期间更改设置，optimizer_switch 选项是个不错的选择；但在很多情况下，你只需要为单个查询更
+改优化器开关或设置。在这种情况下，优化器提示是更好的选择。
+
+** 优化器提示
+
+优化器提示（optimizer hints）功能在 MySQL 5.7 中引入，并在 MySQL 8 中进行了扩展。 它允许你向优化器提供信息，
+从而影响查询计划的最终结果。与打开或关闭选项的 optimizer_switch 选项不同，优化器提示等价物可以按查询块、表或索
+引设置。此外，还支持在查询过程中更改配置选项的值。当优化器本身无法获得最佳查询计划，或者你需要执行查询时，例如某个
+选项的值大于全局默认值时，这是提高查询性能的一种有效方法。
+
+优化器提示是在 SELECT、INSERT、REPLACE、UPDATE 或 DELETE 子句后使用特殊注释语法设置的。该语法使用内联注释，
+并在注释开始后紧跟一个 +，例如
+
+#+begin_src sql
+  select /*+ MAX_EXECUTION_TIME(2000) */
+      id, Name, District
+  from world.city
+  where CountryCode='AUS';
+#+end_src
+
+此示例将查询的最长执行时间设置为 2000 毫秒。
+
+表 17-4 列出了 MySQL 8.0.18 可用的优化器提示，包括每个提示支持的作用域和简要说明。对于许多提示，有两个版本，一
+个用于启用功能，另一个用于禁用功能；这两个版本一起列出。除了 NO_ICP 和 NO_RANGE_OPTIMIZATION 提示没有相应的
+提示来启用该功能外，其他提示均按启用该功能的提示的字母顺序排列。
+
+#+优化器提示
+| 提示                        | 作用域  | 描述                                                                                                                  |
+|----------------------------+--------+----------------------------------------------------------------------------------------------------------------------|
+| BKA NO_BKA                 | 查询块表 | bka优化                                                                                                               |
+| NO_BKA NO_BNL              | 查询块表 | bnl连接算法                                                                                                            |
+| HASH_JOIN NO_HASH_JOIN     | 查询块表 | hash连接算法                                                                                                           |
+| INDEX_MERGE NO_INDEX_MERGE | 表索引  | 索引合并优化                                                                                                           |
+| JOIN_FIXED_ORDER           | 查询块  | 强制按查询中列出的顺序执行查询块中的所有连接。这与使用 SELECT STRAIGHT_JOIN 相同。                                             |
+| JOIN_ORDER                 | 查询块  | 强制两个或多个表按特定顺序连接。优化程序可自由更改未列出的表的连接顺序                                                           |
+| JOIN_SUFFIX                | 查询块  | 强制指定的表成为连接的最后一个表，并按指定的顺序连接它们。                                                                     |
+| MAX_EXECUTION_TIME         | 全局    | 限制 SELECT 语句的查询执行时间。单位为毫秒。                                                                               |
+| MERGE NO_MERGE             | 表      | 得出的合并优化结果。                                                                                                     |
+| MRR NO_MRR                 | 表索引  | mrr优化                                                                                                               |
+| NO_ICP                     | 表索引  | 索引条件下推优化                                                                                                        |
+| NO_RANGE_OPTIMIZATION      | 表索引  | 不要对表和/或索引使用范围访问。这也会禁用索引合并和松散索引扫描。如果查询会导致大量范围扫描，并造成性能或资源问题，那么这种方法就非常有用。 |
+| QB_NAME                    | 查询块  | 设置查询模块的名称。该名称可用于在其他优化器提示中引用查询块。                                                                  |
+| RESOURCE_GROUP             | 全局    | 资源组用于查询，下一节将讨论资源组。                                                                                       |
+| SEMIJOIN NO_SEMIJOIN       | 查询块  | 半连接优化                                                                                                             |
+| SKIP_SCAN NO_SKIP_SCAN     | 表索引  | 跳跃扫描优化                                                                                                           |
+| SET_VAL                    | 全局    | 在查询过程中设置配置变量的值。                                                                                            |
+| SUBQUERY                   | 查询块  | 子查询是否可以使用物化优化或 IN-to-EXISTS 转换。                                                                           |
+
+在本章前面讨论连接算法和优化时，曾遇到过其中几个优化器提示。范围指定了提示适用于查询的哪一部分。范围包括
+
++ 全局：提示适用于整个查询。
++ 查询块： 提示适用于一组连接。例如，查询的顶层是一个查询块；子查询是另一个查询块。在某些情况下，适用于查询块的提示
+  也可以使用连接的表名，以便将提示限制在特定的连接上。
++ 表： 提示适用于特定表格。
++ 索引： 提示适用于特定索引的使用。
+
+
+指定表时，需要使用查询中使用的表名。如果为表指定了别名，则需要使用别名而不是表名，这样才能确保查询块中的所有表都能被
+唯一识别。
+
+#+begin_comment
+  本书无法详细介绍使用优化器提示的所有细节。随着新功能的添加，提示列表也会经常更新。建议您阅读
+  https://dev.mysql.com/doc/refman/en/optimizer-hints.html ，查看当前的优化器提示列表，以及有关使用和可
+  能冲突的所有详细信息。
+#+end_comment
+
+优化器提示的指定方式与函数调用相同，参数用括号指定。如果优化器提示不包含任何参数，则使用空括号。您可以为同一查询指
+定多个优化器提示，在这种情况下，可以使用空格将它们分隔开来。如果指定了多个参数，而不是一个前导查询块名称，则必须用
+逗号分隔参数（但要注意，在某些情况下，空格用于将两个信息合并为一个参数，例如，指定索引时，表名和索引名用空格分隔）。
+
+对于包含多个查询块的复杂查询，命名查询块是非常有用的，这样就可以指定优化器提示应适用于哪个查询块。你可以使用
+QB_NAME() 优化器提示来设置查询块的名称：
+
+#+begin_src sql
+  select /* QB_NAME(payment) */
+     rental_id
+  from sakila.payment
+  where staff_id=1 and customer_id=75;
+#+end_src
+
+然后，在指定提示时，您可以在查询块名称前添加 @ 来引用查询块：
+
+#+begin_src sql
+  select /*+ NO_INDEX_MERGE(@payment payment) */
+      rental_id, rental_date, return_date
+  from sakila.rental
+  where rental_id in (
+        select /*+ QB_NAME(payment) */
+             rental_id
+        from sakila.payment
+        where staff_id=1 and customer_id=75
+  );
+#+end_src
+
+这种方法与上一个示例中的方法相同，但它的优点是可以对不同查询块中的表使用同一个提示。
+
+优化器提示的一个重要用途是在查询过程中改变配置变量的值。这对 join_buffer_size 和 read_rnd_buffer_size 等
+选项特别有用，这些选项最好保持较小的全局值，但在某些查询中使用较大的值可以提高性能。您可以使用 SET_VAR()优化器提
+示，参数就是变量赋值。在参考手册中，可以使用 SET_VAR() 优化器提示的变量有 "SET_VAR 提示适用： 是"。例如，要将
+join_buffer_size 设置为 1 MiB，将 optimizer_search_depth 设置为 0（稍后将解释该选项），可以使用
+
+#+begin_src sql
+  select /*+ SET_VAR(join_buffer_size=1048576)
+             SET_VAR(optimizer_search_depath=0) */
+     CountryCode, country.Name as Country,
+     city.Name as City, city.District
+  from world.country ignore index(Primary)
+     inner join world.city ignore index(CountryCode)
+       on city.CountryCode=country.Code
+  where Continent='Asia';
+#+end_src
+
+从示例中可以看出一些值得注意的地方。首先，SET_VAR() 提示不支持在同一提示中设置两个选项，因此需要为每个选项指定一
+次提示。其次，该提示不支持表达式或单位，因此对于 join_ buffer_size，必须直接提供以字节为单位的值。
+
+有一件事优化器提示帮不了你。如果你对优化器选择的索引不满意，就需要使用索引提示。
+
+** 索引提示
+
+索引提示在 MySQL 中存在已久。你可以使用它们为每个表指定哪些索引允许优化程序使用，哪些应该忽略。在禁用用于块嵌套循
+环和散列连接算法示例的索引时，你已经遇到过 IGNORE INDEX 提示。
+
+MySQL支持三种索引提示
+
++ IGNORE INDEX: 优化器完全不允许使用已命名索引。
++ USE INDEX: 如果使用索引，优化器应使用其中一个已命名的索引。
++ FORCE INDEX: 这与 USE INDEX 相同，但如果有可能使用其中一个已命名的索引，则应避免进行表扫描。
+
+使用索引提示时，需要在括号内以逗号分隔的列表中提供受提示影响的索引名称。索引提示紧跟在表名之后。如果为表添加了别名，
+则将索引提示放在别名之后。例如，要查询亚洲所有城市，而不使用country表的主键或城市表的 CountryCode 索引，可以
+使用下面的查询：
+
+#+begin_src sql
+  select ci.CountryCode, co.Name as Country,
+    ci.Name as City, ci.District
+  from world.country co ignore index(Primary)
+  inner join world.city ci ignore index(Country) on ci.CountryCode=co.Code
+  where co.Continent='Asia';
+#+end_src
+
+请注意主键被称为 Primary。在示例中，索引提示适用于所有可以使用表索引的操作。例如，可以通过添加 FOR JOIN、FOR
+ORDER BY 或 FOR GROUP BY 将范围限制为连接、排序或分组：
+
+#+begin_src sql
+  select *
+  from world.city use index for order by (Primary)
+  where CountryCode='AUS'
+  order by id;
+#+end_src
+
+虽然在大多数情况下，最好限制索引提示的使用，这样优化器就可以根据索引和数据的变化自由更改查询计划，但索引提示是最强
+大的工具之一，在需要时不应该回避使用。
+
+影响优化器的最后一种方法是使用配置选项。
+
+** 配置选项
+
+除了 optimizer_switch选项外，还有一些配置选项会影响优化器。这些选项控制优化器搜索最优查询计划的穷尽程度，以及
+是否使用优化器跟踪功能跟踪优化器的步骤。优化器跟踪功能将推迟到第 20 章与 EXPLAIN 语句一起讨论。
+
+以下两个选项会被讨论
+
++ optimizer_prune_level
++ optimizer_search_depth
+
+optimizer_prune_level 选项的值可以是 0 或 1，默认值是 1。它决定优化器是否会剪枝查询计划，以避免进行穷举搜索。
+值为 1 时将启用剪枝。如果遇到的查询因剪枝而导致优化器无法找到足够好的查询计划，可以更改会话的
+optimizer_prune_level 值。全局值几乎都应为 1。  
+
+optimizer_search_depth 选项决定在搜索中应包含多少表（连接），以获得最佳查询计划。允许值为 0-62，默认值为 62。
+由于一个查询块所允许的表的最大数量是 61，因此值 62 意味着除了剪枝所删除的搜索路径外，将进行穷举搜索。值 0 表示
+MySQL 挑选最大搜索深度；目前这与将值设置为 7 相同。
+
+如果查询块中有许多通过内连接方式连接的表，而且与查询执行时间相比，确定查询计划所需的时间较长，则可能需要将
+optimizer_search_depth 设置为 0 或小于 62 的值。另一种方法是使用 JOIN_ORDER()、JOIN_PREFIX() 和
+JOIN_SUFFIX() 优化器提示来锁定部分查询的连接顺序。
+
+到目前为止，我们一直在围绕优化过程和优化器的选项进行讨论。还有一个层面需要考虑：执行查询时应使用哪个资源组。
+
+** 资源组
+
+资源组的概念是 MySQL 8 中的新概念，允许您为一个查询或一组查询可以使用的资源使用量设置规则。这可以成为提高高并发
+系统性能的有力方法，并允许你优先处理某些查询。本节将介绍如何获取有关现有资源组的信息、管理资源组以及如何使用资源组。
+
+#+begin_comment
+ 此外，在 Solaris 和 FreeBSD 以及 Linux 上，如果未设置 CAP_SYS_NICE 功能，线程优先级将被忽略。要了解最新限
+ 制以及如何启用 CAP_SYS_ NICE 功能，请参阅
+ https://dev.mysql.com/doc/refman/en/resourcegroups.html#resource-group-restrictions。
+#+end_comment
+
+** 检索有关资源组的信息
+
+有关现有资源组的信息可在 information_ schema.RESOURCE_GROUPS 视图中找到，该视图是存储资源组的数据字典表顶部
+的一个视图。该视图包括以下列：
+
++ RESOURCE_GROUP_NAME: 资源组的名称。
++ RESOURCE_GROUP_TYPE: 资源组是用于 SYSTEM 还是 USER 级别的线程。SYSTEM 用于系统线程，USER 用于用户连接。
++ RESOURCE_GROUP_ENABLED: 资源组是否可用
++ VCPU_IDS: 资源组允许使用哪些虚拟 CPU。虚拟 CPU 会考虑物理 CPU 内核、超线程、硬件线程等。
++ THREAD_PRIORITY:  使用资源组的线程的优先级。值越小，优先级越高。
+
+清单 17-10 显示了随 MySQL 安装一起提供的默认资源组的资源组信息。VCPU_IDS 列的值取决于系统中虚拟 CPU 的数量。
+
+#+begin_src sql
+  select * from information_schema.resource_groups\G
+#+end_src
+
+
+默认情况下有两个资源组：USR_default 组用于用户连接，SYS_default 用于系统线程。这两个组的配置相同，允许使用所有
+CPU。这两个组既不能丢弃，也不能修改。不过，您可以创建自己的资源组。
+
+** 管理资源组
+
+只要不修改或删除默认组，就可以创建、更改和删除资源组。这样就可以创建资源组，用于在查询中分配资源。创建、更改或删除
+资源组需要 RESOURCE_GROUP_ADMIN 权限。
+
+以下语句可用于管理资源组：
+
++ CREATE RESOURCE GROUP: 创建新的资源组
++ ALTER RESOURCE GROUP: 修改已存在的资源组
++ DROP RESOURCE GROUP: 删除资源组
+
+对于所有这三个语句，必须始终指定组名，并且指定时不带任何参数名（稍后将举例说明）。表 17-5 列出了这三个语句的参数。
+其中数值指定 N 或 M-N，M 和 N 表示整数。
+
+#+NAME: 管理资源组可使用的参数
+| 选项      | 语法             | 值              | 操作               |
+|----------+-----------------+----------------+-------------------|
+| Name     |                 | 至多64个字符     | CREATE,ALTER,DROP |
+| Type     | TYPE= ...       | SYSTEM,USER    | CREATE            |
+| CPUs     | VCPU= ...       | N或M-N列表      | CREATE,ALTER      |
+| Priority | THREAD_PRIORITY | N              | CREATE, ALTER     |
+| Status   |                 | ENABLE,DISABLE | CREATE，ALTER      |
+| Force    | FORCE           |                | ALTER,DROP                  |
+
+
+优先级的有效值范围取决于组类型。SYSTEM 组的优先级介于 -20 和 0 之间，而 USER 类型的优先级介于 -20 和 19 之间。
+优先级的含义遵循 Linux 中 nice 功能的原则，即优先级值越低，线程获得的优先级就越高。因此，-20 是最高优先级，而
+19 则是最低优先级。在 Microsoft Windows 中，有五种可用的本地优先级。表 17-6 列出了资源组优先级与 Microsoft
+Windows 优先级的映射关系。
+
+#+: 在Windows中的资源组级别
+| 初始优先级 | 结束优先级 | Windows Priority Level       |
+|----------+----------+------------------------------|
+|      -20 |      -10 | THREAD_PRIORITY_HIGHEST      |
+|       -9 |       -1 | THREAD_PRIORITY_ABOVE_NORMAL |
+|        0 |        0 | THREAD_PRIORITY_NORMAL       |
+|        1 |       10 | THREAD_PRIORITY_BELOW_NORMAL |
+|       11 |       19 | THREAD_PRIORITY_LOWEST                             |
+
+创建新资源组时，必须设置组的名称和类型。其余参数为可选参数。默认情况下，VCPU 包括主机上所有可用的 CPU，优先级设为
+0，并启用组。为用户连接创建一个名为 my_group 的已启用组，该组可以使用id 为 2、3、6 和 7 的 CPU 的示例如下（这
+要求主机至少有 8 个虚拟 CPU）：
+
+#+begin_src sql
+  create resource group my_group
+    type=user
+    vcpu=2-3,6,7
+    thread_priority=0
+  enable;
+#+end_src
+
+VCPU 参数的指定说明了如何逐个列出 CPU 或使用一个范围。资源组名称被视为标识符，因此只需在与模式和表名相同的情况下
+使用反斜线引述即可。
+
+ALTER RESOURCE GROUP 语句与 CREATE RESOURCE GROUP 语句类似，但不能更改组名称或组类型。例如，要更改名为
+my_group 的组的 CPU 和优先级
+
+#+begin_src sql
+  alter resource group my_group
+   vcpu=2-5
+   thread_priority=10;
+#+end_src
+
+如果需要删除一个资源组，可以使用 DROP RESOURCE GROUP 语句，例如，该语句只要求提供组名：
+
+#+begin_src sql
+  drop resource group my_group;
+#+end_src
+
+对于 ALTER RESOURCE GROUP 和 DROP RESOURCE GROUP 语句，有一个可选参数 FORCE。这指定了当有线程使用资源组
+时，MySQL 应如何处理。表 17-7 总结了这些行为。
+
+#+NAME: 使用 FORCE 或不使用 FORCE 的效果
+| Forcing     | ALTER                                                                       | DROP                              |
+|-------------+-----------------------------------------------------------------------------+-----------------------------------|
+| Not forcing | 当使用该组的所有现有线程都已终止时，更改才会生效。在此之前，任何新线程都不能使用该资源组。 | 如果有任何线程分配给该组，则会发生错误。 |
+| Forcing     | 现有线程会根据线程类型移动到默认组中。                                             | 现有线程会根据线程类型移动到默认组中。   |
+
+在修改和删除资源组时，如果使用 FORCE 选项，分配给该组的现有线程将重新分配给默认组。这意味着用户连接使用
+USR_default 组，系统线程使用 SYS_default 组。对于 ALTER RESOURCE GROUP，只有同时指定了 DISABLE 选项，才
+能使用 FORCE 选项。
+
+现在可以为线程分配资源组了。
+
+** 分配资源组
+
+为线程设置资源组有两种方法。可以显式地为线程设置资源组，也可以使用优化器提示为单个查询设置资源组。无论使用哪种方法，
+将线程分配到资源组都需要 RESOURCE_GROUP_ADMIN 或 RESOURCE_GROUP_USER 权限。
+
+首先，重新创建 my_group 组（这次只使用一个 CPU，以便在所有系统上运行）：
+
+#+begin_src sql
+  create resource group my_group
+    type=user
+    vcpu=0
+  thread_priority=0
+  enable;
+#+end_src
+
+#+begin_comment
+  目前不允许使用 X 协议（mySQL Shell 的默认协议）的连接创建、修改或设置资源组，除非使用优化器提示为单个查询设置
+  资源组。
+#+end_comment
+
+使用 SET RESOURCE GROUP 语句可将线程分配到资源组。这对系统线程和用户线程都有效。要将连接本身分配给资源组，请使
+用以资源组名称为唯一参数的语句，例如
+
+#+begin_src sql
+  set resource group my_group;
+#+end_src
+
+如果要更改一个或多个其他线程的资源组，可在末尾添加 FOR 关键字，然后用逗号分隔列出要分配给该组的 Performance
+Schema 线程 ID。例如，要将线程 47、49 和 50 分配到 my_group（在本例中，线程 id 显然与您的情况不同，请用您系
+统中存在的线程替换）
+
+#+begin_src sql
+  set resource group my_group for 47, 49, 50;
+#+end_src
+
+作为一种替代方法，您可以使用 RESOURCE_GROUP() 优化器提示，例如在查询期间为线程分配资源组：
+
+#+begin_src sql
+  select /*+ RESOURCE_GROUP(my_group) */
+    ,*
+  from world.city
+  where CountryCode='USA';
+#+end_src
+
+一般来说，优化器提示是使用资源组的最佳方式，因为它允许你在每个查询中设置资源组，而且在使用 X 协议时也支持优化器提
+示。它还可以与 MySQL 重写插件或 ProxySQL 等支持在查询中添加优化器提示注释的代理结合使用。
+
+您可以使用 performance_schema.threads 表中的 RESOURCE_GROUP 列查看每个线程使用的资源组。例如，要查看之前
+使用 SET RESOURCE GROUP FOR 47、49、50 语句更改的三个线程所使用的资源组
+
+#+begin_src sql
+  select THREAD_ID, RESOURCE_GROUP
+  from performance_schema.threads
+  where THREAD_ID in (47, 49, 50);
+#+end_src
+
+** 性能考虑因素
+
+使用资源组的效果取决于多个因素。默认情况下，所有线程都可以在任何 CPU 上以相同的中端优先级执行，这与 MySQL 5.7 及
+更早版本中的行为相同。当 MySQL 开始遇到资源争用时，使用不同的资源组配置会带来主要好处。
+
+由于资源组的最佳使用在很大程度上取决于硬件和查询工作量的组合，因此无法给出具体建议。资源组的最佳使用也会随着 MySQL
+代码的新改进而改变。这意味着，您需要一如既往地使用监控来确定更改资源组和使用资源组的效果。
+
+尽管如此，我们还是可以就如何使用资源组来提高性能或改善用户体验提出一些建议。这些建议包括但不限于
+
++ 为不同的连接赋予不同的优先级。例如，这可以确保批处理作业不会过多地影响与前端应用程序相关的查询，也可以为不同的应
+  用程序赋予不同的优先级。
++ 将不同应用的线程分配到不同的 CPU 组，以减少它们之间的干扰。
++ 将写线程和读线程分配到不同的 CPU 组，为不同任务设置最大并发量。举例来说，如果写线程遇到资源争用问题，这可以用来
+  限制写线程的并发量。
++ 为执行需要很多锁的事务的线程赋予高优先级，以便事务能尽快完成并再次释放锁。
+
+根据经验，如果没有足够的 CPU 资源来并行执行所有操作，或者写并发量过大，那么资源组就会非常有用。对于低并发工作负载，
+通常最好使用默认资源组。  
+
+** 总结
+
+本章将介绍优化器的工作原理、可用的连接算法和优化、如何配置优化器以及资源组。
+
+MySQL 使用基于成本的优化器，在这种优化器中，会估算查询执行过程中每个部分的成本，并选择使成本最小化的整体查询计划。
+作为优化的一部分，优化器将使用各种转换重写查询，找到最佳连接顺序，并做出其他决定，如应使用哪些索引。
+
+MySQL 支持三种连接算法。最简单也是最原始的算法是嵌套循环连接，它只是遍历最外层表中的记录，然后对下一个表进行嵌套
+循环，以此类推。块嵌套循环是一种扩展，非索引连接可以使用连接缓冲区来减少内表的表扫描次数。MySQL 8.0.18 中新增了
+哈希连接算法，该算法也用于不使用索引的连接，对于它所支持的连接来说非常有效--对于低选择性索引来说，它的效果甚至超过
+了索引连接。
+
+还可以使用一系列其他优化方法。我们特别关注了索引合并、多范围读取和分批键访问优化。索引合并优化允许 MySQL 对每个表
+使用一个以上的索引。多范围读取优化用于减少二级索引读取造成的随机 I/O 量。分批键访问优化结合了块嵌套循环和多范围读
+取优化。
+
+有几种方法可以改变 MySQL 的配置来影响优化器。mysql.engine_cost 表存储从内存和磁盘读取的成本信息。可根据每个存
+储引擎进行设置。mysql.server_cost 包含各种操作的基本成本估算，如使用内部临时表和比较记录。optimizer_switch
+配置选项用于启用或禁用各种优化器功能，如块嵌套循环、分批键访问等。
+
+影响优化器的两个灵活选项是使用优化器提示和索引提示。优化器提示可用于启用或禁用功能，以及设置查询选项或更细粒度的索
+引级选项。索引提示可用于启用或禁用表的索引。索引提示还可以选择限制在特定操作上，如排序。最后，
+optimizer_prune_level 和 optimizer_search_depth 选项可用于限制优化器为找到最优查询计划所做的工作。
+
+最后一项功能是资源组，它是 MySQL 8 中新增的功能。资源组可用于指定允许线程使用的 CPU 以及线程执行的优先级。这对某
+些线程的优先级高于其他线程或防止资源争用非常有用。
+
+
 
 
 
