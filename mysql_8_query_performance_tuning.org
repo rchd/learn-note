@@ -4087,6 +4087,1322 @@ optimizer_prune_level 和 optimizer_search_depth 选项可用于限制优化器�
 最后一项功能是资源组，它是 MySQL 8 中新增的功能。资源组可用于指定允许线程使用的 CPU 以及线程执行的优先级。这对某
 些线程的优先级高于其他线程或防止资源争用非常有用。
 
+* 分析查询
+
+在上一章中，您学习了如何查找需要优化的查询。现在是时候进行下一步了--分析查询，以确定其执行效果不如预期的原因。分析过
+程中的主要工具是 EXPLAIN 语句，它会显示优化器将使用的查询计划。与此相关的是优化器跟踪，可用于研究优化器最终使用查询
+计划的原因。另一种方法是使用性能模式中的语句和阶段信息，查看存储过程或查询在哪里花费的时间最多。本章将讨论这三个主题。
+
+对 EXPLAIN 语句的讨论是本章迄今为止篇幅最长的部分，共分为四节：
+
++ EXPLAIN 使用: EXPLAIN的基本用法
++ EXPLAIN格式: 查询计划可查看的每种格式的具体细节。这包括通过 EXPLAIN 语句明确选择的格式和 MySQL 工作台使用的
+   Visual Explain 格式。
++ EXPLAIN输出: 对查询计划中可用信息的讨论。
++ EXPLAIN 示例: 使用 EXPLAIN 语句的一些示例，并讨论返回的数据。
+
+
+** EXPLAIN使用
+
+EXPLAIN 语句返回 MySQL 优化器将用于给定查询的查询计划概览。它既是非常简单的查询优化工具，也是比较复杂的查询优化
+工具之一。说它简单，是因为你只需在要研究的查询前添加 EXPLAIN 命令；说它复杂，是因为要理解这些信息，需要对 MySQL
+及其优化器的工作方式有一定的了解。EXPLAIN 既可以在你明确指定的查询中使用，也可以在另一个连接正在执行的查询中使用。
+本节将介绍 EXPLAIN 语句的基本用法。
+
+** 显式查询的用法
+
+您可以在查询前面添加 EXPLAIN 来生成查询计划，也可以添加 FORMAT 选项来指定是否希望以传统表格格式、JSON 格式或树
+形格式返回结果。查询支持 SELECT、DELETE、INSERT、REPLACE 和 UPDATE 语句。查询不会被执行（但例外情况请参见下
+一小节的 EXPLAIN ANALYZE），因此获取查询计划是安全的。
+
+如果需要分析复合查询（如存储过程和存储函数），首先需要将执行过程分割成单个查询，然后对每个需要分析的查询使用
+EXPLAIN。确定存储程序中单个查询的一种方法是使用性能模式。本章稍后将举例说明如何实现这一点。
+
+EXPLAIN 的最简单用法就是在指定 EXPLAIN 时，同时指定要分析的查询：
+
+#+begin_src sql
+  explain <query>;
+#+end_src
+
+在示例中，<query> 是要分析的查询。使用不带 FORMAT 选项的 EXPLAIN 语句会以传统表格格式返回结果。如果要指定格式，
+可以添加 FORMAT=TRADITIONAL|JSON|TREE：
+
+#+begin_src sql
+  explain format=traditional <query>;
+
+  explain format=json <query>;
+
+  explain format=tree <query>;
+#+end_src
+
+首选哪种格式取决于您的需求。如果需要查询计划的概览、使用的索引以及查询计划的其他基本信息，传统格式更容易使用。JSON
+格式提供了更多细节，更便于应用程序使用。例如，MySQL Workbench 中的 Visual Explain 使用 JSON 格式的输出。
+
+树形格式是最新的格式，在 MySQL 8.0.16 及更高版本中受支持。它要求使用 Volcano 迭代器执行器执行查询，但在撰写本文
+时，并非所有查询都支持该执行器。树形格式的一个特殊用途是用于 EXPLAIN ANALYZE 语句。
+
+** EXPLAIN ANALYZE
+
+EXPLAIN ANALYZE 语句是 MySQL 8.0.18 中新增的语句，是使用树格式对标准 EXPLAIN 语句的扩展。主要区别在于
+EXPLAIN ANALYZE 会实际执行查询，并在执行过程中收集执行的统计数据。在执行语句时，查询的输出会被抑制，因此只会返
+回查询计划和统计数据。与树形输出格式一样，需要使用火山迭代器执行器。
+
+
+#+begin_comment
+  在撰写本报告时，由于对 Volcano iterator 执行器的要求，可以使用 EXPLAIN ANALYZE 的查询仅限于 SELECT 语句
+  的子集。预计随着时间的推移，支持的查询范围将会扩大。
+#+end_comment
+
+EXPLAIN ANALYZE 的用法与 EXPLAIN 语句非常相似：
+
+#+begin_src sql
+  explain analyze <query>
+#+end_src
+
+EXPLAIN ANALYZE 的输出结果将与树形格式输出结果一起在本章后面讨论。 将在本章稍后部分与树形格式输出一起讨论。
+
+从本质上讲，EXPLAIN ANALYZE 只适用于显式查询，因为它需要自始至终监控查询。另一方面，普通 EXPLAIN 语句也可用于
+正在进行的查询。
+
+** 连接的用法
+
+假设您正在调查一个性能不佳的问题，并注意到有一个查询已经运行了几个小时。你知道这是不应该发生的，所以你想分析一下查
+询为什么这么慢。一种方法是复制查询并执行 EXPLAIN。但是，这可能无法提供所需的信息，因为索引统计信息可能在缓慢查询
+开始后发生了变化，因此现在分析查询无法显示导致性能缓慢的实际查询计划。
+
+更好的解决方法是请求用于慢查询的实际查询计划。可以使用 EXPLAIN 语句的 EXPLAIN FOR CONNECTION 变体来获取。如
+果你想试试，举例来说，你需要一个长期运行的查询：
+
+#+begin_src sql
+  select * from world.city where id=130+sleep(0.1);
+#+end_src
+
+这将耗时约 420 秒（world.city 表中每行耗时 0.1 秒）。
+
+您需要提供要调查的查询的连接 ID，并将其作为参数传递给 EXPLAIN。您可以从进程列表信息中获取连接 ID。例如，如果使用
+sys.session 视图，连接 id 可以在 conn_id 列中找到：
+
+#+begin_src sql
+  select conn_id, current_statment,
+    statement_latency
+  from sys.session
+  where command='Query'
+  order by time
+  desc limit 1\G
+#+end_src
+
+为了使输出简单明了，本示例中的输出仅限于感兴趣的连接。查询的连接 ID 是 8，可以用它获取查询的执行计划，如下所示：
+
+#+begin_src sql
+  explain for connection 8\G
+#+end_src
+
+与明确指定查询的方式相同，您可以选择添加所需的格式。如果使用的客户端与 MySQL Shell 不同，过滤后的列可能显示
+100.00。在讨论输出的含义之前，值得先熟悉一下输出格式。
+
+** EXAPLIN格式
+
+当您需要检查查询计划时，可以在几种格式中进行选择。选择哪一种主要取决于您的偏好。也就是说，JSON 格式确实比传统格式
+和树形格式包含更多信息。如果喜欢查询计划的可视化表示，MySQL 工作台的 Visual Explain 是一个不错的选择。
+
+本节将讨论每种格式，并显示以下查询的查询计划输出：
+
+#+begin_src sql
+  select ci.ID, ci.Name, ci.District,
+    co.Name as Country, ci.Population
+  from world.city ci
+    inner join
+    (select Code, Name
+     from world.country
+     where Continent='Europe'
+     order by SurfaceArea
+     limit 10
+     ) co on co.Code=ci.CountryCode
+  order by ci.Population desc
+  limit 5;
+#+end_src
+
+该查询按面积查找欧洲 10 个最小国家中最大的 5 个城市，并按城市人口降序排列。之所以选择这个查询，是因为它展示了各种
+输出格式是如何表示子查询、排序和限制的。本节将不讨论 "解释 "语句返回的信息；这部分内容将在 "解释示例 "部分讨论。
+
+#+begin_comment
+  EXPLAIN 语句的输出取决于优化器开关的设置、索引统计信息以及 mysql.engine_ cost 表和 mysql.server_cost 表
+  中的值，因此您看到的输出可能与示例中的不同。示例输出使用了默认值和新加载的世界示例数据库，并在加载完成后对表执行了
+  ANALYZE TABLE，这些输出是在 MysQl shell 中创建的，默认情况下会自动获取警告（但只有在讨论警告时才会将其包含在
+  输出中）。
+#+end_comment
+
+查询计划的输出相当冗长。为了便于比较输出结果，我们将本节中的示例与查询结果合并到本书 GitHub 代码库中的
+explain_formats.txt 文件中。对于树形输出格式（包括 EXPLAIN ANALYZE），在列名和查询计划之间新增了一行，以便更
+清晰地显示树形层次结构：
+
+** 传统格式
+
+在执行 EXPLAIN 命令时，如果不使用 FORMAT 参数或将格式设置为 TRADITIONAL，输出结果将以表的形式返回，就像查询了
+一个普通表一样。当您需要查询计划的概览，并且由人工数据库管理员或开发人员检查输出结果时，这种方法非常有用。
+
+#+begin_comment
+  在调用 mysql 命令行客户端时，你可以使用 --vertical 选项来要求获得垂直格式的输出，也可以使用 \G 来终止查询。
+#+end_comment
+
+输出中有 12 列。如果某个字段没有任何值，则使用 NULL。下一节将讨论每一列的含义。清单 20-1 显示了示例查询的传统输出
+结果。
+
+#+begin_src sql
+  explain format=traditional
+  select ci.ID, ci.Name, ci.District,
+    co.Name as Country, ci.Population
+  from world.city ci
+  inner join (select Code, Name
+              from world.country
+              where Continent='Europe'
+              order by SurfaceArea
+              limit 10
+              ) co on co.Code=ci.CountryCode
+  order by ci.Population desc
+  limit 5\G
+#+end_src
+
+请注意第一个表名为 <derived 2>。这是对国家表的子查询，数字 2 指的是执行子查询的 id 列的值。Extra 列包含查询是
+否使用临时表和文件排序等信息。输出的末尾是优化器重写后的查询。在许多情况下不会有太大改动，但在某些情况下，优化器可
+能会对查询做出重大改动。在重写后的查询中，请注意注释（例如：/* select#1 */）是如何用于显示查询的该部分使用了哪个
+id 值的。重写查询中可能还有其他提示，说明查询是如何执行的。SHOW WARNINGS（默认情况下由 MySQL Shell 隐式执行）
+会将重写的查询作为注释返回。
+
+输出结果可能看起来令人不知所措，而且很难理解如何使用这些信息来分析查询。在讨论了其他输出格式、选择类型和连接类型的
+详细信息以及额外信息后，我们将举例说明 EXPLAIN 信息的用途。
+
+如果要以编程方式分析查询计划，该怎么办？您可以像处理普通 SELECT 查询一样处理 EXPLAIN 输出，也可以请求包含一些附
+加信息的 JSON 格式信息。
+
+** JSON格式
+
+自 MySQL 5.6 起，可以使用 JSON 格式请求 EXPLAIN 输出。与传统的表格格式相比，JSON 格式的一个优势是，它增加了灵
+活性，可以以更合理的方式对信息进行分组。
+
+JSON 输出的基本概念是查询块。查询块定义了查询的一部分，并可反过来包含自己的查询块。这允许 MySQL 将查询执行的细节
+指定给所属的查询块。这一点从清单 20-2 所示的示例查询输出中也可以看出。
+
+#+begin_src sql
+  explain format=json
+  select ci.ID, ci.Name, ci.District,
+    co.Name as Country, ci.Population
+  from world.city ci
+  inner join (select Code, Name
+              from world.country
+              where Continent='Europe'
+              order by SurfaceArea
+              limit 10
+              ) co on co.Code=ci.CountryCode
+  order by ci.Population desc
+  limit 5\G
+#+end_src
+
+正如你所看到的，输出结果相当冗长，但这种结构可以让你比较容易地看出哪些信息属于同一个表，以及查询的各个部分是如何相
+互关联的。在这个示例中，有一个嵌套循环，包括两个表（co 和 ci）。co 表本身包含一个新的查询块，该查询块是使用
+country 表的实体化子查询。
+
+JSON 格式还包括其他信息，如 cost_info 元素中每个部分的估计成本。成本信息可用于查看优化器认为查询中最昂贵的部分在
+哪里。例如，如果您发现查询的某个部分的成本很高，但根据您对数据的了解，该部分的成本应该很低，这可能表明索引统计信息
+不是最新的，或者需要使用直方图。
+
+使用 JSON 格式输出的最大问题是信息量太大，输出行数太多。解决这个问题的一个非常方便的方法是使用 MySQL Workbench
+中的 Visual Explain 功能，该功能将在讨论树形格式输出后介绍。
+
+** 树形格式
+
+树形格式侧重于从查询各部分之间的关系和各部分的执行顺序来描述查询是如何执行的。从这个意义上讲，它听起来可能与 JSON
+输出类似；不过，树形格式更简单易读，而且没有那么多细节。树形格式在 MySQL 8.0.16 中作为实验功能引入，依赖于火山迭
+代器执行器。从 MySQL 8.0.18 开始，树格式也用于 "解释分析器 "功能。
+
+清单 20-3 显示了示例查询的树形格式输出。此输出为非分析版本。稍后将显示 EXPLAIN ANALYZE 对同一查询的输出示例，以
+便您了解两者的区别。
+
+#+begin_src sql
+  EXPLAIN FORMAT=TREE
+  SELECT ci.ID, ci.Name, ci.District,
+      co.Name AS Country, ci.Population
+  FROM world.city ci
+  INNER JOIN (SELECT Code, Name
+             FROM world.country
+             WHERE Continent = 'Europe'
+             ORDER BY SurfaceArea
+             LIMIT 10 ) co ON co.Code = ci.CountryCode
+  ORDER BY ci.Population DESC LIMIT 5\G
+#+end_src
+
+输出结果很好地概述了查询是如何执行的。通过从里到外阅读输出，可以在一定程度上更容易理解执行情况。在嵌套循环中，有两
+张表，其中第一张表是对 co 的表扫描（缩进部分已缩小）：
+
+[[./images/sPgrZ6.png]]
+
+在这里，您可以看到 co 表是如何创建的物化子查询，首先对国家表进行表扫描，然后应用大洲过滤器，再根据表面积进行排序，
+最后将结果限制为 10 行。
+
+嵌套循环的第二部分比较简单，只需使用 CountryCode 索引对 ci 表（城市表）进行索引查找即可：
+
+[[./images/nesOfZ.png]]
+
+使用内连接解决嵌套循环后，结果会以流式（即非实体化）的方式进行排序，并返回前五行：
+
+[[./images/re33K9.png]]
+
+虽然没有 JSON 输出那么详细，但它仍然包含了查询计划的大量信息。其中包括每个表的估计成本和估计行数。例如，在国家表
+面积的排序步骤中
+
+[[./images/COgCrN.png]]
+
+一个很好的问题是，这与查询表的实际成本有什么关系。您可以使用 EXPLAIN ANALYZE 语句来解决这个问题。清单 20-4 显
+示了为示例查询生成的输出示例。
+
+#+begin_src sql
+  EXPLAIN ANALYZE
+  SELECT ci.ID, ci.Name, ci.District,
+     co.Name AS Country, ci.Population
+  FROM world.city ci
+  INNER JOIN (SELECT Code, Name
+              FROM world.country
+              WHERE Continent = 'Europe'
+              ORDER BY SurfaceArea LIMIT 10
+              ) co ON co.Code = ci.CountryCode
+  ORDER BY ci.Population DESC LIMIT 5\G
+#+end_src
+
+这是与 FORMAT=TREE 相同的树形输出，但每一步都有关于性能的信息。如果查看 ci 表的一行，可以看到有两个计时信息：行
+数和循环数（重新格式化以提高可读性）：
+
+[[./images/Pnhld4.png]]
+
+在这里，预计读取 18 行（每个循环）的估计成本为 4.69。实际统计数据显示，0.012 毫秒后读取第一行，0.013 毫秒后读取
+所有行。共有十个循环（十个国家各一个），每个循环平均读取两行，总共读取 20 行。因此，在这种情况下，估计值不是很准确
+（因为查询只选择小国家）。
+
+#+begin_comment
+  EXPLAIN ANALYZE 的行数是四舍五入为整数的每个循环的平均值。在本示例中，使用性能模式中的
+  table_io_waits_ summary_by_table 表显示读取了 15 条记录。
+#+end_comment
+
+如果您的查询在 MySQL 8.0.18 及更高版本中使用了散列连接，则需要使用树形格式输出来确认何时使用了散列连接算法。例
+如，如果使用散列连接将城市表与国家表连接起来
+
+#+begin_src sql
+  explain format=tree
+  select CountryCode, country.Name as Country,
+    city.Name as City, city.District
+  from world.country ignore index(Primary)
+  inner join world.city ignore index(CountryCode)
+    on city.CountryCode=country.Code\G
+#+end_src
+
+请注意，连接是一个内部哈希连接，对country表的表扫描是使用哈希进行的。
+
+到目前为止，所有示例都使用了基于文本的输出。特别是 JSON 格式的输出，可能很难用来概览查询计划。为此，Visual
+Explain 是一个更好的选择。
+
+** 可视化EXPLAIN
+
+可视化解释功能是 MySQL 工作台的一部分，通过将 JSON 格式的查询计划转换成图形表示来工作。早在第 16 章研究向
+sakila.film 表添加直方图的效果时，您就已经使用过 Visual Explain。
+
+如图 20-1 所示，单击闪电符号前带放大镜的图标，即可获得 Visual Explain 图表。
+
+[[./images/Wd1mIM.png]]
+
+如果查询执行时间较长或查询修改了数据，这是生成查询计划的一种特别有用的方法。如果已经执行了查询，也可以单击结果网格
+右侧的执行计划图标，如图 20-2 所示。
+
+[[./images/l2cXRs.png]]
+
+Visual Explain 图表是以流程图的形式创建的，每个查询块和表都有一个矩形。数据处理则使用其他形状（如表示连接的菱形）
+来描述。图 20-3 展示了 Visual Explain 中使用的每种基本形状的示例。
+
+[[./images/4odm7k.png]]
+
+图中，查询块为灰色，而表的两个示例（子查询中的单行查找和全表扫描）分别为蓝色和红色。灰色块也用于联合等情况。表格框
+下方的文本以标准文本显示表格名称或别名，以粗体文本显示索引名称。圆角矩形表示对行进行的操作，如排序、分组、区分操作
+等。
+
+左上方的数字是该表、操作或查询块的相对成本。表和连接右上方的数字是估计要结转的行数。操作的颜色用于显示应用该操作的
+成本有多高。表格也使用基于表格访问类型的颜色，主要用于归类类似的访问类型，其次用于显示访问类型的成本。使用 Visual
+Explain 估算的成本，颜色与成本之间的关系如图 20-4 所示。
+
+[[./images/XbAzgB.png]]
+
+蓝色 (1) 代表最便宜；绿色 (2)、黄色 (3) 和橙色 (4) 代表中低成本；最昂贵的接入类型和操作为红色，象征高成本 (5)
+到极高成本 (6)。
+
+颜色组之间存在大量重叠。每个成本估算都考虑了 "平均 "用例，因此不应将成本估算视为绝对真理。查询优化是一项复杂的工作，
+有时对于某个特定查询来说，一种方法通常比另一种方法更便宜，但结果却能提供更好的性能。
+
+#+begin_comment
+  本书作者曾经决定改进一个查询，该查询的查询计划看起来很糟糕：内部临时表、文件排序、访问方法不佳等等。经过长时间重
+  写查询并验证表是否有正确的索引后，查询计划看起来很漂亮--但结果却发现查询的性能比原来的更差。
+#+end_comment
+
+对于表而言，成本与访问类型相关联，访问类型是传统 EXPLAIN 输出中 type 列的值，也是 JSON 格式输出中 access_type
+字段的值。图 20-5 显示了 Visual Explain 如何表示当前存在的 12 种访问类型。对访问类型的解释将推迟到下一节。
+
+[[./images/6LojWd.png]]
+
+此外，Visual Explain 还有一个黑色的 "未知 "访问类型，以防遇到未知的访问类型。访问类型从左到右排序，然后根据颜色
+和大致成本从上到下排序。
+
+图 20-6 将所有这些整合在一起，显示了本节中使用的示例查询的查询计划。
+
+[[./images/8dY6VQ.png]]
+
+读图时，要从左下角读到右上角，然后再向上读。因此，从图中可以看出，首先对国家表进行全表扫描的子查询，然后对物化的 co
+表进行另一次全表扫描，并使用非唯一索引查找将 ci（城市）表上的行连接起来。最后，使用临时表和文件排序对结果进行排序。
+
+如果想了解比图表显示更多的详细信息，可以将鼠标悬停在查询计划中想了解的部分。图 20-7 显示了 ci 表所含详细信息的
+示例。
+
+[[./images/vPP7yh.png]]
+
+弹出框架不仅会显示 JSON 输出中的其余详细信息，还会提供提示，帮助理解数据的含义。所有这些都意味着，Visual Explain
+是通过查询计划开始分析查询的好方法。随着经验的积累，你可能会更喜欢使用基于文本的输出，尤其是如果你喜欢使用 shell
+工作的话，但不要因为你认为使用基于文本的输出格式更好，就放弃 Visual Explain。即使对专家来说，Visual Explain
+也是了解查询如何执行的绝佳工具。
+
+希望通过对输出格式的讨论，您能了解 EXPLAIN 可以提供哪些信息。然而，要完全理解并利用它，有必要深入了解信息的含义。
+
+** EXPLAIN 输出
+
+解释输出中有很多信息，因此值得深入了解这些信息的含义。本节首先概述了传统输出和 JSON 格式输出中包含的字段；然后将
+更详细地介绍选择类型、访问类型和额外信息。
+
+** EXPLAIN字段
+
+要在工作中建设性地使用 EXPLAIN 语句来改进查询，第一步就是要了解有哪些信息可用。这些信息包括对查询部分进行引用的
+id，以及可用于查询的索引的详细信息、使用的索引和应用的优化器功能。
+
+如果您在第一次阅读定义后无法回忆起所有细节，请不要担心。大多数字段都是不言自明的，因此您可以有条件地猜测它们所代表
+的数据。当你自己分析一些查询时，也会很快熟悉这些信息。表 20-1 列出了传统格式中包含的所有字段以及 JSON 格式中的一
+些常用字段。
+
+| 传统格式        | json格式                         | 描述                                                                                                                                                           |
+|---------------+---------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| id            | select_id                       | 顶级表的 id = 1，第一个子查询的 id = 2，以此类推。如果是联合查询，id 将为 NULL，表值设置为 <unionM,N>（另请参阅表列），该行表示联合查询结果的汇总。                              |
+| select_type   |                                 | 这表明表格将如何包含在整个语句中。已知的选择类型将在后面的 "选择类型 "部分讨论。对于 JsOn 格式，选择类型是由 JsOn 文档的结构以及依赖和可缓存等字段暗示的。                           |
+|               | dependent                       | 是否是从属子查询，即取决于查询的外部部分。                                                                                                                           |
+|               | cacheable                       | 子查询的结果是否可以缓存，还是必须对外部查询中的每一条记录重新进行评估。                                                                                                  |
+| table         | table_name                      | 特殊情况包括联合表、派生表和具体化子查询，其中表名分别为 <unionM,N>、<derivedN> 和 <subqueryN>，其中 n 和 M 指的是查询计划早期部分的 id。                                     |
+| partitions    | partitions                      | 您可以用它来确定分区剪枝是否按预期应用。                                                                                                                             |
+| type          | access_type                     | 这表明优化程序如何决定限制在表中检查的行数，这些类型将在 "访问类型 "部分讨论。                                                                                             |
+| possible_keys | possible_keys                   | 表的候选列表，使用模式 <auto_key0> 的键名表示自动生成的索引可用。                                                                                                      |
+| key           | key                             | 使用模式 <auto_key0> 的键名表示使用自动生成的索引。                                                                                                                  |
+| key_len       | key_length                      | 使用索引的字节数。对于由多列组成的索引，优化器可能只能使用列的子集。在这种情况下，可以使用键长度来确定有多少索引对该查询有用。如果索引中的列支持 NULL 值，则长度会比非 NULL 列增加 1 个字节。 |
+|               | used_key_parts                  | 索引中使用的列。                                                                                                                                                 |
+| ref           | ref                             | 例如，可以是条件常量，如 <table>.<column> = 'abc'，也可以是连接时另一个表中的列名。                                                                                     |
+| rows          | rows_examined_per_scan          | 行数的估计值，是包含表的结果。对于与先前表连接的表，它是每次连接后估计能找到的行数。一种特殊情况是，当引用是表的主键或唯一键时，在这种情况下，行数估计值正好是 1。                       |
+|               | rows_produced_per_join_filtered | 连接后的估计行数。将预期的循环数乘以每次扫描所检查的行数（rows_examined_per_scan）和已过滤行的百分比，即可得出有效结果。                                                       |
+| filtered      | filtered                        | 该值以百分比为单位，因此值为 100.00 时将返回所有检查过的记录。100.00 是最佳值，最差值为 0。例如，MysQl shell 将返回 100，而 mysql 命令行客户端将返回 100.00。                    |
+|               | cost_info                       | 一个 JsOn 对象，包含查询部分的费用明细。                                                                                                                            |
+| Extra         |                                 | 有关优化器决策的附加信息。这些信息包括所使用的排序算法、是否使用覆盖索引等。最常见的支持值将在 "额外信息 "一节中讨论。                                                           |
+|               | message                         | 在 JsOn 输出中没有专用字段的传统输出额外列中的信息，例如 Impossible WHERE。                                                                                            |
+|               | using_filesort                  | 是否使用文件排序。                                                                                                                                               |
+|               | using_index                     | 是否使用覆盖索引。                                                                                                                                               |
+|               | using_temporary_table           | 子查询或排序等操作是否需要内部临时表。                                                                                                                               |
+|               | attached_condition              | 与查询部分相关的 WHERE 子句                                                                                                                                       |
+|               | used_columns                    | 表中所需的列。这对查看是否接近使用覆盖索引非常有用。                                                                                                                   |
+
+有些信息初看起来似乎在 JSON 格式中缺失，因为该字段只存在于传统格式中。事实并非如此；相反，这些信息可以通过其他方式
+获得，例如，Extra 中的几条信息在 JSON 格式中都有自己的字段。其他 Extra 消息则使用消息字段。本节后面讨论 Extra
+列中的信息时，将提到 JSON 输出表中未包含的一些字段。
+
+一般来说，如果值为 false，JSON 格式输出中的布尔字段将被省略；但可缓存的情况例外，因为与可缓存的情况相比，不可缓存
+的子查询或联合表示成本较高。
+
+对于 JSON 输出，还有一些字段用于对操作信息进行分组。操作的范围从访问表格到组合多个操作的复杂操作。一些常见操作及其
+触发示例如下
+
++ table: 访问表格。这是最低级别的操作。
++ query_block: 最高级别的概念，有一个查询块与传统格式的 id 相对应。所有查询都至少有一个查询块。
++ nested_loop: 连接操作
++ grouping_operation: 例如，由 GROUP BY 子句产生的操作。
++ ordering_operation: 例如，该操作会导致 ORDER BY 子句。
++ duplicates_removal: 例如，使用 DISTINCT 关键字时产生的操作。
++ windowing: 从窗口函数获取操作结果
++ materialized_from_subquery: 执行子查询并将结果具体化。
++ attached_subqueries: 附加到查询其他部分的子查询。例如，IN（SELECT ...）子查询中的 IN 子查询。
++ union_result: 用于使用 UNION 合并两个或多个查询结果的查询。在 union_result 块中，有一个
+  query_specifications 块，其中包含 union 中每个查询的定义。
+
+
+表 20-1 中的字段和复杂操作列表对于 JSON 格式来说并不全面，但可以让你对可用信息有一个很好的了解。一般来说，字段名
+称本身就包含信息，结合上下文通常就能理解字段的含义。不过，有些字段的值值得更多关注--首先是选择类型。
+
+** 选择类型
+
+选择类型显示查询的每个部分属于哪种查询块。在这种情况下，查询的一部分可以包括多个表。例如，如果您有一个连接表列表的
+简单查询，但没有使用子查询等结构，那么所有表都将在查询的同一（且唯一）部分中。查询的每个部分都有自己的 id（JSON
+输出中的 select_id）。
+
+有多种选择类型。对于其中的大多数类型，JSON 输出中没有直接的字段；不过，可以从结构和其他一些字段推导出选择类型。表
+20-2 列出了当前存在的选择类型，并提示了如何从 JSON 输出中导出类型。在表中，"选择类型 "列的值是传统输出格式中用于
+select_type 列的值。
+
+#+NAME: EXPLAIN select类型
+| select类型            | JSON                       | 描述                                                        |
+|----------------------+----------------------------+------------------------------------------------------------|
+| SIMPLE               |                            | 适用于不使用派生表、子查询、联合或类似功能的 SELECT 查询。          |
+| PRIMARY              |                            | 对于使用子查询或联合查询的查询，主查询部分是最外层的部分。           |
+| INSERT               |                            | 针对INSERT语句                                               |
+| DELETE               |                            | 针对DELETE语句                                               |
+| UPDATE               |                            | 针对 UPDATE语句                                              |
+| REPLACE              |                            | 针对REPLACE语句                                              |
+| UNION                |                            | 对于联合语句，第二个或更后的 SELECT 语句。                       |
+| DEPENDENT UNION      | dependent=true             | 对于联合语句，第二个或后面的 SELECT 语句依赖于外部查询。           |
+| UNION RESULT         | union_result               | 查询中汇总联合 SELECT 语句结果的部分。                          |
+| SUBQUERY             |                            | 对于子查询中的 SELECT 语句。                                   |
+| DEPENDENT SUBQUERY   | dependent=true             | 对于从属子查询，第一条 SELECT 语句。                            |
+| DERIVED              |                            | 派生表 - 通过查询创建的表，但在其他方面与普通表类似。               |
+| DEPENDENT DERIVED    | dependent=true             | 依赖于另一个表的派生表。                                       |
+| MATERIALIZED         | materialized_from_subquery | 物化子查询                                                   |
+| UNCACHEABLE SUBQUERY | cacheable=false            | 子查询，其结果必须针对外部查询中的每一行进行评估。                  |
+| UNCACHEABLE UNION    | cacheable=false            | 对于联合语句，第二条或更后一条 SELECT 语句是不可缓存子查询的一部分。 |
+
+有些选择类型可以只作为信息使用，以便于理解查询的哪个部分。例如，这包括 PRIMARY 和 UNION。但是，有些选择类型表明
+它是查询的昂贵部分。这尤其适用于不可缓存类型。依赖类型还意味着优化程序在决定在执行计划中的哪个位置添加表时灵活性较
+低。如果您的查询速度较慢，并且看到了不可缓存或依赖的部分，那么值得考虑是否可以重写这些部分或将查询一分为二。
+
+** 访问类型
+
+在讨论 Visual Explain 时，我们已经遇到过表访问类型。它们显示查询是否使用索引、扫描和类似方式访问表。由于与每种
+访问类型相关的成本差异很大，因此这也是在 EXPLAIN 输出中需要查找的重要值之一，以便确定查询的哪些部分需要改进以提
+高性能。
+
+本小节的其余部分总结了 MySQL 中的访问类型。标题是传统格式的类型列中使用的值。每种访问类型都有一个使用该访问类型的
+示例。
+
+*** system
+
+system访问类型适用于只有一行的表。这意味着可以将表视为常数。可视化解释成本、信息和颜色如下：
+
++ 代价: 很低
++ 消息: 单行
++ 颜色: 蓝色
+
+使用system访问类型进行查询的示例如下  
+
+#+begin_src sql
+  select * from (select 1) my_table;
+#+end_src
+
+system访问类型是常量访问类型的特例。
+
+*** const
+
+例如，当对主键的单个值或唯一索引进行过滤时，最多只能匹配表中的一条记录。可视化解释成本、信息和颜色如下：
+
++ 代价: 很低
++ 消息: 单行
++ 颜色: 蓝色
+  
+使用const访问类型进行查询的示例如下
+
+#+begin_src sql
+  select * from world.city where id=130;
+#+end_src
+
+*** eq_ref
+
+该表是连接表中的右侧表，连接表的条件是主键或非空唯一索引。可视化解释成本、信息和颜色如下：
+
++ 代价: 很低
++ 消息: Unique Key Lookup
++ 颜色: 绿色
+
+使用 eq_ref 访问类型进行查询的示例如下  
+
+#+begin_src sql
+  select *
+  from world.city
+    straight_join world.country on CountryCode=Code;
+#+end_src
+
+eq_ref 访问类型是 ref 访问类型的一种特殊情况，每次查找只能返回一条记录。
+
+*** ref
+
+该表通过非唯一二级索引进行过滤。视觉解释成本、信息和颜色如下：
+
++ 代价: 低至中等
++ 消息: Non-Unique Key Lookup
++ 颜色: 绿色
+
+使用 ref 访问类型进行查询的示例如下
+
+#+begin_src sql
+  select * from world.city where CountryCode='AUS';
+#+end_src
+
+*** ref_or_null
+
+与 ref 相同，但过滤的列也可以是 NULL。可视化解释成本、信息和颜色如下：
+
++ 代价: 低至中等
++ 消息: Key Lookup + Fetch NULL Values
++ 颜色: 绿色
+
+使用 ref_or_null 访问类型进行查询的示例如下  
+
+#+begin_src sql
+  select *
+  from sakila.payment
+  where rental_id=1 or rental_id is null;
+#+end_src
+
+*** index_merge
+
+优化器会选择两个或更多索引的组合来解决包含不同索引中列之间 OR 或 AND 的过滤器。可视化解释成本、信息和颜色如下：
+
++ 代价: 中等
++ 消息: Index Merge
++ 颜色: 绿色
+
+虽然成本被列为中等，但更常见的严重性能问题之一是查询通常使用单个索引或进行全表扫描，而索引统计变得不准确，因此优
+化器选择了索引合并。如果使用索引合并的查询性能不佳，可以尝试让优化器忽略索引合并优化或使用的索引，看看是否有帮助，
+或者分析表以更新索引统计信息。或者，也可以将查询重写为两个查询的联合，每个查询使用过滤器的一部分。第 24 章将举例
+说明。  
+
+*** fulltext
+
+优化器选择全文索引来过滤表格。视觉解释成本、信息和颜色如下：
+
++ 代价: 低
++ 消息: Fulltext Index Search
++ 颜色: 黄色
+
+使用全文访问类型进行查询的示例是
+
+#+begin_src sql
+  select *
+  from sakila.film_text
+  where match(title, description)
+       against('Circus' in boolean mode);
+#+end_src
+
+*** unique_subquery
+
+用于 IN 操作符内的子查询，其中子查询返回主键或唯一索引的值。在 MySQL 8 中，这些查询通常由优化器重写，因此
+unique_subquery 需要禁用实体化和半连接优化器开关。Visual Explain 成本、信息和颜色如下：
+
++ 代价: 低
++ 消息: Unique Key Lookup into table of subquery
++ 颜色: 橙色
+
+使用 unique_subquery 访问类型的查询示例如下
+
+#+begin_src sql
+  set optimizer_switch='materialization=off,semijoin=off';
+
+  select *
+  from world.city
+  where CountryCode in (
+    select Code
+    from world.country
+    where Continent='Oceania'
+  );
+
+  set optimizer_switch='materialization=on,semijoin=on';
+#+end_src
+
+unique_subquery 访问方法是 index_subquery 方法的一种特例，适用于使用主索引或唯一索引的情况。
+
+*** index_subquery
+
+用于 IN 操作符内的子查询，其中子查询返回二级非唯一索引的值。在 MySQL 8 中，这些查询通常由优化器重写，因此
+unique_subquery 需要禁用实体化和半连接优化器开关。Visual Explain 成本、信息和颜色如下：
+
++ 代价: 低
++ 消息: Nonunique Key Lookup into table of subquery
++ 颜色: 橙色
+
+使用索引子查询访问类型进行查询的示例如下
+
+  #+begin_src sql
+    set optimizer_switch='materialization=off,semijoin=off';
+    select *
+    from world.country
+    where Code in (
+       select CountryCode
+       from world.city
+       where Name='Sydney'
+    );
+    set optimizer_switch='materialization=on,semijoin=on';
+  #+end_src
+
+*** range
+
+当索引用于按顺序或分组查找多个值时，就会使用范围访问类型。它既可用于显式范围（如 ID BETWEEN 1 AND 10），也可
+用于 IN 子句，或用于同一列上的多个条件用 OR 分隔的情况。Visual Explain 的成本、信息和颜色如下：
+
++ 代价: 中等
++ 消息: Index Range Scan
++ 颜色: 橙色
+
+使用范围访问类型进行查询的示例如下
+
+#+begin_src sql
+  select *
+  from world.city
+  where id in (130, 3805);
+#+end_src
+
+使用范围访问的成本主要取决于范围内包含多少行。一种极端情况是，范围扫描只使用主键匹配一条记录，因此成本很低。另一
+种极端情况是，范围扫描包括使用二级索引的表的很大一部分，在这种情况下，执行全表扫描的成本可能会更低。
+
+范围访问类型与索引访问类型相关，区别在于需要部分扫描还是完全扫描。
+
+*** index
+
+优化器选择执行全索引扫描。这可以与使用覆盖索引相结合。视觉解释成本、信息和颜色如下：
+
++ 代价: 高
++ 消息: Full Index Scan
++ 颜色: 红
+
+使用索引访问类型进行查询的示例如下
+
+#+begin_src sql
+  select ID, CountryCode
+  from world.city;
+#+end_src
+
+由于索引扫描需要使用主键进行第二次查找，因此成本会变得非常高，除非该索引是查询的覆盖索引，以至于最终执行全表扫描
+会更省钱。
+
+*** ALL
+
+最基本的访问类型是扫描表的所有行。这也是最昂贵的访问类型，因此该类型以大写字母书写。Visual Explain 的成本、信
+息和颜色如下：
+
++ 代价: 很高
++ 消息: Full Table Scan
++ 颜色: 红色
+
+使用 ALL 访问类型进行查询的示例如下
+
+#+begin_src sql
+  select * from world.city;
+#+end_src
+
+如果看到第一个表以外的表使用全表扫描，这通常是一个红旗信号，表明表上缺少一个条件，或者没有可以使用的索引。对于第
+一个表来说，"全部 "是否是合理的访问类型取决于查询需要多少表；需要的表的部分越大，全表扫描就越合理。
+
+#+begin_comment
+  虽然全表扫描被认为是最昂贵的访问类型，但它与主键查找一起是每行最便宜的访问类型。因此，如果确实需要访问表的大部
+  分或全部，全表扫描是读取行的最有效方法。
+#+end_comment
+
+关于访问类型的讨论到此为止。在本章后面的 EXPLAIN 示例以及本书后面的优化查询（如第 24 章）中，访问类型将再次被
+引用。与此同时，让我们来看看 "Extra "栏中的信息。
+
+** Extra信息
+
+传统输出格式中的 "额外"（Extra）列是一个万能箱，用于存放没有自己列的信息。在引入 JSON 格式时，没有理由保留它，因
+为引入额外字段很容易，而且没有必要在每次输出中都包含所有字段。因此，JSON 格式没有额外字段，而是有一系列字段。通用信
+息字段保留了一些剩余信息。
+
+#+begin_comment
+  在某些情况下，"Extra"栏中的信息与存储引擎有关，或者只在极少数情况下使用。本讨论只涉及最常遇到的信息。有关信息的
+  完整列表，请参阅 MysQl 参考手册
+  https://dev.mysql.com/doc/refman/en/explain-output.html#explain-extra-information。
+#+end_comment
+
+比较常见的信息包括
+
++ Using index: 使用覆盖索引时。对于 JSON 格式，using_index 字段设置为 true。
++ Using index condition: 当使用索引测试是否有必要读取整行时。例如，当索引列上有范围条件时，就会使用这种方法。
+  对于 JSON 格式，index_condition 字段与筛选条件一起设置。
++ Using where: 在不使用索引的情况下对表应用 WHERE 子句。这可能表明表上的索引不是最佳索引。在 JSON 格式中，
+  attached_condition 字段与过滤条件一起设置。
++ Using index for group-by: 当使用松散索引扫描来解决 GROUP BY 或 DISTINCT 时。在 JSON 格式中，
+  using_index_for_group_by 字段设置为 true。
++ Using join buffer (Block Nested Loop): 这意味着连接时无法使用索引，因此使用了连接缓冲区。带有此信息的表是
+  添加索引的候选表。对于 JSON 格式，using_join_buffer 字段设置为 Block Nested Loop。需要注意的一点是，当使
+  用哈希连接时，传统格式和 JSON 格式的输出仍会显示使用了块嵌套循环。要查看是实际的块嵌套循环连接还是哈希连接，需要
+  使用树形格式输出。
++ Using join buffer (Batched Key Access): 这意味着连接正在使用分批键访问（BKA）优化。要启用分批密钥访问优
+  化，必须启用 mrr（默认为开）和 batch_key_access（默认为关），并禁用基于成本的 mrr_cost_based（默认为开）
+  优化器开关。该优化需要一个用于连接的索引，因此与在块嵌套循环中使用连接缓冲区不同，使用批量密钥访问算法并不表示对
+  表的访问代价高昂。对于 JSON 格式，using_ join_buffer 字段设置为分批键访问。
++ Using MRR: 使用多范围读取 (MRR) 优化。这有时用于减少二级索引上范围条件下的随机 I/O 量，因为在这些条件下需要
+  完整的行。该优化由 mrr 和 mrr_cost_based 优化器开关控制（默认情况下均已启用）。对于 JSON 格式，using_MRR
+  字段设置为 true。
++ Using filesort: MySQL 会使用额外的传递来决定如何以正确的顺序检索记录。例如，通过二级索引排序时就会出现这种情
+  况；而且该索引不是覆盖索引。对于 JSON 格式，using_filesort 字段设置为 true。
++ Using temporary: 内部临时表用于存储子查询的结果、排序或分组。对于排序和分组，有时可以通过添加索引或重写查询来
+  避免使用内部临时表。对于 JSON 格式，using_temporary_table 字段设置为 true。
++ sort_union(...), Using union(...), Using intersect(...): 这三条信息与索引合并一起使用，用于说明如何执
+  行索引合并。无论是哪种信息，括号内都包含索引合并所涉及的索引信息。对于 JSON 格式，关键字段指定了使用的方法和索引。
++ Recursive: 表是递归通用表表达式（CTE）的一部分。对于 JSON 格式，递归字段设置为 true。
++ Range checked for each record(index map: 0x1): 这种情况发生在连接时，第二个表的索引列上有一个取决于第一
+  个表的列值的条件，例如，在 t2.val2 上有一个索引： SELECT * FROM t1 INNER JOIN t2 WHERE t2.val2 <
+   t1.val1; 这就是触发性能模式语句事件表中 NO_GOOD_INDEX_USED 计数递增的原因。索引映射是一个位掩码，表示哪些
+   索引是范围检查的候选索引。索引编号以 1 为基础，如 SHOW INDEXES 所示。写出位掩码时，设置了该位的索引号就是候
+   选索引。对于 JSON 格式，range_checked_for_ each_record 字段被设置为索引映射。
++ Impossible WHERE: 如果过滤器中的值超出了数据类型支持的范围，例如，对于微小整数数据类型，WHERE ID = 300。对
+  于 JSON 格式，信息会添加到信息字段中。
++ Impossible WHERE noticed after reading const tables: 与 Impossible WHERE 相同，但它适用于使用系统或
+   const 访问方法解析表之后。例如，SELECT * FROM (SELECT 1 AS ID) a INNER JOIN city USING (ID) WHERE
+   a.id = 130; 对于 JSON 格式，信息会添加到信息字段中。
++ Impossible HAVING: 除适用于 HAVING 子句外，与 Impossible WHERE 相同。对于 JSON 格式，信息会添加到信息字
+  段中。
++ Using index for skip scan: 当优化器选择使用类似于松散索引扫描的多重范围扫描时。例如，它可用于覆盖索引，其中
+  索引的第一列不用于过滤条件。此方法在 MySQL 8.0.13 及更高版本中可用。对于 JSON 格式，
+  using_index_for_skip_scan 字段设置为 true。
++ Select tables optimized away: 该消息表示 MySQL 能够从查询中删除表，因为查询结果只有一条记录，而且该记录可
+  以从一组确定的记录中生成。这种情况通常发生在只需要表中索引的最小值和/或最大值时。对于 JSON 格式，信息会添加到信
+  息字段中。
++ Not tables used: 对于不涉及任何表的子查询，例如 SELECT 1 FROM dual；对于 JSON 格式，信息会添加到信息字段
+  中。
++ no matching row in const table: 对于可以使用系统或 const 访问类型但没有符合条件的行的表。对于 JSON 格式，
+  信息会添加到信息字段中。
+
+
+#+begin_comment
+  在撰写本文时，您需要使用树形格式输出来查看不使用索引的连接是否使用了哈希连接算法。
+#+end_comment
+
+关于 EXPLAIN 语句输出含义的讨论到此结束。剩下的就是开始使用它来检查查询计划了。
+
+** EXPLAIN示例
+
+在结束查询计划的讨论之前，我们不妨看几个示例，以便更好地了解如何将所有计划组合在一起。这里的示例只是一个引子。更多
+示例将出现在本书的其余部分，尤其是第 24 章。
+
+*** 单表, 全表扫描
+
+作为第一个示例，考虑对world示例数据库中的city表进行查询，条件是查询非索引列 Name。由于没有可以使用的索引，
+因此需要全表扫描来评估查询。 符合这些要求的查询示例如下
+
+#+begin_src sql
+  select *
+  from world.city
+  where Name='London';
+#+end_src
+
+输出的访问类型设置为 ALL，这也是预料之中的，因为在有索引的列上没有条件。预计将检查 4188 条记录（实际为 4079
+条），每条记录都将应用 WHERE 子句中的一个条件。预计在检查的记录中，10% 的记录将与 WHERE 子句相匹配（注意，根
+据所用客户端的不同，过滤列的输出可能是 10 或 10.00）。回顾第 17 章中关于优化器的讨论，优化器使用默认值来估计各
+种条件的过滤效果，因此不能直接使用过滤值来估计索引是否有用。
+
+相应的 Visual Explain 图表见图 20-8。
+
+[[./images/bv6LKm.png]]
+
+全表扫描用红色的 "全表扫描 "框显示，可以看到成本估计为 425.05。
+
+该查询只返回两行（表中有一个伦敦在英国，一个在加拿大安大略省）。如果查询的是一个国家的所有城市，会出现什么情况？
+
+*** 单表，索引访问
+
+第二个示例与第一个示例类似，只是将过滤条件改为使用具有二级非唯一索引的 CountryCode 列。这样访问匹配行的成本会
+更低。在本例中，将检索所有德国城市：
+
+#+begin_src sql
+  select *
+  from world.city
+  where CountryCode='DEU';
+#+end_src
+
+这次的 possible_keys 列显示 CountryCode 索引可用于查询，key 列显示索引已被使用。访问类型是 ref，以反映表
+访问中使用了非唯一索引。估计将访问 93 条记录，这是精确的，因为优化器会询问 InnoDB 有多少行会匹配。过滤列显示，
+索引完美地完成了对表的过滤。相应的 Visual Explain 图表如图 20-9 所示。
+
+[[./images/kztUKC.png]]
+
+尽管返回的行数是第一个示例的 45 倍，但估计成本仅为 28.05，不到全表扫描成本的十分之一。
+
+如果只使用 ID 和 CountryCode 列，会发生什么情况？
+
+*** 两表和覆盖索引
+
+如果有一个索引包含表中所需的所有列，那么它就被称为覆盖索引。MySQL 将使用它来避免检索整条记录。由于city表中
+的 CountryCode 索引是一个非唯一索引，因此也包括 ID 列，因为它是主键。为了使查询更符合实际情况，查询还将包括
+country表，并根据洲来筛选所包含的国家。这种查询的一个示例是
+
+#+begin_src sql
+  explain select ci.ID
+  from world.country co
+  inner join world.city ci on ci.CountryCode=co.Code
+  where co.Continent='Asia';
+#+end_src
+
+查询计划显示，优化程序选择从 co（国家）表的全表扫描开始，并使用 CountryCode 索引连接 ci（城市）表。这里的特别
+之处在于 Extra 列包含了 Using index。因此无需读取城市表的整行。还要注意的是，键长度为 3（字节），也就是
+CountryCode 列的宽度。相应的 Visual Explain 图表见图 20-10。
+
+[[./images/0whZRU.png]]
+
+key_len 字段不包括索引的主键部分，即使它已被使用。不过，它有助于了解多列索引的使用情况。
+
+*** 多列索引
+
+countrylanguage 表的主键包括 CountryCode 和 Language 列。试想一下，如果您想查找单个国家使用的所有语言，那么
+就需要根据 CountryCode 而不是 Language 进行筛选。索引仍可用于执行过滤，您可以使用 EXPLAIN 输出的 key_len 字
+段查看索引的使用情况。可以用来查找中国所有语言的查询是
+
+#+begin_src sql
+  explain select *
+  from world.countrylanguage
+  where CountryCode='CHN'\G
+#+end_src
+
+主键的总宽度为 CountryLanguage 列的 3 字节和 Language 列的 30 字节。由于 key_len 列显示只使用了 3 个字节，
+因此可以断定只有索引的 CountryLanguage 部分用于过滤（索引的使用部分总是最左边的部分）。在 Visual Explain 中，
+您需要将鼠标悬停在相关表格上，以获取扩展信息，如图 20-11 所示。
+
+[[./images/1UIveL.png]]
+
+在图中，查找 Key/Index 下的 Used Key Parts 标签： PRIMARY。这直接表明只使用了索引的 CountryCode 列。
+
+作为最后一个例子，让我们回到在使用 EXPLAIN 格式时作为示例的查询。
+
+*** 两表子查询和排序
+
+本章前面大量使用的示例查询将用于结束有关 EXPLAIN 的讨论。该查询混合使用了各种功能，因此会触发前面讨论过的几部分
+信息。它也是一个包含多个查询块的查询示例。为了提醒大家，在此重复该查询。
+
+#+begin_src sql
+  explain select ci.ID, ci.Name, ci.District,
+                 co.Name as Country, ci.Population
+  from world.city ci
+  inner join (
+    select Code, Name
+    from world.country
+    where Continent='Europe'
+    order by SurfaceArea
+    limit 10
+  ) co on co.Code=ci.CountryCode
+  order by ci.Population desc
+  limit 5\G
+#+end_src
+
+图 20-12 重复了该查询的 Visual Explain 图表。在继续阅读输出分析之前，建议您先自行研究一下。
+
+[[./images/btT9m1.png]]
+
+
+查询计划以子查询开始，该子查询使用国家表按面积查找最小的十个国家。该子查询的表标签是 <derived2>，因此需要查找
+id = 2 的行（其他查询可能有多条行），也就是本例中的第 3 行。第 3 行的选择类型设置为 DERIVED，因此它是一个派
+生表；这是一个通过查询创建的表，但在其他方面与普通表类似。派生表是通过对每一行应用 WHERE 子句的全表扫描（类型 =
+ALL）生成的，然后进行文件排序。生成的派生表被具体化（从 Visual Explain 中可见），并被称为 co。
+
+一旦构建了派生表，它就会被用作与 ci（城市）表连接的第一个表。从行的排序可以看出，<derived2> 在第 1 行，ci 在第
+2 行。对于派生表中的每一行，估计将使用 CountryCode 索引在 ci 表中检查 18 行。从 Visual Explain 中的表框标
+签可以看出，CountryCode 索引是一个非唯一索引，类型列的值为 ref。据估计，连接将返回 180 条记录，即派生表中的
+10 条记录乘以 ci 表中每次索引查找 18 条记录的估计值。
+
+最后，使用内部临时表和文件排序对结果进行排序。该查询的总成本估计为 247.32。
+
+到目前为止，我们一直在讨论查询计划的最终结果。如果想知道优化器是如何达到这一结果的，就需要检查优化器跟踪。
+
+** 优化器跟踪
+
+优化器跟踪并不是经常需要的，但有时遇到意外的查询计划时，看看优化器是如何实现的会很有用。这就是优化器跟踪所显示的内
+容。
+
+#+begin_comment
+  当查询计划与预期不符时，通常是因为缺少或错误的 WHERE 子句、缺少或错误的连接条件、查询中的其他错误或索引统计不正
+  确。在深入了解优化器决策过程的细节之前，请先检查这些问题。
+#+end_comment
+
+通过将 optimizer_trace 选项设置为 1，优化器就会启用跟踪功能。 这样，优化器就会为后续查询记录跟踪信息（直到
+optimizer_trace 再次被禁用），这些信息可通过 information_schema.OPTIMIZER_TRACE 表获取。保留跟踪信息的最
+大数量由 optimizer_trace_limit 选项配置（默认为 1）。
+
+您可以选择执行需要优化器跟踪的查询，或者使用 EXPLAIN 获取查询计划。后者非常有用，因为它可以同时提供查询计划和优化
+器跟踪。获取查询的优化器跟踪的典型工作流程如下：
+
+1. 在当前会话启用optimizer_trace选项
+2. 在想要查看的SQL新增EXPLAIN
+3. 禁用optimizer_trace选项
+4. 从information_schema.optimizer_trace表中查看优化器跟踪情况
+
+information_schema.optimizer_trace表中包含的列:
+
++ QUERY: 原始查询。
++ TRACE: 包含跟踪信息的 JSON 文档。稍后会有更多关于跟踪的信息。
++ MISSING_BYTES_BEYOND_MAX_MEM_SIZE: 记录跟踪的大小（以字节为单位）受限于 optimizer_trace_max_mem_size
+   选项的值（在 MySQL 8 中默认为 1 MiB）。这一列显示记录完整跟踪所需的内存容量。如果该值大于 0，则增加
+   optimizer_trace_max_mem_size 选项的值。
++ INSUFFICIENT_PRIVILEGES: 是否缺少生成优化器跟踪的权限。
+
+该表是作为临时表创建的，因此跟踪对于会话来说是唯一的。
+
+清单 20-10 显示了获取查询（与前几节中的重复示例查询相同）的优化器跟踪的示例。由于优化器跟踪输出超过 15000 个字符，
+几乎有 500 行之长，因此此处对其进行了截断。同样，EXPLAIN 语句的输出也被省略了，因为它与之前显示的相同，而且对本讨
+论并不重要。完整输出包含在本书 GitHub 代码库中的 listing_20_10.txt 文件中，跟踪本身包含在 listing_20_10.
+
+#+begin_src sql
+  set session optimizer_trace=1;
+  explain select ci.ID, ci.Name, ci.District,
+    co.Name as Country, ci.Population
+  from world.city ci
+  inner join (select Code, Name from world.country
+              where Continent='Europe'
+              order by SurfaceArea
+              limit 10
+              ) co on co.Code=ci.CountryCode
+  order by ci.Population desc
+  limit 5\G
+  set session optimizer_trace=0;
+  select * from information_schema.optimizer_trace\G
+#+end_src
+
+跟踪是结果中最有趣的部分。虽然有很多信息，但幸运的是，这些信息在很大程度上是不言自明的，如果你熟悉 JSON 格式的
+EXPLAIN 输出，就会发现其中有一些相似之处。大部分信息都与执行查询的各个部分的成本估算有关。在有多个可能选项的情况
+下，优化器会计算每个选项的成本，并选择最便宜的选项。本跟踪中的一个例子是访问 ci（城市）表。这可以通过 CountryCode
+索引或表扫描完成。该决策的跟踪部分如清单 20-11 所示（缩进部分有所减少）。
+
+
+[[./images/iCldVe.png]]
+
+这表明，在使用 CountryCode 索引（"access_type"："ref"）时，估计平均要检查 18 行多一点，费用为 63.181。对于
+全表扫描（"access_type"："scan"），预计需要检查 4188 行，总费用为 4194.3。选择 "元素表明已选择 ref 访问类型。
+
+虽然很少有必要深入研究优化器如何得出查询计划的细节，但了解优化器如何工作可能会很有用。有时，查看查询计划的其他选项
+的估计成本也很有用，可以了解为什么不选择这些选项。
+
+如果您有兴趣了解更多有关优化器跟踪的信息，请访问
+https://dev.mysql.com/doc/internals/en/optimizer-tracing.html 查阅 MysQl 内部手册。
+
+到目前为止，除了 EXPLAIN ANALYZE 之外，整个讨论都是关于在执行查询之前的阶段对查询进行分析。如果要检查实际性能，
+EXPLAIN ANALYZE 通常是最佳选择。另一种方法是使用性能模式。
+
+** 性能模式事件分析
+
+通过性能模式，您可以分析在每个被检测的事件上花费了多少时间。您可以利用它来分析执行查询时花费时间的位置。本节将探讨
+如何使用性能模式分析存储过程，以了解存储过程中哪些语句花费的时间最长，以及如何使用阶段事件分析单个查询。本节最后将
+介绍如何使用 sys.ps_trace_thread() 存储过程创建线程工作图，以及如何使用 ps_trace_ statement_digest() 收
+集具有给定摘要的语句的统计数据。
+
+*** 检查存储过程
+
+要检查存储过程所做的工作可能很困难，因为你不能直接在存储过程上使用 EXPLAIN，而且存储过程执行哪些查询可能并不明
+显。相反，你可以使用性能模式。它可以记录执行的每一条语句，并将历史记录保存在 events_statements_history 表中。
+
+除非需要在每个线程中存储超过 10 个查询，否则不需要做任何事情就可以开始分析。如果存储过程产生的语句事件超过 10
+个，则需要增加 performance_schema_events_statements_history_size 选项的值（需要重新启动），使用
+events_statements_history_long 表，或者使用 sys.ps_trace_thread() 存储过程（稍后将解释）。本讨论的其
+余部分假定你可以使用 events_statements_ history 表。
+
+以清单 20-12 中的存储过程为例，说明如何检查存储过程执行的查询。该存储过程也可在文件 listing_20_12.sql 中使
+用，该文件可在任何模式中使用。
+
+#+begin_src sql
+  create schema if not exists chapter_20;
+
+  delimiter $$
+
+  create procedure chapter_20.testproc()
+    sql security invoker
+    not deterministic
+    modifies sql data
+  begin
+    declare v_iter, v_id int unsigned default 0;
+    declare v_name char(35) charset latin1;
+
+    set v_id=ceil(rand()*4079);
+    select Name
+    into v_name
+    from world.city
+    where id=v_id;
+    select * from world.city
+    where Name=v_name;
+  end $$
+  delimiter ;
+#+end_src
+
+存储过程执行三个查询。第一个查询将 v_id 变量设置为介于 1 和 4079 之间的整数（world.city 表中的可用 ID 值）。
+第二个查询获取具有该 ID 的城市名称。第三个查询找出所有与第二个查询中找到的名称相同的城市。
+
+如果在连接中调用该存储过程，随后就可以分析该存储过程触发的查询以及这些查询的性能。例如
+
+#+begin_src sql
+  select ps_current_thread_id();
+#+end_src
+
+#+begin_src sql
+  call chatper_20.testproc();
+#+end_src
+
+存储过程的输出是随机的，因此每次执行都会不同。然后，可以使用 PS_CURRENT_THREAD_ID() 函数（在 MySQL 8.0.15
+及更早版本中使用 sys.ps_thread_id(NULL)）找到的线程 ID 来确定执行了哪些查询。
+
+清单 20-13 展示了如何进行这种分析。您必须在不同的连接中进行此分析，将 THREAD_ID = 83 改为使用找到的线程 ID，
+并在第二个查询中将 NESTING_EVENT_ID = 64 改为使用第一个查询中的事件 ID。输出中的一些细节已被删除，以便将重
+点放在最感兴趣的值上。
+
+#+begin_src sql
+  select *
+  from performance_schema.events_statements_history
+  where thread_id=ps_current_thread_id()
+    and event_name='statement/sql/call_procedure'
+   order by event_id desc
+   limit 1\G
+#+end_src
+
+#+begin_src sql
+  select *
+  from performance_schema.events_statements_history
+  where thread_id=ps_current_thread_id()
+    and nesting_event_id=64
+  order by event_id\G
+#+end_src
+
+分析包括两个查询。第一个是确定存储过程的总体信息，方法是查询语句statement/sql/call_procedure事件（调用存
+储过程的事件）的最新发生时间（按 EVENT_ID 排序）。
+
+第二个查询请求同一线程的事件，嵌套事件 id 为 statement/sql/call_procedure 事件的事件 id。这些是存储过程执
+行的语句。通过按 EVENT_ID 排序，语句将按其执行顺序返回。
+
+第二个查询的结果显示，存储过程一开始有四条 SET 语句。其中有些是预期的，但也有一些是通过隐式设置变量触发的。最后
+两行最值得讨论，因为它们显示执行了两个查询。首先，通过 ID 列（主键）查询了城市表。不出所料，它检查了一条记录。由
+于查询结果保存在 v_name 变量中，因此 ROWS_AFFECTED 计数器被递增，而不是 ROWS_SENT。
+
+第二个查询的结果并不理想。它也是查询城市表，但查询的是没有索引的名称。结果是检查了 4080 条记录，只返回了一条记
+录。NO_INDEX_USED 列设置为 1，以反映执行了全表扫描。
+
+使用这种方法检查存储过程的一个缺点是--如你所见--会很快用完历史记录表中的所有十行。另一种方法是启用
+events_statements_history_long 消费者，并在闲置的测试系统上测试存储过程，或禁用其他连接的历史记录。这样就
+可以分析执行多达 10000 条语句事件的存储过程。另一种方法是使用 sys.ps_trace_thread()存储过程，它也使用长历
+史记录，但支持在存储过程执行时进行轮询，因此即使表不够大，无法在存储过程期间保存所有事件，它也可以收集事件。
+
+本示例使用语句事件来分析性能。有时，您需要知道在更细粒度的级别上发生了什么，在这种情况下，您需要开始查看阶段事件。
+
+*** 分析事件
+
+如果需要更详细地了解查询花费的时间，第一步就是查看阶段事件。也可以选择包括等待事件。由于处理等待事件的步骤与处理
+阶段事件的步骤基本相同，因此读者可自行分析查询的等待事件。
+
+#+begin_comment
+  因此，在生产系统中启用阶段和等待事件时要谨慎。某些等待事件，尤其是与互斥相关的等待事件，也会对查询产生影响，以
+  至于影响分析结论。使用等待事件分析查询通常只有性能架构师和使用 MysQl 源代码的开发人员才需要做。
+#+end_comment
+
+生成的阶段事件数远远大于语句事件数。这意味着，为了避免阶段事件从历史表中消失，建议在空闲的测试系统上执行分析，并
+使用 events_stages_history_long 表。该表默认为禁用；要启用它，请启用相应的消费者：
+
+#+begin_src sql
+  update performance_schema.setup_consumers
+  set enabled='YES'
+  where name in ('events_stages_current',
+                 'events_stages_history_long');
+
+#+end_src
+
+events_stages_history_long 消费者依赖于 events_stages_ current 消费者，因此需要同时启用这两个消费者。默
+认情况下，只启用与进度信息相关的阶段事件。对于一般分析，您需要启用所有阶段事件：
+
+#+begin_src sql
+  update performance_schema.setup_instruments
+  set enabled='YES', timed='YES'
+  where name like 'stage/%';
+#+end_src
+
+此时的分析方法与分析存储过程时的方法基本相同。例如，假设性能模式线程 ID 为 83 的连接正在执行以下查询：
+
+#+begin_src sql
+  select *
+  from world.city
+  where  Name='Sydney';
+#+end_src
+
+假设这是最后执行的查询，则可以获得每个阶段所花费的时间，如清单 20-14 所示。您需要在一个单独的连接中执行此操作，
+并更改 SET @thread_id = 83 以使用您连接的线程 ID。除了时间明显不同外，查询所经历的阶段列表也可能不同。
+
+#+begin_src sql
+  select event_id, SUBSTRING_INDEX(event_name, '/', -1) as Event,
+    FORMAT_PIC_TIME(timer_wait) as Latency
+  from performance_schema.events_stages_history_long
+  where thread_id=ps_current_thread_id() and
+    nesting_event_id=(select event_id
+                      from performance_schema.events_statements_history
+                      where thread_id=ps_current_thread_id()
+                      order by event_id desc
+                      limit 1);
+#+end_src
+
+从 events_ stages_history_long 表中选取事件 ID、阶段名称（为简洁起见，去掉了事件全名的前两个部分）和使用
+FORMAT_PICO_TIME() 函数格式化的延迟时间（在 MySQL 8.0.15 及更早版本中使用 sys.format_time() 函数）。
+WHERE 子句根据执行查询的连接的线程 ID 和嵌套事件 ID 进行筛选。嵌套事件 id 设置为线程 id 等于 83 的连接最近
+执行的语句的事件 id。结果显示，查询中最慢的部分是发送数据，也就是存储引擎查找和发送行的阶段。
+
+用这种方法分析查询的主要问题是，要么受限于默认情况下每个线程只能保存 10 个事件，要么在完成检查之前，事件有可能从
+历史长表中删除。为了解决这个问题，我们创建了 sys.ps_trace_thread() 存储过程。
+
+*** 分析sys.ps_trace_thread()过程
+
+当你需要分析一个复杂的查询或一个执行超过几条语句的存储程序时，你可以使用一个能在执行过程中自动收集信息的工具。在
+sys 模式中，ps_trace_thread()存储过程就是一个这样的选项。
+
+存储过程会循环一段时间，轮询历史长表中的新事务、语句、阶段和等待事件。作为选项，存储过程还可以设置性能模式以包含
+所有事件，并使消费者能够记录事件。不过，由于包含所有事件通常太过繁琐，因此建议自行设置性能模式，以记录和消耗分析
+所需的事件。
+
+另一个可选功能是在监控开始时重置性能模式表。如果可以接受删除长期历史表的内容，这将非常有用。
+
+调用存储过程时，必须提供以下参数：
+
++ Thread ID：要监控的性能模式线程 ID。
++ Out File: 将结果写入的文件。结果使用点图描述语言创建。这要求已设置 secure_file_ priv 选项，允许向目标目
+  录写入文件，且文件不存在，执行存储过程的用户拥有 FILE 权限。
++ Max Runtime: 以秒为单位的最长监控时间。支持指定精度为 1/100 秒的值。如果该值设置为空，运行时间将设置为 60
+   秒。
++ Poll Interval: 轮询历史记录表格的时间间隔。该值的设置精度为 1/100 秒。如果该值设置为空，则轮询间隔将设置为
+  一秒。
++ Refresh: 布尔值，表示是否重置用于分析的性能模式表。
++ Auto Setup: 布尔值，表示是否启用程序可以使用的所有仪器和用户。启用后，程序完成时将恢复当前设置。
++ Debug: 布尔值，表示是否包含附加信息，如事件是在源代码的哪个位置触发的。这在包含等待事件时非常有用。
+
+使用存储过程 ps_trace_thread() 的示例见清单 20-15。在执行存储过程时，先前的 testproc() 存储过程将从被监控
+的线程中调用。该示例假定一开始使用的是默认的性能模式设置。  
+
+#+begin_src sql
+  update performance_schema.setup_consumers
+  set enabled='YES'
+  where name='events_statements_history_long';
+#+end_src
+
+#+begin_src sql
+  select ps_current_thread_id();
+#+end_src
+
+#+begin_src sql
+  call sys.ps_trace_thread(32, '/mysql/files/thread32.gv',
+                           10, 0.1, False, False, False);
+#+end_src
+
+#+begin_src sql
+  call testproc();
+#+end_src
+
+在本例中，只启用了 events_statements_history_long 消费者。这样就可以记录调用 testproc() 存储过程所产生的
+所有语句事件，就像之前手动完成的那样。使用 PS_CURRENT_THREAD_ID() 函数（在 MySQL 8.0.15 及更早版本中，使
+用 sys.ps_thread_id(NULL)）可以获得要监控的线程 ID。
+
+针对线程 ID 32 调用 ps_trace_thread()存储过程，并将输出写入 /mysql/files/thread_32.gv。存储过程每 0.1
+秒轮询一次，持续 10 秒，并且禁用所有可选功能。
+
+您需要一个能理解点格式的程序将其转换成图像。其中一个选择是 Graphviz 工具集，它可以通过软件包仓库从多个 Linux
+发行版中获取。也可从项目主页 www.graphviz.org/ 下载，适用于 Linux、Microsoft Windows、macOS、Solaris
+和 FreeBSD。程序的输出显示了如何将带有点图定义的文件转换为 PDF 或 PNG 文件的示例。图 20-13 显示了 CALL
+testproc() 语句生成的图形。
+
+[[./images/n5iGWg.png]]
+
+
+语句图包含的信息与手动分析存储过程时相同。对于像 testproc() 这样简单的存储过程，生成语句图的优势有限，但对于更
+复杂的存储过程或分析启用了低级事件的查询，语句图是可视化执行流程的好方法。
+
+另一个可以帮助你分析查询的系统模式存储过程是 ps_trace_ statement_digest()存储过程。
+
+
+*** ps_trace_statement_digest过程分析
+
+作为使用性能模式分析查询的最后一个示例，将演示 sys 模式中的存储过程 ps_trace_statement_digest()。该存储过
+程获取摘要，然后监控 events_statements_history_long 表和 events_stages_history_long 表，查找与该摘
+要中的语句相关的事件。分析结果包括摘要数据和详细信息，如运行时间最长的查询的查询计划。
+
+程序包含五个参数，均为必选参数。这些参数是
+
++ Digest: 要监控的摘要。如果语句摘要与所提供的摘要一致，则无论默认模式如何，都将对其进行监控。
++ Runtime: 监控多长时间，以秒为单位。不允许使用小数。
++ Poll Interval: 轮询历史记录表格的时间间隔。该值可按 1/100 秒的精度设置，且必须小于 1 秒。
++ Refresh: 布尔值，表示是否重置用于分析的性能模式表。
++ Auto Setup: 布尔值，表示是否启用程序可以使用的所有仪器和用户。启用后，程序完成时将恢复当前设置。
+
+例如，可以使用存储过程 sys.ps_trace_statement_digest() 启动监控，并在监控过程中执行以下查询（监控示例如
+下）：
+
+#+begin_src sql
+  SELECT * FROM world.city WHERE CountryCode = 'AUS';
+  SELECT * FROM world.city WHERE CountryCode = 'USA';
+  SELECT * FROM world.city WHERE CountryCode = 'CHN';
+  SELECT * FROM world.city WHERE CountryCode = 'ZAF';
+  SELECT * FROM world.city WHERE CountryCode = 'BRA';
+  SELECT * FROM world.city WHERE CountryCode = 'GBR';
+  SELECT * FROM world.city WHERE CountryCode = 'FRA';
+  SELECT * FROM world.city WHERE CountryCode = 'IND';
+  SELECT * FROM world.city WHERE CountryCode = 'DEU';
+  SELECT * FROM world.city WHERE CountryCode = 'SWE';
+  SELECT * FROM world.city WHERE CountryCode = 'LUX';
+  SELECT * FROM world.city WHERE CountryCode = 'NZL';
+  SELECT * FROM world.city WHERE CountryCode = 'KOR';
+#+end_src
+
+在这些查询中，哪个查询速度最慢，执行情况可能各不相同。
+
+清单 20-16 展示了一个示例，说明如何使用存储过程监控选择某一国家所有城市的查询。在示例中，摘要是通过
+STATEMENT_DIGEST() 函数找到的，但也可能是通过基于 events_statements_summary_by_digest 表的监控找到的。
+将由存储过程启用所需的工具和消费者，并重置受监控的表，以避免包含监控开始前执行的语句。轮询频率设置为每 0.5 秒轮
+询一次。为减少输出宽度，删除了阶段事件名称的 stage/sql/ 前缀，并缩短了 EXPLAIN 输出的虚线。本书 GitHub 代
+码库中的 listing_20_16.txt 文件提供了未经修改的输出结果。
+
+#+begin_src sql
+  set @digest=STATEMENT_DIGEST('select * from world.city where CountryCode=''AUS''');
+  call sys.ps_trace_statement_digest(@digest, 60, 0.5, true, true);
+#+end_src
+
+输出首先是分析过程中发现的所有查询的摘要。共检测到 13 次执行，耗时共计 7.29 毫秒。总体摘要还包括各阶段所用时间
+的汇总。输出的下一部分是 13 次执行中最慢的一次的详细信息。输出的最后部分是最慢查询的 JSON 格式查询计划。
+
+在生成查询计划时，您需要注意一个限制。执行 EXPLAIN 语句时，默认模式将设置为与存储过程执行时相同的模式。这意味
+着，如果查询是在不同的模式下执行的，并且没有使用完全限定的表名（即包括模式名），那么 EXPLAIN 语句就会失败，存储
+过程也不会输出查询计划。
+
+** 总结
+
+本章介绍了如何分析你认为可能需要优化的查询。本章的主要内容集中在 EXPLAIN 语句，它是分析查询的主要工具。本章的其余
+部分介绍了优化器跟踪以及如何使用性能模式分析查询。
+
+EXPLAIN 语句支持几种不同的格式，可帮助您以最适合自己的格式获取查询计划。传统格式使用标准表格输出，JSON 格式返回
+详细的 JSON 文档，树格式显示相对简单的执行树。树形格式仅在 MySQL 8.0.16 及更高版本中支持，并且要求使用 Volcano
+iterator 执行器来执行查询。JSON 格式是 MySQL 工作台中的 Visual Explain 功能用来创建查询计划图表的格式。
+
+EXPLAIN 输出中提供了大量有关查询计划的信息。会议讨论了传统格式的字段以及 JSON 中最常遇到的字段。这包括详细讨论选
+择类型、访问类型和额外信息。最后，通过一系列示例展示了如何使用这些信息。
+
+优化器跟踪可用于获取信息，了解优化器如何最终生成 EXPLAIN 语句返回的查询计划。对于最终用户来说，通常没有必要使用优
+化器跟踪，但如果想更多地了解优化器以及产生查询计划的决策过程，使用优化器跟踪可能会很有用。
+
+本章的最后一部分展示了如何使用性能模式事件来确定语句耗费的时间。首先展示了如何将存储过程分解为单个语句，然后再将语
+句分解为多个阶段。最后，使用存储过程 ps_trace_thread()自动进行分析并创建事件图表，使用存储过程
+ps_trace_statement_digest()收集给定语句摘要的统计数据。
+
+本章分析了查询。有时有必要考虑整个事务。下一章将介绍如何分析事务。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
