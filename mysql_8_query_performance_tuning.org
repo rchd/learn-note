@@ -6335,39 +6335,430 @@ ps_trace_statement_digest()收集给定语句摘要的统计数据。
 
 本章分析了查询。有时有必要考虑整个事务。下一章将介绍如何分析事务。
 
+* 事务
 
+事务是报表的老大哥。它们将多个变更组合在一起，无论是在单个报表中还是在多个报表中，因此它们作为一个整体被应用或放弃。
+大多数情况下，事务不过是事后才想到的，只是在需要同时应用多个报表时才会考虑。这种考虑事务的方式很糟糕。事务对于确保数
+据完整性非常重要，如果使用不当，可能会导致严重的性能问题。
 
+本章首先通过回顾事务对锁和性能的影响，讨论为什么需要从性能角度认真对待事务。本章其余部分的重点是分析事务，首先使用信
+息模式中的 INNODB_TRX 表，然后是 InnoDB 监控、InnoDB 指标，最后是性能模式。
 
+** 事务的影响
 
+如果把事务看作是用于分组查询的容器，那么它似乎是一个很单纯的概念。但是，我们必须明白，由于事务为查询组提供了原子性
+因此事务活动的时间越长，与查询相关的资源被保留的时间就越长，事务中完成的工作越多，需要的资源就越多。在事务提交之前，
+查询一直在使用哪些资源？主要是锁和撤销日志。
 
+#+begin_comment
+  InnoDB 支持只读事务，这种事务的开销比读写事务低。对于自动提交的单语句事务，InnoDB 会尝试自动判断语句是否为只读
+  事务。对于多语句事务，可以在启动时明确指定该事务为只读事务： start transaction read only；
+#+end_comment
 
+*** 锁
+查询执行时会获取锁，使用默认事务隔离级别--REPEATABLE READ--时，所有锁都会被保留，直到事务提交。使用 READ
+COMMITTED 事务隔离级别时，一些锁可能会被释放，但至少涉及已更改记录的锁会被保留。锁本身是一种资源，但也需要内存
+来存储有关锁的信息。在正常工作负载中，你可能不会考虑太多，但庞大的事务可能会占用大量内存，以至于事务失败时出现
+ER_LOCK_TABLE_FULL 错误：
 
+#+begin_comment
+  ERROR: 1206: The total number of locks exceeds the lock table size
+#+end_comment
 
+从记录在错误日志中的警告信息（稍后会详细说明）可以看出，锁所需的内存来自缓冲池。因此，持有的锁越多，持有的时间越
+长，用于缓存数据和索引的内存就越少。
 
+#+begin_comment
+  如果一个事务因为使用了所有锁内存而中止，就会造成四重打击。首先，要更新足够多的行，使用足够多的锁内存来触发错误，
+  需要花费一段时间。这些工作都白费了。其次，由于所需的更改次数较多，回滚事务可能需要很长时间。第三，在使用锁内存
+  时，InnoDB 实际上处于只读模式（可能会有一些小事务），直到回滚完成后才会释放锁内存。第四，缓冲池中用于缓存数据
+  和索引的空间所剩无几。
+#+end_comment
 
+出错前，错误日志中会出现警告，称超过 67% 的缓冲池被用于锁或自适应哈希索引：
 
+#+begin_comment
+  2019-07-06T03:23:04.345256Z 10 [Warning] [MY-011958] [InnoDB] Over 67 percent of the buffer
+  pool is occupied by lock heaps or the adaptive hash index! Check that your transactions do
+  not set too many row locks. Your buffer pool size is 7 MB. Maybe you should make the buffer
+  pool bigger?. Starting the InnoDB Monitor to print diagnostics, including lock heap and hash
+  index sizes.
+#+end_comment
 
+警告之后是 InnoDB 监控程序的定期重复输出，因此可以确定哪些事务是罪魁祸首。有关事务的 InnoDB 监控输出将在 "
+InnoDB 监控 "一节中讨论。
 
+元数据锁是事务中经常被忽视的一种锁类型。当语句查询表时，会使用共享元数据锁，该元数据锁会一直保留到事务结束。当表
+上有元数据锁时，任何连接都不能对表执行任何 DDL 语句（包括 OPTIMIZE TABLE）。如果一个 DDL 语句被一个长期运行
+的事务阻塞，它将反过来阻塞使用该表的所有新查询。第 22 章将举例说明如何使用本章的某些方法来调查此类问题。
 
+*** Undo日志
 
+如果选择回滚事务，则还必须按要求保存事务处理期间所做的更改。这一点很容易理解。更令人吃惊的是，即使是没有做出任何
+更改的事务，也会使其他事务中的撤销信息继续存在。当事务需要读视图（一致快照）时，就会出现这种情况，在使用
+REPEATABLE READ 事务隔离级别时，事务的持续时间就是这种情况。读视图意味着，无论其他事务是否更改数据，事务都将
+返回与事务启动时间相对应的行数据。为了做到这一点，有必要保留在事务生命周期内发生变化的行的旧值。在 MySQL 5.7
+及更早版本中，这可能意味着 ibdata1 文件最终会变得很大。(在 MySQL 8 中，撤销日志总是存储在可以截断的单独撤销
+表空间中）。
 
+#+begin_comment
+  READ COMMITTED 事务隔离级别更不容易产生大量撤销日志，因为读视图只在查询期间保留。
+#+end_comment
 
+撤销日志活动部分的大小用历史列表长度来衡量。历史记录列表长度是撤销日志尚未清除的已提交事务的数量。这意味着你不能
+使用历史列表长度来衡量行更改的总量。它能告诉你的是，在执行查询时必须考虑的变化的链接列表中有多少单位的旧行（每个
+事务一个单位）。链接列表越长，查找每条记录的正确版本的成本就越高。最后，如果历史记录列表很大，就会严重影响所有查
+询的性能。
 
+#+begin_comment
+  历史列表长度问题是使用逻辑备份工具（如 mysqlpump 和 mysqldump）创建大型数据库备份的最大问题之一，这些工具
+  使用单个事务来获得一致的备份。如果备份期间提交的事务很多，备份会导致历史列表长度变得非常大。
+#+end_comment
 
+什么是大历史清单长度？这没有明确的规定，只是说越小越好。通常情况下，当历史记录列表的事务长度达到一千到一百万时，
+性能问题就会开始显现，但何时成为瓶颈取决于撤销日志中提交的事务以及历史记录列表长度较大时的工作量。
 
+当不再需要最旧的部分时，InnoDB 会在后台自动清除历史列表。有两个选项可以控制清除，还有两个选项可以影响无法清除时
+的情况。这两个选项是
 
++ innodb_purge_batch-size: 每批清除的撤销日志页数。该批次由清除线程分担。生产系统中不允许更改此选项。默认值
+  为 300，有效值介于 1 和 5000 之间。
 
++ innodb_purge_threads: 并行使用的清除线程数。如果数据更改跨越多个表，并行度越高越有用。另一方面，如果所有更
+  改都集中在少数几个表上，则最好使用较低的数值。更改清除线程数需要重启 MySQL。默认值为 4，有效值在 1 到 32 之
+  间。
 
++ innodb_max_purge_lag: 当历史列表的长度超过 innodb_max_purge_lag 的值时，就会在更改数据的操作中添加延
+  迟，以降低历史列表的增长速度，但代价是增加语句延迟。默认值为 0，这意味着不会增加延迟。有效值为 0-4294967295。
 
++ innodb_max_purge_lag_delay: 当历史列表长度大于 innodb_max_purge_lag 时，DML 查询的最大延迟。
 
+通常没有必要更改这些设置；但在特殊情况下，更改这些设置可能会有用。如果清除线程跟不上，可以尝试根据被修改表的数量
+来更改清除线程的数量；被修改的表越多，清除线程的数量就越多。在更改清除线程数量时，必须从更改前的基线开始监控效
+果，以便了解更改后是否有所改善。
 
+最大清除滞后选项可用于降低修改数据的 DML 语句的速度。当写入仅限于特定连接，且延迟不会导致为保持相同吞吐量而创建
+额外写入线程时，该选项就非常有用。
 
+如何监控事务的时间、锁使用的内存以及历史列表的长度？可以使用信息模式、InnoDB 监控和性能模式来获取这些信息。
 
+** INNODB_TRX
 
+信息模式中的 INNODB_TRX 表是有关 InnoDB 事务的最专用信息源。它包含的信息有：事务何时开始、有多少行被修改、有多
+少个锁。sys.innodb_lock_waits 视图也使用 INNODB_TRX 表来提供锁等待问题所涉及的事务的一些信息。表 21-1 总结
+了表中的列。
 
+#+information_schema.innodb_trx
+| 数据类型                     | 描述                                                                                                               |
+|----------------------------+-------------------------------------------------------------------------------------------------------------------|
+| trx_id                     | 事务 ID。在引用事务或与 InnoDB 监控程序的输出进行比较时，这个 id 会很有用。否则，这个 id 应被视为纯粹的内部 id，不具有任何意义。该 id 只分配给修改了数据或锁定了记录的事务；只执行了只读 SELECT 语句的事务会有一个类似 421124985258256 的虚拟 id，如果事务开始修改或锁定记录，该 id 就会改变。 |
+| trx_state                  | 事务的状态。可以是运行（RUNNING）、锁定等待（LOCK WAIT）、滚回（ROLLING BACK）和提交（COMMITTING）。                         |
+| trx_started                | 使用系统时区启动事务的时间。                                                                                           |
+| trx_requested_lock_id      | 当 trx_state 为 LOCK WAIT 时，这一列显示事务正在等待的锁的 id。                                                          |
+| trx_wait_started           | 当 trx_state 为 LOCK WAIT 时，此列显示锁定等待开始的时间（使用系统时区）。                                                 |
+| trx_weight                 | 以修改的行和持有的锁来衡量事务完成了多少工作。在发生死锁时，该权重用于决定回滚哪个事务。权重越高，说明已完成的工作越多。              |
+| trx_mysql_thread_id        | 执行事务的连接的连接 ID（与性能模式线程表中的 PROCESSLIST_ID 列相同）。                                                    |
+| trx_query                  | 事务当前执行的查询。如果事务处于空闲状态，则查询为空。                                                                     |
+| trx_operation_state        | 事务执行的当前操作。即使正在执行查询，该值也可能为空。                                                                     |
+| trx_tables_in_use          | 事务使用的表格数量。                                                                                                  |
+| trx_tables_locked          | 事务持有行锁的表数量。                                                                                                |
+| trx_lock_structs           | 事务创建的锁结构数。                                                                                                  |
+| trx_lock_memory_bytes      | 事务持有的锁使用的内存量（以字节为单位）。                                                                               |
+| trx_rows_locked            | 事务持有的记录锁数量。虽然称为行锁，但也包括索引锁。                                                                       |
+| trx_rows_modified          | 事务修改的行数。                                                                                                     |
+| trx_concurrency_tickets    | 当 innodb_thread_concurrency 不为 0 时，一个事务会被分配到 innodb_concurrency_tickets 票，它可以在允许另一个事务执行工作前使用这些票。这一列显示还剩多少张票。 |
+| trx_isolation_level        | 事务使用的事务隔离级别。                                                                                              |
+| trx_unique_checks          | 连接是否启用了 unique_checks 变量。                                                                                   |
+| trx_foreign_key_checks     | 连接是否启用了外键检查变量。                                                                                           |
+| trx_last_foreign_key_error | 事务遇到的最后一次（如果有）外键错误的错误信息。                                                                          |
+| trx_adaptive_hash_latched  | 事务是否锁定了自适应哈希索引的一部分。共有 innodb_adaptive_hash_index_parts 部分。这一列实际上是一个布尔值。                   |
+| trx_adaptive_hash_timeout  | 是否在多次查询中保持对自适应哈希索引的锁定。如果自适应散列索引只有一个部分，且不存在竞争，那么超时会倒计时，当超时为 0 时，锁就会被释放。 如果存在竞争或有多个部分，那么每次查询后锁都会被释放，超时值为 0。 |
+| trx_is_read_only           | 事务是否为只读事务。事务可以通过明确声明或启用自动提交的单语句事务（InnoDB 可以检测到查询只读取数据）来实现只读。                   |
+| trx_autocommit_non_locking | 当事务是单语句非锁定 SELECT 且自动提交选项已启用时，这一列被设为 1。当这一列和 trx_is_read_only 都为 1 时，InnoDB 可以优化事务以减少开销。 |
 
+通过 INNODB_TRX 表中的信息，可以确定哪些事务影响最大。清单 21-1 显示了两个事务返回信息的示例。
 
+#+begin_src sql
+  select *
+  from information_schema.innodb_trx;
+#+end_src
 
+第一行显示的是一个修改数据的事务示例。在检索信息时，已经修改了 4,544,497 条记录，并且还有一些记录锁。你还可以看
+到，该事务仍在执行查询（UPDATE 语句）。
+
+第二行是启用自动提交后执行 SELECT 语句的示例。由于启用了自动提交，事务中只能有一条语句（显式 START TRANSACTION
+禁用了自动提交）。trx_query 列显示这是一条 SELECT COUNT(*) 查询，没有任何锁定子句，因此是一条只读语句。这意味
+着 InnoDB 可以跳过一些准备工作，比如为事务保存锁和撤销信息，从而减少事务的开销。为了反映这一点，
+trx_autocommit_non_locking 列被设置为 1。
+
+您应该担心哪些事务，这取决于系统的预期工作量。如果是 OLAP 工作负载，预计会有相对长时间运行的 SELECT 查询。对于纯
+粹的 OLTP 工作负载，任何运行时间超过几秒钟、修改记录超过几条的事务都可能是问题的征兆。例如，要查找超过一分钟的事
+务，可以使用以下查询：
+
+#+begin_src sql
+  select *
+  from information_schema.innodb_trx
+  where trx_started < now() - interval 1 minute;
+#+end_src
+
+** innodb监控
+
+InnoDB 监控程序是 InnoDB 信息的瑞士军刀，其中也包括事务信息。InnoDB 监控器输出中的 "事务"（TRANSACTIONS）部
+分专门用于显示事务信息。这些信息不仅包括事务列表，还包括历史列表长度。清单21-2显示了InnoDB监视器的摘录，其中
+的事务部分是在INNODB_TRX表之前的输出之后的示例。
+
+#+begin_src sql
+  show engine innodb status\G
+#+end_src
+
+事务 "部分的顶部显示事务 id 计数器的当前值，然后是已从撤消日志中清除的信息。其中显示，事务 id 小于 5894 的撤销
+日志已被清除。清除时间越靠后，历史列表长度（本节第三行）就越大。从 InnoDB 监控输出中读取历史列表长度是获取历史列
+表长度的传统方法。下一节将介绍如何以更好的方式获取用于监控目的的值。
+
+该部分的其余部分是事务列表。请注意，虽然输出生成了与 INNODB_TRX 中相同的两个活动事务，但事务列表只包括一个活动事
+务（UPDATE 语句的事务）。在 MySQL 5.7 及更高版本中，只读非锁定事务不包括在 InnoDB 监控事务列表中。因此，如果需
+要包含所有活动事务，最好使用 INNODB_TRX 表。
+
+** innodb_metrics和sys.metrics
+
+InnoDB 监控报告对于数据库管理员了解 InnoDB 的总体情况非常有用，但对于监控来说，它就没有那么有用了，因为它需要进
+行解析，才能以监控可以使用的方式获取数据。在本章的前面部分，我们已经介绍了如何从 information_schema 表中获取事
+务信息。INNODB_TRX 表中获取事务信息，那么历史列表长度等度量指标又如何呢？
+
+InnoDB 度量系统包含多个度量，可在 information_schema.INNODB_METRICS 视图中显示有关事务的信息。这些度量指标
+都位于事务子系统中。清单 21-3 列出了事务度量的列表、默认情况下是否启用这些度量，以及解释度量内容的简短注释。
+
+#+begin_src sql
+  select name, count, status, comment
+  from information_schema.innodb_metrics
+  where subsystem='transaction'\G
+#+end_src
+
+其中最重要的指标是 trx_rseg_history_len，即历史列表长度。这也是唯一一个默认启用的指标。与提交和回滚相关的指标可
+用于确定有多少读写、只读和非锁定只读事务，以及它们的提交和回滚频率。回滚次数多说明存在问题。如果怀疑重做日志是瓶颈，
+可以使用 trx_on_log_% 指标来衡量事务提交期间有多少事务在等待重做日志。
+
+#+begin_comment
+  使用 innodb_monitor_enable 选项可以启用 InnoDB 指标，使用 innodb_monitor_disable 选项则可以禁用 InnoDB
+  指标。这可以动态完成。
+#+end_comment
+
+查询 InnoDB 指标的另一种便捷方法是使用 sys.metrics 视图，该视图还包括全局状态变量。清单 21-4 展示了一个使用
+sys.metrics 视图获取当前值和是否启用度量的示例。
+
+#+begin_src sql
+  select Variable_name as name,
+         Variable_value as value,
+         Enabled
+  from sys.metrics
+  where Type='InnoDB Metrics - transaction';
+#+end_src
+
+这表明历史记录列表长度为 45，是一个很好的低值，因此几乎没有撤销日志的开销。其余指标均已禁用。
+
+到目前为止，有关事务信息的讨论都是关于所有事务或单个事务的汇总统计信息。如果想更深入地了解事务完成了哪些工作，就需
+要使用性能模式。
+
+** Performance Schema中的事务
+
+性能模式支持 MySQL 5.7 及更高版本中的事务监控，而且在 MySQL 8 中默认已启用。 除了与 XA 事务和保存点相关的事务
+细节外，性能模式中可用的事务细节不多，无法从信息模式中的 INNODB_TRX 表中获取。不过，性能模式事务事件的优势在于，
+可以将它们与其他事件类型（如语句）结合起来，以获取有关事务工作的信息。这也是本节的重点。此外，性能模式还提供包含汇
+总统计信息的汇总表。
+
+*** 事务事件和语句
+
+性能模式中调查事务的主要表是事务事件表。有三个表用于记录当前或最近的事务：events_transactions_current、
+events_transactions_history 和 events_transactions_history_long。它们的列汇总如表 21-2 所示。
+
+| 列名                             | 描述                                                                                          |
+|---------------------------------+----------------------------------------------------------------------------------------------|
+| thread_id                       | 执行事务的连接的性能模式线程 ID。                                                                 |
+| event_id                        | 事件的事件 ID。您可以使用事件 ID 为线程中的事件排序，或将其与线程 ID 一起作为事件表之间的外键。            |
+| end_event_id                    | 事务完成时的事件 ID。如果事件 id 为空，则表示事务仍在进行中。                                         |
+| event_name                      | 事务事件名称。目前该列的值总是 transaction。                                                       |
+| state                           | 事务的状态。可能的值是 ACTIVE、COMMITTED 和 ROLLED BACK。                                         |
+| trx_id                          | 目前尚未使用，将始终为空。                                                                        |
+| gtid                            | 事务的 GTID。如果 GTID 是自动确定的（通常），则返回 AUTOMATIC。这与执行事务的连接的 gtid_next 变量相同。 |
+| xid_format_id                   | xa事务，格式id                                                                                 |
+| xid_gtrid                       | xa事务，gtrid                                                                                 |
+| xid_bqual                       | xa事务，bqual值                                                                                |
+| xa_state                        | 对于 xa 事务，指事务的状态。可以是 "ACTIVE"、"IDLE"、"PREPARED"、"ROLLEDBACK"或 "COMMITED"。        |
+| source                          | 记录事件的源代码文件和行号。                                                                      |
+| timer_start                     | 事件开始的时间（皮秒）。                                                                         |
+| timer_end                       | 事件完成的时间（皮秒）。如果事务尚未完成，则该值对应当前时间。                                          |
+| timer_wait                      | 事件完成的时间（皮秒）。如果事务尚未完成，则该值对应当前时间。                                          |
+| access_mode                     | 事务是只读模式（READ ONLY）还是读写模式（READ WRITE）。                                            |
+| isolation_level                 | 事务隔离级别                                                                                   |
+| autocommit                      | 事务是否根据自动提交选项自动提交，以及是否已启动显式事务，可能的值是 "NO"和 "YES"。                      |
+| number_of_savepoints            | 事务中创建的保存点数量。                                                                         |
+| number_of_rollback_to_savepoint | 事务回滚到保存点的次数。                                                                         |
+| number_of_release_savepoint     | 事务释放保存点的次数。                                                                           |
+| object_instance_begin           | 该字段目前未使用，始终设置为空。                                                                   |
+| nesting_event_id                | 触发事务的事件 ID。                                                                             |
+| nesting_event_type              | 触发事务的事件类型。                                                                                             |
+
+如果使用 XA 事务，事务事件表在需要恢复事务时非常有用，因为格式 id、gtrid 和 bqual 值可直接从表中获取，而不像
+XA RECOVER 语句那样需要解析输出。同样，如果使用保存点，也可以获得保存点使用情况的统计信息。其他信息与
+INNODB_TRX 表中的信息非常相似。
+
+以使用 events_transactions_current 表为例，可以启动两个事务。第一个事务是普通事务，更新几个城市的人口：
+
+#+begin_src sql
+  start transaction;
+  UPDATE world.city SET Population = 5200000 WHERE ID = 130;
+  UPDATE world.city SET Population = 4900000 WHERE ID = 131;
+  UPDATE world.city SET Population = 2400000 WHERE ID = 132;
+  UPDATE world.city SET Population = 2000000 WHERE ID = 133;
+#+end_src
+
+第二事务中的XA事务
+
+#+begin_src sql
+  xa start 'abc', 'def', 1;
+  update world.city set Population=900000 where id=3805;
+#+end_src
+
+清单 21-5 显示了 events_transactions_current 表的输出示例，其中列出了当前活动的事务。
+
+#+begin_src sql
+  select *
+  from performance_schema.events_transaction_current
+  where state='ACTIVE'\G
+#+end_src
+
+第 1 行中的事务是普通事务，而第 2 行中的事务是 XA 事务。两个事务都是由一条语句启动的，这可以从嵌套事件类型中看
+出来。如果要查找触发事务的语句，可以使用该语句查询 events_statements_history 表，如
+
+#+begin_src sql
+  select sql_text
+  from performance_schema.events_statements_history
+  where thread_id=54 and event_id=38;
+#+end_src
+
+这表明 THREAD_ID = 54 执行的事务是使用 START TRANSACTION 语句启动的。由于 events_statements_history
+表只包括连接的最后十条语句，因此不能保证启动事务的语句仍在历史表中。如果要查看单语句事务或自动提交被禁用时的第一
+条语句（仍在执行中），则需要查询 events_statements_current 表。
+
+事务和语句之间的关系也是反过来的。如果给定了事务事件 ID 和线程 ID，就可以使用语句事件历史和当前表查询该事务执行
+的最后十条语句。清单 21-6 显示了 THREAD_ID = 54 和事务 EVENT_ID = 39（来自清单 21-5 的第 1 行）的示例，
+其中包括开始事务的语句和后续语句。
+
+#+begin_src sql
+  set @thread_id=54;
+      @event_id=39;
+      @nesting_event_id=38;
+  select event_id, sql_text,
+         format_pico_time(timer_wait) as Latency,
+         if(end_event_id is null, 'YES', 'NO') as IsCurrent
+  from (( select event_id, end_event_id,
+                 timer_wait,
+                 sql_text, nesting_event_id,
+                 nesting_event_type
+          from performance_schema.events_statements_current
+          where thread_id=@thread_id
+          ) union (
+          select event_id, end_event_id,
+                 timer_wait,
+                 sql_text, nesting_event_id,
+                 nesting_event_type
+          from performance_schema.events_statements_history
+          where thread_id=@thread_id
+          )
+          ) events
+  where (nesting_event_type='TRANSACTION'
+         and nesting_event_id=@event_id)
+         or event_id=@nesting_event_id
+  order by event_id desc\G
+#+end_src
+
+子查询（派生表）从 events_statements_current 和 events_statements_history 表中查找线程的所有语句事件。
+有必要包括当前事件，因为事务中可能有正在执行的语句。筛选语句的条件是语句是事务的子事务或事务的嵌套事件（EVENT_ID
+= 38）。这将包括从事务开始的所有语句。如果有正在进行的语句，则最多有 11 条语句，否则最多有 10 条。
+
+END_EVENT_ID 用于确定语句当前是否正在执行，而语句的顺序则使用 EVENT_ID 倒序排列，因此最新的语句在第 1 行，
+最旧的语句（START TRANSACTION 语句）在第 5 行。
+
+这类查询不仅有助于调查仍在执行查询的事务。当你遇到一个空闲事务，并想知道该事务在被遗弃前做了什么时，它也非常有用。
+查找活动事务的另一种相关方法是使用 sys.session 视图，该视图使用 events_ transactions_current 表来包含每
+个连接的事务状态信息。清单 21-7 显示了一个查询活动事务的示例，其中不包括执行查询的连接的记录。
+
+#+begin_src sql
+  select *
+  from sys.session
+  where trx_state='ACTIVE'
+        and conn_id <> connection_id()\G
+#+end_src
+
+这表明第一行中的事务活动时间已超过 11 分钟，距离最后一次执行查询的时间是 690 秒（11.5 分钟）（您的值会有所不
+同）。last_statement 可以用来确定连接执行的最后一次查询。这是一个放弃事务的示例，它阻止了 InnoDB 清除撤销日
+志。导致放弃事务的最常见原因是数据库管理员以交互方式启动事务时走神了，或者自动提交功能被禁用，没有意识到事务已经
+启动。
+
+#+begin_comment
+  如果禁用自动提交功能，请务必在工作结束时提交或回滚。有些连接器默认情况下会禁用自动提交功能，因此请注意您的应用
+  程序可能没有使用服务器默认设置。
+#+end_comment
+
+您可以回滚事务，以避免更改任何数据。对于第一个（正常）事务
+
+#+begin_src sql
+  rollback;
+#+end_src
+
+#+begin_src sql
+  xa end 'abc', 'def', 1;
+  xa rollback 'abc', 'def', 1;
+#+end_src
+
+性能模式表有助于分析事务的另一种方法是使用汇总表获取汇总数据。
+
+*** 事务汇总表
+
+报表汇总表可以用来获取执行报表的报告，同样，事务汇总表也可以用来分析事务的 使用情况。虽然这些表不像报表那样有用，
+但它们确实能让人了解哪些连接和账户以不同的方式使用事务。
+
+共有五个事务汇总表，可按全局或账户、主机、线程或用户对数据进行分组。所有汇总表也都按事件名称分组，但由于目前只有
+一个事务事件（事务），所以操作为空。这些表格是
+
++ events_transactions_summary_global_by_event_name: 所有事务汇总。该表只有一行。
++ events_summary_by_account_by_event_name: 按用户名和主机名分组的事务。
++ events_transactions_summary_by_host_event_name: 按账户主机名分组的事务。
++ events_transactions_summary_by_thread_by_event_name: 按线程分组的事务。只包括当前存在的线程。
++ events_transactions_summary_by_user_by_event_name: 按账户用户名分组的事件。
+
+每个表格包括事务统计分组列和三组列：总计、读写事务和只读事务。这三组列中的每一组都包含事务总数以及总延迟、最小延
+迟、平均延迟和最大延迟。清单 21-8 显示了 events_transactions_summary_global_by_ event_name 表中的数据
+示例。  
+
+#+begin_src sql
+  select *
+  from performance_schema.events_transaction_summary_global_by_event_name\G
+#+end_src
+
+当你研究输出结果时，可能会惊讶于事务数量之多，尤其是读写事务。请记住，在查询 InnoDB 表时，即使没有明确指定事务，
+所有事务都是事务。因此，即使是查询单行的简单 SELECT 语句也算作一个事务。关于读写事务和只读事务之间的分配问题，
+只有在明确启动只读事务的情况下，性能模式才会将其视为只读事务：
+
+#+begin_src sql
+  start transaction read only;
+#+end_src
+
+当 InnoDB 确定自动提交的单语句事务可被视为只读事务时，该事务仍将计入性能模式中的读写统计数据。
+
+** 总结
+
+事务是数据库中的一个重要概念。它有助于确保您可以将更改作为一个单元应用到多条记录中，并确保您可以选择是应用更改还是
+回滚更改。
+
+本章首先讨论了为什么必须了解事务的使用方式。虽然事务本身可以被视为更改的容器，但锁会一直保留到事务提交或回滚为止，
+而且会阻碍撤销日志的清除。锁和大量撤销日志都会影响查询的性能，即使查询不是在造成大量锁或大量撤销日志的事务中执行。
+锁使用的内存来自缓冲池，因此可用于缓存数据和索引的内存较少。以历史列表长度衡量的大量撤销日志意味着 InnoDB 在执行
+语句时必须考虑更多的行版本。
+
+本章其余部分将介绍如何分析正在进行的事务和过去的事务。信息模式中的 INNODB_TRX 表是当前事务的最佳信息来源。InnoDB
+监控和 InnoDB 指标是对其的补充。对于 XA 事务和使用保存点的事务，或者需要调查哪些语句作为事务的一部分被执行时，需
+要使用性能模式的事务事件表。性能模式还包括汇总表，可用于获取更多信息，了解谁在读写事务和只读事务上花费了时间。
 
 
 
