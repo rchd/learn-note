@@ -1,6 +1,7 @@
 * MySQL 性能调整
 
 
+
 * 索引
 
 为表添加索引是提高查询性能的一个非常强大的方法。索引允许 MySQL 快速找到查询所需的数据。如果在表中添加正确的索引，查
@@ -112,7 +113,7 @@ TABLE table_name ADD INDEX ...或 ALTER TABLE table_name ADD KEY ...。手册在
 主键对于 InnoDB 来说是非常特殊的，而对于其他存储引擎来说，它可能只是一个约定俗成的问题。不过，在所有情况下，最好
 总是有一些值可以唯一标识一条记录，例如，这样可以让复制快速确定要修改的记录（第 26 章中有更多相关内容），而且组复制
 功能明确要求所有表都必须有一个主键或一个非 NULL 唯一索引。在 MySQL 8.0.13 及更高版本中，可以启用
-sql_require_primary_key 选项，要求所有新表必须有主键。如果更改现有表的结构，该限制也同样适用。
+sql _require _primary _key 选项，要求所有新表必须有主键。如果更改现有表的结构，该限制也同样适用。
 
 #+begin_comment
   启用 sql_require_primary_key 选项（默认已禁用）。没有主键的表可能会导致性能问题，有时会以意想不到的微妙方式
@@ -1368,8 +1369,8 @@ InnoDB 在 mysql 模式中使用两个表来存储与持久统计数据相关的
 最常用的表是 innodb_index_stats 表。该表为每个 B 树索引提供了几行信息，包括索引各部分的唯一值数量
 （cardinality）、索引中的叶子页数量以及索引的总大小。表 15-1 总结了表中的列。
 
-| 列名              | 数据类型          | 描述                                       |
-|------------------+-----------------+-------------------------------------------|
+| 列名             | 数据类型          | 描述                                       |
+|-----------------+-----------------+-------------------------------------------|
 | database_name    | varchar(64)     | 模式中带有索引的表的位置。                     |
 | table_name       | varchar(199)    | 带索引的表名                                |
 | index_name       | varchar(64)     | 索引名                                     |
@@ -1422,14 +1423,15 @@ CountryCode 索引共有 8 页，其中 7 页是叶节点。这意味着索引�
 
 
 #+NAME: innodb_table_stats
-| 列名                      | 数据类型          | 描述              |
-|--------------------------+-----------------+------------------|
-| database_name            | varchar(64)     | 表所在的模式名      |
-| table_name               | varchar(199)    | 表名              |
-| last_update              | timestamp       | 上次表统计更新的时间 |
-| n_rows                   | bigint unsigned | 表中行的估算数据    |
-| clustered_index_size     | bigint unsigned | 聚簇索引的页数      |
-| sum_of_other_index_sizes | bigint unsigned | 二级索引的总计页数        |
+| 列名                  | 数据类型          | 描述              |
+|----------------------+-----------------+------------------|
+| database_name         | varchar(64)     | 表所在的模式名      |
+| table_name            | varchar(199)    | 表名              |
+| last_update           | timestamp       | 上次表统计更新的时间 |
+| n_rows                | bigint unsigned | 表中行的估算数据    |
+| clustered_index_size   | bigint unsigned | 聚簇索引的页数      |
+| sum_of_other_index_sizes | bigint unsigned | 二级索引的总计页数  |
+
 
 主键由列 database_name 和 table_name 组成。需要注意的一点是，表统计量与索引统计量一样都是近似值。表中的行数只
 是主键的估计卡入度。同样，聚类索引的大小与 innodb_index_stats 表中主键的大小相同。二级索引页数是每个二级索引大
@@ -1496,25 +1498,25 @@ TABLES 表和 STATISTICS 表，或使用与之相当的 SHOW 语句，都会触�
 唯一受 information_schema_stats_expiry 变量影响的列。
 
 #+NAME:STATISTICS
-| 列名           | 数据类型       | 描述                                                             |
-|---------------+--------------+-----------------------------------------------------------------|
-| TABLE_CATALOG | varchar(64)  | 表格所属的目录。                                                   |
+| 列名          | 数据类型       | 描述                                                             |
+|--------------+--------------+-----------------------------------------------------------------|
+| TABLE-CATALOG  | varchar(64)  | 表格所属的目录。                                                   |
 | TABLE_SCHEMA  | varchar(64)  | 表格所在的模式。                                                   |
 | TABLE_NAME    | varchar(64)  | 索引所在的表。                                                     |
 | NON_UNIQUE    | int          | 索引是否唯一（0）或不唯一（1）。                                     |
-| INDEX_SCHEMA  | varchar(64)  | 与 TABLE_SCHEMA 相同（因为索引总是与表同处）。                        |
-| INDEX_NAME    | varchar(64)  | 索引名                                                           |
-| SEQ_IN_INDEX  | int unsigned | 列在索引中的位置。对于单列索引，该值始终为 1。                          |
+| INDEXSCHEMA  | varchar(64)  | 与 TABLE_SCHEMA 相同（因为索引总是与表同处）。                         |
+| INDEX_-NAME   | varchar(64)  | 索引名                                                           |
+| SEQ_IN_INDEX   | int unsigned | 列在索引中的位置。对于单列索引，该值始终为 1。                          |
 | COLUMN_NAME   | varchar(64)  | 列名                                                             |
-| COLLATION     | varchar(1)   | 索引的排序方式。值可以是 NULL（不排序）、a（升序）或 d（降序）。          |
-| CARDINALITY   | bigint       | 该行中包含列的索引部分的唯一值的估计数量。                             |
+| COLLATION    | varchar(1)   | 索引的排序方式。值可以是 NULL（不排序）、a（升序）或 d（降序）。          |
+| CARDINALITY  | bigint       | 该行中包含列的索引部分的唯一值的估计数量。                             |
 | SUB_PART      | bigint       | 对于前缀索引，它是被索引的字符数或字节数。如果整个列都被索引，则值为 NULL。 |
-| PACKED        | binary(0)    | 对于 InnodB 表，该值始终为空。                                      |
-| NULLABLE      | varchar(3)   | 是否允许 NULL 值，该列要么为空字符串，要么为 "是"。                    |
+| PACKED       | binary(0)    | 对于 InnodB 表，该值始终为空。                                      |
+| NULLABLE     | varchar(3)   | 是否允许 NULL 值，该列要么为空字符串，要么为 "是"。                    |
 | INDEX_TYPE    | varchar(11)  | 索引类型，比如BTree索引                                            |
-| COMMENT       | varchar(8)   | 关于索引的额外信息。                                                |
+| COMMENT      | varchar(8)   | 关于索引的额外信息。                                                |
 | IS_VISIBLE    | varchar(3)   | 索引是可见（是）还是不可见（否）。                                    |
-| EXPRESSION    | longtext     | 对于功能索引，此列包含用于生成索引值的表达式。对于非功能索引，该值始终为空。                                                                |
+| EXPRESSION   | longtext     | 对于功能索引，此列包含用于生成索引值的表达式。对于非功能索引，该值始终为空。 |
 
 STATISTICS 视图不仅对索引统计有用，而且对索引本身也很有用，它包含了所有索引的信息，与索引类型无关。例如，你可以用
 它来查找不可见索引和用于功能索引的表达式。关于索引统计，最有趣的列是 CARDINALITY，它是索引中估计存在的唯一值的数
@@ -3247,10 +3249,10 @@ fk_payment_ rental 索引用于索引合并。
 
 索引合并功能由四个优化器开关控制，其中一个控制整体功能，其他三个分别控制三种算法。选项包括
 
-+ index_merge： 是启用还是完全禁用索引合并。
-+ index_merge_intersection： 是否启用交集算法。
-+ index_merge_union： 是否启用联合算法。
-+ index_merge_sort_union： 是否启用排序联合算法。
++ index _merge： 是启用还是完全禁用索引合并。
++ index _merge _intersection： 是否启用交集算法。
++ index _merge _union： 是否启用联合算法。
++ index _merge _sort _union： 是否启用排序联合算法。
 
 默认情况下，所有索引合并优化器开关都已启用。
 
@@ -8051,7 +8053,7 @@ MySQL 8.0.12 及更高版本中，使用了一种新的排序缓冲区算法。�
 结论是，在查询期间分配的缓冲区最好保守一些。保持较小的全局设置（默认值是一个很好的起点），仅在可以证明增加设置后会
 有明显改善的查询中增加全局设置。
 
-** COMMENT 内部临时表
+** 内部临时表
 
 当查询需要存储子查询的结果、合并 UNION 语句的结果等类似内容时，会使用内部临时表。MySQL 8采用了新的TempTable
 存储引擎，与以前版本中使用的MEMORY引擎相比，TempTable在内存中保存表时要优越得多，因为它支持可变宽度列（从
@@ -8118,29 +8120,1027 @@ TempTable 溢出的实现方式，因此无法使用性能模式查看哪些线�
 最后，讨论了内部临时表。在 MySQL 8 中，这些表使用 TempTable 引擎，当达到全局最大内存使用量时，它支持溢出到磁盘。
 在磁盘上存储内部临时表时，还可以将其转换为 InnoDB。
 
+* 修改查询计划
+
+性能不佳的查询无法按预期运行可能有多种原因。这些原因既包括在模式不佳的情况下查询明显错误，也包括非最佳查询计划或资源
+争用等较低层次的原因。本章将讨论一些常见情况和解决方案。
+
+本章首先介绍了用于本章大部分示例的测试数据，并讨论了过度全表扫描的症状。然后介绍查询中的错误如何导致严重的性能问题，以
+及为什么即使存在索引也不能总是使用。本章的中间部分介绍了通过改进索引使用或重写复杂查询来改进查询的各种方法。最后一部分
+讨论如何使用 SKIP LOCKED 子句实现队列系统，以及如何处理包含多个 OR 条件或包含多个值的 IN () 子句的查询。
+
+** 测试数据
+
+本章主要使用专门为本章示例创建的测试数据。本书 GitHub 仓库中的 chapter_24.sql 文件包含必要的表定义和数据，如果
+你想自己尝试这些示例的话。脚本将删除 chapter_24 模式，并创建包含表的模式。你可以使用 MySQL Shell 中的\source
+命令或 mysql 命令行客户端中的 SOURCE 命令来执行脚本。例如
+
+你可以使用 MySQL Shell 中的\source 命令或 mysql 命令行客户端中的 SOURCE 命令来执行脚本。例如
+
+#+begin_src sql
+  \source chapter_24.sql
+  show tables from chapter_24;
+#+end_src
+
+在获取 chapter_24.sql 脚本之前，需要先安装世界样本数据库。
+
+#+begin_comment
+  由于索引统计量是通过随机潜入索引来确定的，因此每次分析后其值都不会相同。因此，在尝试本章中的示例时，不应期望获得
+  完全相同的输出结果。
+#+end_comment
+
+** 过度全表扫描的症状
+
+造成最严重性能问题的原因之一是全表扫描，尤其是在涉及连接且全表扫描不在查询块中的第一个表上时。这会给 MySQL 带来大
+量工作，甚至影响其他连接。当 MySQL 无法为查询使用索引时，就会发生全表扫描，原因要么是没有过滤条件，要么是现有条件
+没有索引。全表扫描的一个副作用是大量数据被拉入缓冲池，可能不会返回应用程序。这会使磁盘 I/O 量急剧增加，从而导致更
+多性能问题。
+
+当查询执行了过多的表扫描时，需要注意的症状有：CPU 使用率增加、访问行数增加、索引使用率低、磁盘 I/O 可能增加以及
+InnoDB 缓冲池效率降低。
+
+检测过度全表扫描的最佳方法是进行监控。直接方法是在性能模式中查找已标记为使用全表扫描的查询，并比较检查行的比例与返
+回或受影响行的数量，详见第 19 章。您还可以查看时间序列图，以发现访问行数过多或 CPU 使用率过高的模式。图 24-1 显
+示了在 MySQL 实例上进行全表扫描期间的监控图示例。(如果要模拟类似情况，雇员数据库很有用，因为它有足够大的表，可以
+进行一些相对较大的扫描）。
+
+[[./images/pZwKGT.png]]
+
+请注意，在图表的左侧，访问的行、通过全扫描读取行的行访问率和 CPU 使用率都有所增加。另一方面，与访问的行数相比，返
+回的行数变化很小（百分比）。尤其是第二张图，它显示了通过索引读取行的比率与全扫描读取行的比率，以及读取行与返回行之
+间的比率，这说明了一个问题。
+
+#+begin_comment
+  在 MySQl 8.0.18 及更高版本中，哈希连接可用于等连接，因此连接时的全表扫描问题不大。
+#+end_comment
+
+最重要的问题是，什么时候 CPU 占用率过高，什么时候访问的行数过多，不幸的是，答案是 "视情况而定"。 如果考虑 CPU 使
+用率，那么它实际上只能说明正在进行工作，而对于正在访问的行数和访问速度，这些指标只能说明应用程序正在请求数据。问题
+在于，对于应用程序需要回答的问题来说，如果工作量太大，访问的行数太多，就会出现问题。在某些情况下，优化查询可能会增加
+而不是减少其中的一些指标，原因很简单，因为经过优化的 MySQL 查询可以做更多的工作。
+
+这就是基线为何如此重要的一个例子。考虑指标的变化通常比查看指标的快照更有意义。同样，将这些指标结合起来查看（如比较
+返回行和访问行）比单独查看更有帮助。
+
+** 糟糕的查询
+
+查询性能最差的常见原因之一是查询写错了。这似乎是一个不太可能的原因，但在实践中却比你想象的更容易发生。通常情况下，
+问题出在缺少连接或过滤条件，或者引用了错误的表。如果使用框架，例如使用对象关系映射（ORM），框架中的错误也可能是罪
+魁祸首。
+
+在极端情况下，缺少过滤条件的查询会使应用程序超时（但不会杀死查询）并重试，因此 MySQL 会不断执行更多同样性能很差的
+查询。这反过来又会导致 MySQL 连接耗尽。
+
+另一种可能是，第一个提交的查询开始从磁盘向缓冲池调入数据。随后的每个查询都会越来越快，因为它们可以从缓冲池中读取部
+分记录，而当它们读取到尚未从磁盘读取的记录时，速度就会减慢。最后，所有查询副本都将在短时间内完成，并开始向应用程序
+返回大量数据，从而使网络达到饱和。网络饱和会导致连接尝试因握手错误而失败（performance_ schema.host_cache 中的
+COUNT_HANDSHAKE_ERRORS 列），连接主机最终会被阻塞。
+
+这种情况看似极端，而且在大多数情况下也不会变得那么糟糕。不过，本书作者确实遇到过这种情况，原因是生成查询的框架中存
+在一个错误。鉴于现在的 MySQL 实例通常位于云中的虚拟机中，CPU 和网络等可用资源可能有限，一个糟糕的查询最终耗尽资
+源的可能性也更大。
+
+以缺少连接条件的查询和查询计划为例，请看清单 24-1，它连接了city表和country表。
+
+#+begin_src sql
+  explain
+  select ci.CountryCode, ci.ID, ci.Name,
+         ci.District, co.Name as Country,
+         ci.Population
+  from world.city ci
+  inner join world.country co\G
+#+end_src
+
+#+begin_src sql
+  explain analyze
+  select ci.CountryCode, ci.ID, ci.Name,
+         ci.district, co.Name as Country,
+         ci.Population
+  from world.city ci
+  inner join world.cuontry co\G
+#+end_src
+
+请注意，两个表的访问类型都设置为 ALL，并且连接是在一个块嵌套循环中使用连接缓冲区。经常出现类似症状的原因是查询正
+确，但查询无法使用索引。EXPLAIN ANALYZE 输出显示在 8.0.18 版中使用了散列连接。它还显示总共返回了近 100 万行！
+查询的 Visual Explain 图如图 24-2 所示。
+
+[[./images/JiUXHV.png]]
+
+请注意这里的两个（红色）全表扫描是如何突出的，以及查询成本是如何估计超过 100,000 的。
+
+多次全表扫描、估计返回行数非常多以及估计成本非常高，这些都是你需要寻找的线索。
+
+导致查询性能不佳并出现类似症状的一个原因是，MySQL 无法为筛选器和连接条件使用索引。
+
+** 未使用索引
+
+当查询需要查找表中的记录时，基本上有两种方法：通过全表扫描直接访问记录或通过索引访问记录。如果过滤器的选择性很强，
+通过索引访问记录通常比表扫描要快得多。
+
+显然，如果过滤器适用的列上没有索引，MySQL 只能使用表扫描。你可能会发现，即使有索引，也无法使用。造成这种情况的三
+个常见原因是：列不是多列索引中的首列；数据类型与比较不匹配；在有索引的列上使用了函数。本节将逐一讨论这些原因。
+
+#+begin_comment
+  还有一种情况是，优化器认为某个索引的选择性不够，因此与全表扫描相比，不值得使用该索引。 这种情况将在 "改进索引的
+  使用 "部分以及 MySQl 使用错误索引的示例中进行处理。
+#+end_comment
+
+*** 不是索引的左前缀
+
+要使用索引，必须使用索引的左前缀。例如，如果一个索引包括三列（a、b、c），那么只有在列 a 上也存在相等条件时，列
+b 上的条件才能使用过滤器。
+
+可使用该索引的条件举例如下
+
+#+begin_src sql
+  where a=10 and b=20 and c=30
+  where a=10 and b=20 and c>10
+  where a=10 and b=20
+  where a=10 and b>20
+  where a=10
+#+end_src
+
+无法有效使用索引的一个示例是 WHERE b = 20。在 MySQL 8.0.13 及更高版本中，如果 a 是一个 NOT NULL 列，
+MySQL 可以使用跳过扫描范围优化来使用索引。如果 a 允许 NULL 值，则不能使用索引。WHERE c = 20 条件在任何情况
+下都不能使用索引。
+
+同样，对于 WHERE a > 10 AND b = 20 条件，索引将仅用于对 a 列进行筛选。当查询只使用索引中的一个列子集时，索
+引中列的顺序必须与应用的筛选条件相对应。如果在其中一列上设置了范围条件，请确保该列是索引中最后使用的一列。例如，
+请参考清单 24-2 中的表和查询。
+
+#+begin_src sql
+  show create table chapter_24.mytable\G
+#+end_src
+
+#+begin_src sql
+  explain
+  select *
+  from chapter_24.mytable
+  where a>10 and b=20\G
+#+end_src
+
+请注意，在 EXPLAIN 输出中，key_len 只有 4 字节，而如果索引同时用于 a 列和 b 列，则应为 9 字节。输出结果还
+显示，估计只有 10% 的被检查记录会被包括在内。图 24-3 显示了 Visual Explain 中的同一示例。
+
+[[./images/oTniEm.png]] 
+
+但是，如果更改索引中列的顺序，使列 b 的索引顺序在列 a 之前，那么索引就可以用于这两列的条件。清单 24-3 显示了添
+加新索引（b、a、c）后查询计划的变化情况。
+
+#+begin_src sql
+  alter table chapter_24.mytable
+  add index bac(b,a,c);
+#+end_src
+
+#+begin_src sql
+  explain
+  select * from chapter_24.mytable
+  where a>10 and b=20\G
+#+end_src
+
+请注意，key_len 列现在返回 9 个字节，过滤列显示表中将包含 100% 的已检查行。同样的情况也反映在 Visual Explain
+中，如图 24-4 所示。
+
+[[./images/Dshc5e.png]]
+
+从图中可以看到，要检查的行数从 8000 多行减少到了 160 行，而且 "已用关键字部分 "现在包括了 b 列和 a 列。估计查
+询成本也从 1683.84 降至 33.31。
+
+*** 数据类型不匹配
+
+另一件需要注意的事情是，条件的两边使用相同的数据类型，对于字符串，使用相同的校对方式。如果不是这种情况，MySQL
+可能无法使用索引。
+
+当查询因数据类型或校对不匹配而无法以最佳方式运行时，一开始可能很难意识到问题出在哪里。查询是正确的，但 MySQL 拒
+绝使用您期望的索引。除了查询计划不符合预期外，查询结果也可能是错误的。例如，这种情况可能是铸造造成的：
+
+#+begin_src sql
+  select ('a130'=0), ('130a131'=130);
+#+end_src
+
+请注意，字符串 "a130 "被认为等于整数 0，这是因为字符串以非数字字符开头，因此被转换为数值 0。同样，字符串
+"130a131 "被认为等于整数 130，因为字符串的前导数字部分被转换为整数 130。在 WHERE 子句或连接条件中使用转换时，
+也会出现同样的意外匹配。在这种情况下，检查查询的警告有时也有助于发现问题。
+
+如果考虑本章测试模式中的 country 表和 world 表（表定义将在示例讨论中显示），可以看到一个不使用索引的连接示例，
+即使用 CountryId 列连接两个表。清单 24-4 显示了查询及其查询计划的示例。
+
+#+begin_src sql
+  explain
+  select ci.ID, ci.Name, ci.District,
+         co.Name as Country, ci.Population
+  from chapter_24.city ci
+  inner join chapter_24.country co using (CountryId)
+  where co.CountryCode='AUS'\G
+#+end_src
+
+请注意，ci（城市）表的访问类型是 ALL。由于 co（国家）表是一个常量，因此该查询既不会使用嵌套循环块，也不会使用哈
+希连接。这里包含了警告（如果不使用启用了警告的 MySQL Shell，则需要执行 SHOW WARNINGS 来获取警告），因为它们
+提供了宝贵的提示，说明为什么不能使用索引，例如 由于字段 "CountryId "的类型或校对转换，无法在索引 "CountryId"
+上使用 ref 访问。因此，有一个索引是候选索引，但由于数据类型或校对方式发生了变化而无法使用。图 24-5 显示了使用
+Visual Explain 的相同查询计划。
+
+[[./images/P3hHEN.png]]
+
+在这种情况下，你需要使用文本输出来获取所有细节，因为 Visual Explain 并不包含警告。看到类似警告时，请返回检查
+表定义。这些定义如清单 24-5 所示。
+
+#+begin_src sql
+  create table `chapter_24`.`city`  (
+      `ID` int unsigned not null auto_increment,
+      `Name` varchar(35) not null default ,
+      `CountryCode` char(3) not null default,
+      `CountryId` char(3) not null,
+      `District` varchar(20) not null default,
+      `Population` int unsigned not null default '0',
+      primary key (`ID`),
+      key `CountryCode` (`CountryCode`),
+      key `CountryId` (`CountryId`),
+  )engine=InnoDB default charset=utf8mb4 collate=utf8mb4_general_ci;
+#+end_src
+
+#+begin_src sql
+  create table `chapter_24`.`country`(
+     `CountryId` int unsigned not null auto_increment,
+     `CountryCode` char(3) not null,
+     `Name` varchar(52) not null,
+     `Continent` enum('Asia', 'Europe', 'North America', 'Africa', 'Oceania',
+     'Antarctica', 'South America') not null default 'Asia',
+     `Region` varchar(26) default null,
+     primary key(`CountryId`),
+     unique index `CountryCode` (`CountryCode`)
+  )engine=InnoDB default charset=utf8mb4 collate=utf8mb4_0900_ai_ci;
+#+end_src
+
+这里很明显，城市表的 CountryId 列是 char(3) 列，但国家表的 CountryId 是整数。这就是为什么当城市表是第二个
+表时，不能使用城市表的 CountryId 列索引。CountryId 列上的索引。
+
+#+begin_comment
+  如果连接的方向相反，city表是第一个表，country表是第二个表，那么 city.CountryId 仍然会被转换为整数，而
+  country.CountryId 不会改变，因此可以使用 country.CountryId 上的索引。因此可以使用 country.CountryId
+  索引。
+#+end_comment
+
+还要注意的是，两个表的校对方式不同。city表使用 utf8mb4_general_ci 整理（MySQL 5.7 及更早版本中的默认
+utf8mb4 整理），而country表使用 utf8mb4_0900_ai_ci（MySQL 8 中的默认 utf8mb4 整理）。不同的字符集或
+校对方式甚至会完全阻止查询的执行：
+
+#+begin_src sql
+  select ci.ID, ci.Name, ci.District,
+         co.Name as Country, ci.Population
+  from chapter_24.city ci
+  inner join chapter_24.country co using (CountryCode)
+  where co.CountryCode='AUS';
+#+end_src
+
+如果在 MySQL 8 中创建表格，并在查询中将其与在早期 MySQL 版本中创建的表格一起使用，则需要注意这一点。在这种情
+况下，需要确保所有表使用相同的校对方式。
+
+数据类型不匹配的问题是在过滤器中使用函数的特殊情况，因为 MySQL 会进行隐式转换。一般来说，在过滤器中使用函数会妨
+碍索引的使用。
+
+*** 函数依赖
+
+不使用索引的最后一个常见原因是对列应用了函数，例如：WHERE MONTH(birth_date = 7： 在这种情况下，需要重写条件
+以避免使用函数，或者添加一个函数式索引。
+
+在可能的情况下，处理因使用函数而无法使用索引的最佳方法是重写查询以避免使用函数。虽然也可以使用函数式索引，但除非
+它有助于创建覆盖索引，否则索引会增加开销，而重写则可以避免开销。如清单 24-6 中的示例，使用 chapter_24.person
+表查询 1970 年出生的人的详细信息。
+
+#+begin_src sql
+  show create table chapter_24.person\G
+#+end_src
+
+#+begin_src sql
+  explain select * from chapter_24.person
+  where year(BirthDate)=1970\G
+#+end_src
+
+该查询使用 YEAR() 函数来确定该人的出生年份。另一种方法是查找 1970 年 1 月 1 日至 1971 年 12 月 31 日（包括
+这两天）之间出生的每个人，结果是一样的。清单 24-7 显示，在这种情况下使用的是出生日期列上的索引。
+
+#+begin_src sql
+  explain select * from chapter_24.person
+  where BirthDate between '1970-01-01' and '1970-12-31'\G
+#+end_src
+
+这种重写将查询从使用表扫描检查 1000 行减少到仅使用索引范围扫描检查 6 行。在对日期使用函数时，通常可以进行类似的
+重写，这样可以有效地提取一系列值。
+
+#+begin_comment
+  使用 LIKE 操作符重写日期或日期时间范围条件很有诱惑力，例如： WHERE birthdate LIKE '1970-%'： 这样，
+  MySQL 将无法使用查询，因此不建议使用。
+#+end_comment
+
+使用函数的条件并不总是可以按刚才演示的方式重写。可能是条件没有映射到单一范围，也可能是查询是由框架或第三方应用程
+序生成的，因此无法更改。在这种情况下，可以添加功能索引。
+
+#+begin_comment
+  MySQl 8.0.13 及更高版本支持功能索引。如果您使用的是早期版本，建议您升级。如果无法做到这一点，或者还需要函数
+  返回的值，可以通过在函数表达式中添加虚拟列并在虚拟列上创建索引来模拟函数式索引。
+#+end_comment
+
+举例来说，如果要查询所有在某个月份过生日的人，例如，您想给他们发送生日贺卡。原则上，这可以使用范围来完成，但需要
+每年使用一个范围，这既不实用也不高效。相反，您可以使用 MONTH() 函数提取月份的数值（1 月为 1，12 月为 12）。清
+单 24-8 展示了如何添加功能索引，该索引可与查询一起使用，以查找 chapter_24.person 表中生日在当前月份的所有人
+员。
+
+#+begin_src sql
+  alter table chapter_24.person
+  add index ((month(BirthDate)));
+#+end_src
+
+#+begin_src sql
+  explain select *
+  from chapter_24.person
+  where month(BirthDate)=month(now())\G
+#+end_src
+
+添加 MONTH(BirthDate) 功能索引后，查询计划显示使用的索引是 functional_index。
+
+** 提高索引使用
+
+上一节讨论了在连接子句或 WHERE 子句中不使用索引的查询。在某些情况下，虽然使用了索引，但可以改进索引，或者使用其他
+索引可以获得更好的性能，或者由于过滤器的复杂性而无法有效使用索引。本节将举例说明如何改进已使用索引的查询。
+
+*** 新增覆盖索引
+
+在某些情况下，当你查询一个表时，过滤是由索引执行的，但你又请求了其他几列，所以 MySQL 需要检索整条记录。在这种情
+况下，将这些额外列添加到索引中会更有效率，这样索引就包含了查询所需的所有列。
+
+请看 chapter_24 示例数据库中的城市表：
+
+#+begin_src sql
+  create table `city`(
+    `ID` int unsigned not null auto_increment,
+    `Name` varchar(35) not null default,
+    `CountryCode` char(3) not null,
+    `District` varchar(20) not null default,
+    `Population` int unsigned not null default 'O',
+    primary key (`ID`),
+    key `CountryCode` (`CountryCode`),
+    key `CountryId` (`CountryId`)
+  ) ENGINE=InnoDB default charset=utf8mb4 COLLATE=utf8mb4_general_ci;
+#+end_src
+
+如果要查找 CountryCode = 'USA' 的所有城市的名称和地区，则可以使用 CountryCode 索引来查找行。如清单 24-9
+所示，这种方法非常有效。
+
+#+begin_src sql
+  explain
+  select Name, District
+  from chapter_24.city
+  where CountryCode='USA'\G
+#+end_src
+
+请注意，索引使用了 12 个字节（每个字符最多 4 个字节宽），Extra 列不包括使用索引。如果创建一个新索引，将
+CountryCode 作为第一列，将 District 和 Name 作为其余列，那么索引中就包含了查询所需的所有列。选择 "地区 "
+和 "姓名 "的顺序是因为您很可能在筛选器、ORDER BY 和 GROUP BY 子句中将它们与 "国家代码 "一起使用。如果同样
+有可能在筛选器中使用这两列，则在索引中选择 Name 优先于 District，因为城市名称的选择性比 District 更强。清
+单 24-10 展示了一个示例和新的查询计划。
+
+#+begin_src sql
+  alter table chapter_24.city
+  alter index CountryCode invisible,
+  add index Country_District_Name
+           (CountryCode, District, Name);
+#+end_src
+
+#+begin_src sql
+  explain
+  select Name, District
+  from chapter_24.city
+  where CountryCode='USA'\G
+#+end_src
+
+添加新索引时，只覆盖 CountryCode 列的旧索引将不可见。这样做是因为新索引也可以用于旧索引的所有用途，所以通常没
+有理由同时保留两个索引。(考虑到仅用于 CountryCode 列的索引小于新索引，某些查询可能会从旧索引中受益。通过使其
+不可见，可以在放弃之前确认不需要它）。
+
+键长度仍然返回为 12 字节，因为这是用于过滤的长度。不过，"额外 "列现在包含了 "Using index"，以显示正在使用覆
+盖索引。
+
+*** 糟糕的索引
+
+当 MySQL 可以在多个索引之间进行选择时，优化器必须根据两个查询计划的估计成本来决定使用哪个索引。由于索引统计和成
+本估计并不精确，MySQL 可能会选择错误的索引。特殊情况是，即使有可能使用索引，优化器也会选择不使用该索引，或者优
+化器选择使用表扫描速度更快的索引。无论哪种情况，都需要使用索引提示。
+
+#+begin_comment
+  索引提示也可用于影响索引是否用于排序或分组，第 17 章对此进行了讨论。有必要使用索引提示的一个例子是，当查询选
+  择使用索引进行排序而不是过滤时，会导致性能低下，反之亦然。
+#+end_comment
+
+当怀疑使用了错误的索引时，需要查看 EXPLAIN 输出中的 possible_keys 列，以确定哪些索引是候选索引。清单 24-11
+显示了一个查找 2020 年日本年满 20 岁且会说英语的人的信息的示例。(树形格式的 EXPLAIN 输出的一部分已被省略号取
+代，以便将大部分行保持在书页宽度范围内，从而提高可读性。
+
+#+begin_src sql
+  show create table chapter_24.person\G
+#+end_src
+
+#+begin_src sql
+  show create table chapter_24.language\G
+#+end_src
+
+#+begin_src sql
+  explain select PersonId, FirstName,
+                 Surname, BrithDate,
+          from chapter_24.person
+          inner join chapter_24.address using (AddressId)
+          inner join chapter_24.language using (LanguageId)
+          where BirthDate between '2000-01-01' and '2000-12-31'
+                and CountryCode='JPN' and Language='Enginsh'\G
+#+end_src
+
+#+begin_src sql
+  EXPLAIN FORMAT=TREE
+  SELECT PersonId, FirstName,
+         Surname, BirthDate
+  FROM chapter_24.person
+  INNER JOIN chapter_24.address USING (AddressId)
+  INNER JOIN chapter_24.language USING (LanguageId)
+  WHERE BirthDate BETWEEN '2000-01-01' AND '2000-12-31'
+        AND CountryCode = 'JPN' AND Language = 'English'\G
+#+end_src
+
+本例中的关键表是person表，该表同时与language表和address表连接。使用 UPDATE 和 FLUSH 语句更新
+mysql.innodb_index_stats 表，并刷新该表，使新的索引统计信息生效，从而模拟索引统计信息已过期的情况。
+
+查询可以使用 BirthDate、AddressId 或 LanguageId 索引。三个 WHERE 子句（每个表一个）的有效性可以非常准确
+地确定，因为优化器会要求存储引擎计算每个条件的记录数。优化程序的难点在于根据连接条件的有效性确定最佳连接顺序，以
+及为每个连接使用哪个索引。根据 EXPLAIN 输出，优化器选择从语言表开始，使用 LanguageId 索引连接人表，最后连接
+address表。
+
+如果怀疑查询中使用了错误的索引（在本例中，使用 LanguageId 连接person表并不是最佳选择，只是因为索引统计信
+息 "错误 "才选择该索引），首先要做的就是更新索引统计信息。其结果如清单 24-12 所示。
+
+#+begin_src sql
+  analyze table chapter_24.person, chapter_24.address, chapter_24.language;
+#+end_src
+
+#+begin_src sql
+  explain
+  select PersonId, FirstName,
+          Surname, BirthDate
+  from chapter_24.person
+  inner join chapter_24.address using (AddressId)
+  inner join chapter_24.language using(LanguageId)
+  where BirthDate between '2000-01-10' and '2000-12-31'
+        and CountryCode='JPN' and Language='English'\G
+#+end_src
+
+#+begin_src sql
+  explain format=TREE
+  select PersonId, FirstName,
+         Surname, BirthDate
+  from chapter_24.person
+  inner join chapter_24.address using (AddressId)
+  inner join chapter_24.language using (LanguageId)
+  where BirthDate between '2000-01-01' and '2000-12-31'
+    and CountryCode='JPN' and Language='English'\G
+#+end_src
+
+这极大地改变了查询计划（为便于阅读，仅包含树形格式查询计划的一部分），比较树形格式查询计划最容
+易看出这一点。表仍按相同顺序连接，但现在使用哈希连接来连接language表和person表。这样做很有
+效，因为language表中只有一条记录，所以对person表进行表扫描并根据出生日期进行过滤是个不错的
+选择。在大多数使用了错误索引的情况下，更新索引统计信息就能解决问题，可能的话，在改变 InnoDB 对
+表进行索引挖掘的次数之后。
+
+#+begin_comment
+  ANALYZE TABLE 会触发被分析表的隐式 FLUSH TABLES。如果有长期运行的查询要使用分析过的表，则在
+  长期运行的查询完成之前，不能启动其他需要访问这些表的查询。
+#+end_comment
+
+在某些情况下，无法通过更新索引统计来解决性能问题。在这种情况下，可以使用索引提示（IGNORE INDEX、
+USE INDEX 和 FORCE INDEX）来影响 MySQL 将使用哪个索引。清单 24-13 显示了一个示例，说明在将索引
+统计信息改回过时后，如何对与之前相同的查询执行此操作。
+
+#+begin_src sql
+  update mysql.innodb_index_stats
+  set stat_value=1000
+  where database_name = 'chapter_24'
+    and table_name = 'person'
+    and index_name = 'LanguageId'
+    and stat_name = 'n_diff_pfx01';
+#+end_src
+
+#+begin_src sql
+  flush table chapter_24.person;
+#+end_src
+
+#+begin_src sql
+  explain
+  select PersonId, FirstName,
+         Surname, BirthDate
+  from chapter_24.person use index(BirthDate)
+  inner join chapter_24.address using (AddressId)
+  inner join chapter_24.language using (LanguageId)
+  where BirthDate between '2000-01-01' and '2000-12-31'
+    and CountryCode='JPN'
+    and Language='English'\G
+#+end_src
+
+这次为person表添加了 USE INDEX (BirthDate) 索引提示，它提供的查询计划与更新索引统计信息时
+相同。请注意，person表的可能键只包括 BirthDate。这种方法的缺点是，如果数据发生变化，优化器无
+法灵活更改查询计划，因此 BirthDate 索引不再是最优的。
+
+这个示例在person表上有三个不同的条件（出生日期的日期范围和两个连接条件）。在某些情况下，当
+一个表上有多个条件时，对查询进行更广泛的重写是有益的。
+
+*** 重写复杂索引条件
+
+在某些情况下，查询会变得非常复杂，以至于优化程序无法提出一个好的查询计划，因此有必要重写查询。
+重写查询可以提供帮助的一个例子是，同一个表上有多个过滤器，索引合并算法无法有效使用。
+
+考虑如下代码
+
+#+begin_src sql
+  explain format=tree
+  select *
+  from chapter_24.person
+  where BirthDate < '1930-01-01'
+  or AddressId = 3471\G
+#+end_src
+
+BirthDate 和 AddressId 列都有索引，但没有跨越两列的索引。一种可能的方法是使用索引合并，如果优化
+程序认为收益足够大，就会默认选择这种方法。通常，这是执行查询的首选方式，但对于某些查询（尤其是
+比本例更复杂的查询），将两个条件拆分成两个查询并使用联合来合并结果可能会有帮助：
+
+#+begin_src sql
+  explain format=tree
+  (select *
+   from chapter_24.person
+   where BirthDate < '1930-01-01'
+  ) union distinct (
+   select *
+   from chapter_24.person
+   where AddressId=3417
+  )\G
+#+end_src
+
+使用 UNION DISTINCT（也是默认联合）可确保满足两个条件的记录不会被包含两次。图 24-6 并排显示了
+这两个查询计划。
+
+[[./images/JZlioT.png]]
+
+左边是使用索引合并（sort_union 算法）的原始查询，右边是手动编写的合并。
 
 
+*** 重写复杂查询
+
+在 MySQL 8 中，优化器增加了几种转换规则，因此可以将查询重写为性能更好的形式。这意味着，随着优
+化器知道的变换越来越多，重写复杂查询的需求也在不断减少。例如，在 8.0.l7 版本中，支持将 NOT IN
+(子查询)、NOT EXISTS (子查询)、IN (子查询) IS NOT TRUE 和 EXISTS (子查询) IS NOT TRUE 重写为反
+连接，这意味着将删除子查询。
+
+尽管如此，考虑如何重写查询仍然是有好处的，这样可以在优化器没有找到最优解或不知道如何自行重写的
+情况下帮助优化器。在某些情况下，还可以利用对常用表表达式（CTE，也称为 with 语法）和窗口函数的
+支持，使查询更有效、更易读。本节将首先讨论常用表表达式和窗口函数，然后将使用 IN（子查询）重写
+查询，最后将其连接并使用两个查询。
+
+公共表表达式和窗口函数
+
+使用常用表表达式和窗口函数的细节超出了本书的范围。本章将包括几个示例，让你了解如何使用这些功能。
+要了解总体概况，《MariaDB和MySQL常用表表达式和窗口函数揭秘》是一个很好的起点，作者是Daniel
+Bartholomew，由apress出版（www.apress.com/gp/book/9781484231197）。
+
+guilhem Bichot（在 MySQl 中实现常用表格表达式的 MySQl 开发人员）在开发常用表格表达式功能之初，
+也写过一篇分四部分的系列博客：https://mysqlserverteam.com/?s=common+table+expressions 。 其他
+MySQl 开发人员也写过两篇关于窗口函数的博客：https://mysqlserverteam.com/?s=window+functions。
+
+最新信息的最佳来源是 MySQl 参考手册。https://dev.mysql.com/doc/refman/en/with.html 中介绍了常
+用的表格表达式。根据函数是常规函数还是聚合函数，窗口函数分为两部分：
+https://dev.mysql.com/doc/refman/en/window-functions. html，其中也包括对窗口函数的一般性讨论
+https://dev.mysql.com/doc/refman/en/group-by-functions.html 用于聚合窗口函数。
+
+*** 公共表达式
+
+通过通用表表达式功能，可以在查询开始时定义子查询，并在查询的主要部分将其作为普通表使用。使用通
+用表表达式而不是内联子查询有几个优点，包括更高的性能和可读性。性能更好的部分原因是查询中支持多
+次引用普通表表达式，而内联子查询只能引用一次。
+
+举例来说，如果对 sakila 数据库进行查询，可以计算出每个负责租赁的员工每月的销售额：
+
+#+begin_src sql
+    SELECT
+          DATE_FORMAT(r.rental_date, '%Y-%m-01' ) AS FirstOfMonth,
+          r.staff_id,
+          SUM(p.amount) as SalesAmount
+  FROM
+          sakila.payment p
+  INNER JOIN sakila.rental r
+                  USING (rental_id)
+  GROUP BY
+          FirstOfMonth,
+          r.staff_id;
+#+end_src
+
+如果想知道各月销售额的变化情况，就需要将一个月的销售额与上个月的销售额进行比较。要做到这一点而
+不使用常用的表表达式，您需要将查询结果存储在临时表中，或者将其复制为两个子查询。清单 24-14 显
+示了后者的一个示例。
+
+#+begin_src sql
+  select current.staff_id,
+    year(current.FirstOfMonth) as Year,
+    month(current.FirstOfMonth) as Month,
+    current.SalesAmount,
+    (current.SalesAmount-ifnull(prev.SalesAmount, 0)
+    ) as DeltaAmount 
+  from (select date_format(r.rental_date, '%Y-%m-01') as FirstOfMonth,
+       r.staff_id, 
+       sum(p.amount) as SalesAmount 
+       from sakila.payment p 
+       inner join sakila.rental r using (rental_id)
+       group by FirstOfMonth, r.staff_id )current 
+  left outer join (
+     select date_format(r.rental_date, '%Y-%m-01') as FirstOfMonth,
+     r.staff_id,
+     sum(p.amount) as SalesAmount
+     from sakila.payment p 
+     inner join sakila.rental r using (rental_id) 
+     group by FirstOfMonth, r.staff_id
+
+  )prev on prev.FirstOfMonth = current.FirstOfMonth-INTERVAL 1 MONTH 
+  and prev.staff_id=current.staff_id 
+  order by current.staff_id, current.FirstOfMonth;
+#+end_src
+
+这很难称得上是最容易阅读和理解的查询。这两个子查询完全相同，与用于查找每位员工每月销售额的子查
+询相同。通过比较同一员工当前月份和前几个月的情况，将两个导出表连接起来。最后，按员工和当前月份
+对结果进行排序。结果如清单 24-15 所示。
+
+[[./images/bkUQVc.png]]
+
+从结果中可以看出，2005 年 9 月至 2006 年 1 月期间没有销售数据。查询假定这段时间的销售额为 0。在
+重写该查询以使用窗口函数时，显示了如何添加缺失的月份。
+
+图 24-7 显示了该版本查询的查询计划。
+
+[[./images/fIuqcw.png]]
+
+查询计划显示，子查询评估了两次；然后在名为 current 的子查询上使用全表扫描执行连接，并在嵌套循
+环中使用索引（和自动生成的索引）进行连接，形成按文件排序的结果。
+
+如果使用常用的表表达式，只需定义一次子查询并引用两次即可。这样可以简化查询并使其执行得更好。使
+用通用表表达式的查询版本如清单 24-16 所示。
+
+#+begin_src sql
+  with monthly_sales as (
+   select date_format(r.rental_date, '%Y-%m-01') as FirstOfMonth,
+   r.staff_id, 
+   sum(p.amount) as SalesAmount 
+   from sakila.payment p 
+   inner join sakila.rental r using (rental_id)
+   group by FirstOfMonth, r.staff_id
+  )
+  select current.staff_id,
+    year(current.FirstOfMonth) as Year,
+    month(current.FirstOfMonth) as Month,
+    current.SalesAmount,
+    (current.SalesAmount - ifnull(prev.SalesAmount, 0) )as DeltaAmount 
+  from monthly_sales current 
+  left outer join monthly_sales prev on prev.FirstOfMonth=current.FirstOfMonth - INTERVAL 1 MONTH 
+  and prev.staff_id=current.staff_id 
+  order by current.staff_id, current.FirstOfMonth;
+#+end_src
+
+首先使用 WITH 关键字定义通用表表达式，并将其命名为 monthly_sales。这样，查询主要部分中的表列表
+就可以直接引用 monthly_sales。查询的执行时间约为原始查询的一半。这样做的另一个好处是，如果业务
+逻辑发生变化，只需在一个地方进行更新，从而减少了查询中出现错误的可能性。图 24-8 显示了使用通用
+表表达式的查询版本的查询计划。
+
+[[./images/ikXMlc.png]]
+
+查询计划显示，子查询只执行一次，然后作为常规表重复使用。否则，查询计划将保持不变。您也可以使用
+窗口函数来解决这个问题。
+
+*** 窗口函数
+
+窗口函数允许您定义一个框架，其中窗口函数返回的值取决于框架中的其他行。您可以用它来生成行数和总
+数的百分比，将某一行与上一行或下一行进行比较，等等。这里将探讨之前查找每月销售数字并与上个月进
+行比较的示例。
+
+您可以使用 LAG() 窗口函数获取前一行中某列的值。清单 24-17 展示了如何使用 LAG() 窗口函数重写每
+月销售额查询，以及如何添加没有销售额的月份。
+
+#+begin_src sql
+
+  with recursive 
+  month as 
+  (select min(date_format(rental_date, '%Y-%m-01')) as FirstOfMonth,
+    max(date_format(rental_date, '%Y-%m-01')) as LastMonth 
+    from sakila.rental 
+    union 
+    select FirstOfMonth+INTERVAL 1 MONTH, LastMonth from month 
+    where FirstOfMonth < LastMonth 
+    ),
+    staff_member as (select staff_id from sakila.staff),
+    monthly_sales as (
+    select month.FirstOfMonth,
+       s.staff_id,
+       ifnull(sum(p.amount), 0) as SalesAmount 
+       from month 
+       cross join staff_member s 
+       left outer join sakila.rental r on r.rental_date>=month.FirstOfMonth 
+       and r.rental_date<month.FirstOfMonth+INTERVAL 1 MONTH 
+       and r.staff_id=s.staff_id 
+       left outer join sakila.payment p using (rental_id)
+       group by FirstOfMonth, s.staff_id
+    )
+    select staff_id, year(FirstOfMonth) as Year,
+          month(FirstOfMonth) as Month,
+          SalesAmount,
+          (SalesAmount - LAG(SalesAmount, 1, 0) over w_month) as DeltaAmount 
+         from monthly_sales 
+         window w_month as (order by staff_id, FirstOfMonth)
+         order by staff_id, FirstOfMonth;
+#+end_src
+
+这个查询起初看起来相当复杂，原因是前两个普通表表达式用于在有租金数据的第一个月和最后一个 月之
+间添加每个月的销售数据。月份表和 staff_member 表之间的交叉乘积（请注意，为了明确交叉连接的目的，
+使用了明确的 CROSS JOIN）被用作 monthly_sales 表的基础，并在外连接了租金表和付款表。
+
+现在主查询变得简单了，因为所需的所有信息都可以在 monthly_sales 表中找到。通过按 staff_ id 和
+FirstOfMonth 排序销售数据，定义了一个窗口，并在该窗口上使用了 LAG() 窗口函数。清单 24-18 显示
+了结果。
+
+[[./images/OexnQC.png]]
 
 
+#+begin_comment
+  窗口并不要求排序数据的值必须按顺序排列。如果省略月份和 staff_member 表达式，2006 年 2 月的滞
+  后值就会变成 2005 年 8 月的滞后值。这很可能是您想要的结果，但与清单 24-14 中原始查询的结果不
+  同。读者可以尝试修改查询，看看有什么不同。
+#+end_comment
+
+*** 用连接重写子查询
+
+如果有子查询，可以选择将子查询改为连接查询。在可能的情况下，优化器通常会自行执行这种重写，但偶
+尔也需要优化器的帮助。
+
+例如，请看下面的查询：
+
+#+begin_src sql
+  SELECT * FROM chapter_24.person
+  WHERE AddressId IN ( SELECT AddressId
+                       FROM chapter_24.address
+                       WHERE CountryCode = 'AUS' AND District = 'Queensland');
+#+end_src
+
+此查询可查找居住在澳大利亚昆士兰州的所有人员。也可以写成人表和地址表之间的连接：
+
+#+begin_src sql
+  SELECT person.*
+  FROM chapter_24.person
+  INNER JOIN chapter_24.address USING (AddressId)
+  WHERE CountryCode = 'AUS' AND District = 'Queensland';
+#+end_src
+
+事实上，MySQL 也会进行这样的重写（只不过优化器会将地址表放在第一位，因为过滤器就在那里）。这是
+一个半连接优化的例子。如果遇到优化器无法重写查询的情况，可以考虑这样的重写。通常情况下，查询越
+接近于只由连接组成，查询的性能就越好。不过，查询调整的过程比这更复杂，有时反其道而行之会提高查
+询性能。经验就是不断测试。
+
+另一种方法是将查询分成几个部分，然后分步执行。
+
+*** 将查询分成几个部分
+
+最后一种方法是将查询分成两个或多个部分。由于 MySQL 8 支持常用的表表达式和窗口函数，这种类型的
+重写几乎不像旧版本的 MySQL 那样频繁。不过，记住这一点还是很有用的。
+
+#+begin_comment
+  不要低估将复杂查询拆分成两个或更多简单查询并逐步生成查询结果的能力。
+#+end_comment
+
+举例来说，与前面讨论的查询相同，您要查找所有居住在澳大利亚昆士兰州的人。您可以将子查询作为自己
+的查询来执行，然后将结果放回 IN() 操作符中。这种重写在应用程序中效果最好，因为应用程序可以通过
+编程生成下一个查询。为简单起见，本讨论将只显示所需的 SQL。清单 24-19 显示了两个查询。
+
+#+begin_src sql
+  set session transaction_isolation='REPEATABLE-READ';
+
+  start transaction;
+
+  select AddressId from chapter_24.address
+  where CountryCode='AUS' and District='Queuesland';
+
+  select * from chapter_24.person
+  where AddressId in (132, 136, 142, 143)\G
+
+  commit;
+#+end_src
+
+查询是使用具有 REPEATABLE-READ 事务隔离级别的事务执行的，这意味着两个 SELECT 查询将使用相同的
+读视图，因此对应的时间点与作为一个查询执行的时间点相同。对于像这样简单的查询，使用多个查询不
+会有什么好处；但对于真正复杂的查询，将部分查询（可能包括一些连接）拆分出来可能会有好处。将查
+询拆分成若干部分还有一个好处，那就是在某些情况下可以提高缓存效率。在本例中，如果有其他查询使用
+相同的子查询来查找昆士兰州的地址，那么缓存可以让您将结果重复用于多种用途。
+
+*** 队列系统: SKIP LOCK
+
+与数据库有关的一项常见任务是处理存储在队列中的任务列表。处理商店订单就是一个例子。重要的是，所
+有任务都要处理，而且只处理一次，但由哪个应用程序线程处理每个任务并不重要。SKIP LOCKED 子句非常
+适合这种情况。
+
+请看清单 24-20 中定义的表 jobqueue。
+
+#+begin_src sql
+  show create table chapter_24.jobqueue\G
+#+end_src
+
+当 HandledDate 为 NULL 时，该任务尚未被处理，可以被抓取。如果你的应用程序被设置为获取最早的未
+处理任务，并且你想依靠 InnoDB 行锁来防止两个线程获取相同的任务，那么你可以使用 SELECT ... FOR
+UPDATE 等语句（在现实世界中，该语句是更大事务的一部分）：
+
+#+begin_src sql
+  select JobId
+  from chapter_24.jobqueue
+  where HandleDate is null
+  order by SubmitDate
+  limit 1 for update;
+#+end_src
+
+这对第一个请求很有效，但下一个请求会阻塞，直到锁等待超时或第一个任务已处理完毕，因此任务处理被
+序列化。诀窍在于确保在过滤和排序的列上有索引，然后使用 SKIP LOCKED 子句。这样，第二个连接就会
+简单地跳过锁定的行，找到满足搜索条件的第一条非锁定行。清单 24-21 显示了两个连接分别从队列中获
+取作业的示例。
+
+#+begin_src sql
+  start transaction;
+  select JobId
+  from chapter_24.jobqueue
+  where HandleDate is null
+  order by SubmitDate
+  limit 1 for update skip locked;
+#+end_src
+
+#+begin_src sql
+  start transaction;
+  select JobId
+  from chapter_24.jobqueue
+  where HandleDate is null
+  order by SubmitDate
+  limit 1 for update skip locked;
+#+end_src
+
+现在，两个连接可以同时获取任务并处理它们。一旦任务完成，就可以设置处理日期，并将任务标记为已完
+成。与连接设置锁列相比，这种方法的优势在于，如果连接因故失败，锁会自动释放。
+
+您可以使用性能模式中的 data_locks 表查看哪个连接拥有每个锁（锁的顺序取决于线程 ID，您的线程 ID
+可能不同）：
+
+#+begin_src sql
+  select THREAD_ID, INDEX_NAME, LOCK_DATA
+  from performance_schema.data_locks
+  where OBJECT_SCHEMA='chapter_24' and OBJECT_NAME='jobqueue'
+     and LOCK_TYPE='RECORD'
+  order by THREAD_ID, EVENT_ID;
+#+end_src
+
+十六进制值是提交日期列的编码日期时间值。从输出中可以看出，正如 SELECT 查询返回的 JobId 值所预
+期的那样，每个连接都在二级索引和主键中各持有一个记录锁。
+
+*** 存在多个in和or条件
+
+在性能方面可能引起混乱的一种查询类型是包含许多范围条件的查询。当有很多 OR 条件或 IN () 操作符
+有很多值时，这通常会成为一个问题。在某些情况下，对条件稍作改动就可能完全改变查询计划。
+
+当优化器在索引列上遇到范围条件时，有两种选择：一是假设索引中的所有值出现的频率相同，二是要求
+存储引擎进行索引挖掘，以确定每个范围的频率。前者最便宜，但后者要精确得多。要决定使用哪种方法，
+可以使用 eq_range_index_dive_limit 选项（默认值为 200）。如果存在 eq_range_ index_dive_limit
+或更多范围，优化器将只查看索引的卡入度，并假设所有值都以相同频率出现。如果范围较少，则会询问存
+储引擎每个范围的情况。
+
+当每个值出现的频率相同的假设不成立时，就会出现性能问题。在这种情况下，当通过
+eq_ range_index_dive_limit 设置的阈值时，符合条件的估计记录数可能会突然发生重大变化，导致查询
+计划完全不同。(当 IN () 操作符中包含很多值时，真正重要的是与所包含值相匹配的记录的平均数量接近
+于从索引统计中获得的估计值。因此，列表中的值越多，就越有可能包含具有代表性的样本）。
+
+清单 24-22 显示了付款表的一个示例，其中有一列 ContactId 和一个索引。大部分记录的 ContactId 设
+置为 NULL，索引的卡片性为 21。
+
+#+begin_src sql
+  show create table chapter_24.payment\G
+
+  select count(ContractId), count(*)
+  from chapter_24.payment;
+
+  select CARDINALITY
+  from information_schema.STATISTICS
+  where TABLE_SCHEMA='chapter_24'
+     and TABLE_NAME='payment'
+     and INDEX_NAME='ContractId';
+
+  set session eq_range_index_dive_limit=5;
+
+  explain select *
+          from chapter_24.payment
+          where ContractId in (1,2,3,4)\G
+#+end_src
+
+在示例中，eq_range_index_dive_limit 被设置为 5，以避免指定一个很长的值列表。有了 4 个值，优化
+器就会请求这 4 个值中每个值的统计信息，估计行数为 4。 但是，如果将值列表变长，情况就会开始发生
+变化：
+
+#+begin_src sql
+  explain select *
+  from chapter_24.payment
+  where ContractId in (1,2,3,4,5)\G
+#+end_src
+
+突然间，估计有 4785 条记录匹配，而不是真正匹配的 5 条记录。索引仍在使用，但如果带有此条件的支付
+表涉及到连接，那么优化器很可能会选择一个非最佳连接顺序。如果让值列表变得更长，优化程序就会完全
+停止使用索引，并进行全表扫描，因为它认为索引的作用非常糟糕：
+
+#+begin_src sql
+  explain
+  select *
+  from chapter_24.payment
+  where ContractId in (1,2,3,4,5,6,7)\G
+#+end_src
+
+该查询只返回 7 条记录，因此索引的选择性很高。那么，如何才能提高优化器的理解能力呢？根据估算不
+准确的具体原因，可以采取多种措施。对于这个特殊问题，你有以下选择：
+
++ 增大eq_range_index_dive_limit的值
++ 修改innodb_stats_method选项
++ 强制MySQL使用索引
 
 
+最简单的解决办法是增加 eq_range_index_dive_limit 的值。默认值是 200，这是一个很好的起点。如果
+有一个候选查询，可以使用不同的 eq_range_index_dive_limit 值进行测试，以确定索引潜入所增加的成
+本是否值得为获得更好的行估计值而节省的费用。测试查询的 eq_range_index_dive_limit 新值的好方法
+是在 SET_VAR() 优化器提示中设置该值：
 
+#+begin_src sql
+  select /*+ SET_VAR(eq_range_index_dive_limit=8) */ *
+  from chapter_24.payment
+  where ContractId in (1,2,3,4,5,6,7);
+#+end_src
 
+在这种情况下，依赖cardinality会导致糟糕的行估计，原因是几乎所有行的ContactId都被设置为
+NULL。在默认情况下，InnoDB 会认为所有索引值为 NULL 的记录都具有相同的值。这就是为什么在这个例
+子中，cardinality只有21。如果把 innodb_stats_method 改为 nulls_ ignored，那么就会如清单
+24-23 所示，只根据非 NULL 值来计算中心性。
 
+  #+begin_src sql
+    set global innodb_stats_method=nulls_ignored;
 
+    analyze table chapter_24.payment;
 
+    select CARDINALITY
+    from information_schema.STATISTICS
+    where TABLE_SCHEMA='chapter_24'
+         and TABLE_NAME='payment'
+         and INDEX_NAME='ContractId';
 
+    explain
+    select *
+    from chapter_24.payment
+    where ContractId in (1,2,3,4,5,6,7)\G
+  #+end_src
 
+这种方法的最大问题是 innodb_stats_method 只能全局设置，因此会影响所有表，而且可能对其他查询产
+生负面影响。在这个例子中，把 innodb_stats_method 设回默认值，然后重新计算索引统计：
 
+#+begin_src sql
+  set global innodb_stats_method=DEFAULT;
 
+  select @@global.innodb_stats_method\G
 
+  analyze table chapter_24.payment;
 
+#+end_src
 
+最后一个选项是使用索引提示强制 MySQL 使用索引。您需要使用 FORCE INDEX 变体，如清单 24-24 所示。
 
+#+begin_src sql
+  explain
+  select *
+  from chapter_24.payment force index (ContractId)
+  where ContractId in (1,2,3,4,5,6,7)\G
+#+end_src
 
+这将使查询的执行速度与更准确的统计数据一样快。但是，如果付款表是具有相同 WHERE 子句的连接的一
+部分，那么估计的行数仍有偏差（估计行数为 6699 行，而实际行数为 7 行），因此查询计划仍可能出错 
 
+*** 总结
 
+本章举例说明了提高查询性能的技巧。第一个主题是了解过度全表扫描的症状，然后了解全表扫描的两个主
+要原因：查询错误和无法使用索引。无法使用索引的典型原因是所使用的列没有形成索引的左前缀、数据类
+型不匹配或在列上使用了函数。
 
+还有一种情况是，虽然使用了索引，但可以改进索引的使用。这可能是为了转换索引以覆盖查询所需的所有
+列，也可能是使用了错误的索引，或者是重写带有复杂条件的查询可以改进查询计划。
+
+它对重写复杂查询也很有用。MySQL 8支持常用的表表达式和窗口函数，可用于简化查询，并可能使其执行
+得更好。在其他情况下，进行一些优化器通常会做的重写，或将查询拆分成多个部分，也会有所帮助。
+
+最后，讨论了两种常见情况。第一种情况是在队列中使用 SKIP LOCKED 子句来高效访问第一条非锁定记录。
+第二种情况是有一个长长的 OR 条件列表或一个有很多值的 IN () 操作符，当范围的数量达到
+eq_range_index_dive_limit 选项设置的数量时，查询计划会发生惊人的变化。
 
 
 
