@@ -10327,6 +10327,649 @@ MIXED），因为过滤器的效果可能取决于复制更改的格式。
 如报告和备份。
 
 
+* 缓存
+
+最便宜的查询是那些根本不执行的查询。本章将探讨如何使用缓存来避免执行查询或降低查询的复杂性。
+首先，将讨论缓存如何无处不在，以及缓存有哪些不同类型。然后介绍如何在 MySQL 内部使用缓存表
+和近似值来使用缓存。接下来的两节将讨论两种流行的缓存产品：Memcached 和 ProxySQL。最后，将
+讨论一些缓存技巧。
+
+** 缓存无处不在
+
+即使你不认为自己已经实施了缓存，你也已经在多个地方使用了缓存。这些缓存是透明的，由硬件、操
+作系统或 MySQL 层面维护。其中最明显的缓存是 InnoDB 缓冲池。
+
+图 27-1 举例说明了缓存是如何存在于整个系统中的，以及如何添加自定义缓存。这张图（包括交互）
+并不完整，但可以说明缓存是多么常见，以及缓存可以出现在多少个地方。
+
+[[./images/OGV9tW.png]]
+
+
+左下角是 CPU，它有几级缓存，用于缓存 CPU 指令和数据。操作系统有 I/O 缓存，InnoDB 有缓冲池。
+所有这些缓存都是返回最新数据的缓存。
+
+还有一些缓存可以提供略微陈旧的数据。这包括在 MySQL 中实施缓存表、在 ProxySQL 中缓存查询结
+果或直接在应用程序中缓存数据。在这些情况下，您通常会定义一个时间段，将其视为足够新鲜的数据，
+当数据达到给定的年龄--生存时间（TTL）--缓存条目就会失效。Memcached 解决方案很特别，因为它
+有两个版本。常规的 Memcached 守护进程会使用 “生存时间”（time to live）或一些取决于应用程序
+的逻辑，在数据太旧时将其驱逐；不过，还有一个特殊的 MySQL 版本，它作为插件工作，可以从
+InnoDB 缓冲池中获取数据，并将数据写回缓冲池，因此数据永远不会过时。
+
+在应用程序中使用可能过时的数据似乎是错误的。但在许多情况下，这完全没有问题，因为并不需要精
+确的数据。如果您有一个显示销售数字仪表盘的应用程序，那么这些数据是在执行查询时的最新数据还
+是几分钟前的数据有多大区别呢？当用户读完这些数据时，它们很可能已经稍微过时了。重要的是，销
+售数字要保持一致并定期更新。
+
+#+begin_comment
+  请仔细考虑您的应用程序有哪些要求，记住，一开始放宽对数据必须是最新的要求，并在必要时提高
+  要求的严格程度，要比让用户相信他们不能再获得最新结果要容易得多。如果您使用的缓存数据不会
+  自动更新到最新值，您可以考虑存储数据的最新时间，并将其显示给用户，这样用户就能知道数据的
+  最后刷新时间。
+#+end_comment
+
+** MySQL中的缓存
+
+在 MySQL 内部实施缓存是一个合理的地方。如果缓存数据与其他表一起使用，这一点尤其有用。这样
+做的缺点是仍然需要从应用程序往返数据库查询数据，而且需要执行查询。本节将介绍在 MySQL 中缓
+存数据的两种方法：缓存表和直方图统计。
+
+*** 缓存表
+
+缓存表可用于预先计算数据，例如用于报告或仪表盘。它主要适用于经常需要的复杂聚合。
+
+使用缓存表有几种方法。你可以选择创建一个表来存储与之配合使用的功能的结果。这样做成本低，但
+灵活性相对较差，因为它只能用于该特征。或者，您可以创建需要连接在一起的构件，这样它们就可以
+用于多个特征。这样查询的成本会稍高一些，但可以重复使用缓存数据，避免重复数据。哪种方法最好
+取决于您的应用程序，您最终可能会选择一种混合方法，即一些表单独使用，另一些表连接在一起。
+
+填充缓存表有两种主要策略。要么定期完全重建表，要么使用触发器持续更新数据。完全重建表的最佳
+方法是创建缓存表的新副本，并在重建结束时使用 RENAME TABLE 交换表，因为这样可以避免在事务中
+删除潜在的大量行，并避免随着时间的推移而产生碎片。另外，当缓存数据所依赖的数据发生变化时，
+也可以使用触发器来更新缓存数据。在大多数情况下，如果可以接受使用不完全最新的数据，那么重建
+缓存表是首选，因为这样做不容易出错，而且刷新是在后台完成的。
+
+#+begin_comment
+  如果通过在事务中删除现有数据来重建缓存表，那么要么禁用自动重新计算索引统计，并在重建结束
+  时使用 ANALYZE TABLE，要么启用 innodb_stats_ include_delete_marked 选项。
+#+end_comment
+
+缓存列是一种特殊情况，它包含在一个不缓存数据的表中。缓存列有用的一个例子是存储属于某个组的
+最新事件的时间、状态或 ID。设想一下，您的应用程序支持发送文本信息，您会为每条信息存储历史
+记录，如在应用程序中创建信息的时间、发送信息的时间以及收件人确认信息的时间。在大多数情况下，
+只需要最新状态和何时达到该状态，因此您可能希望将其存储在消息记录本身中，而不必明确查询。在
+这种情况下，您可以使用两个表来存储状态：
+
+#+begin_src sql
+  create table message(
+    message_id bigint unsigned not null auto_increment,
+    message_text varchar(1024) not null,
+    cached_status_time datetime(3) not null,
+    cached_status_id tinyint unsigned not null,
+    primary key(message_id)
+  );
+  create table message_status_history(
+    message_status_id bigint unsigned not null auto_incrment,
+    message_id bigint unsigned not null,
+    status_time datetime(3) not null,
+    status_id tinyint unsigned not null,
+    primary key(message_status_id)
+  );
+#+end_src
+
+在现实世界中，可能会有更多的列和外键，但对于本示例来说，这些信息就足够了。当一条消息的状态
+发生变化时，就会在 message_status_history 表中插入一条记录。您可以查找消息的最新行来查找最
+新状态，但这里创建了一个业务规则，用最新状态和更改时间来更新消息表中的缓存状态时间和缓存状
+态 ID。这样，要返回消息的应用程序详细信息（需要历史记录时除外），只需查询消息表即可。您可
+以通过应用程序或触发器更新缓存列，如果不需要缓存状态完全是最新的，也可以使用后台作业。
+
+#+begin_comment
+  使用一种命名方案，明确哪些数据是缓存数据，哪些不是。例如，可以用 cached_ 作为缓存表和列
+  的前缀。
+#+end_comment
+
+** 直方图统计
+
+回顾第 16 章，直方图统计是统计一列中每个值出现的频率。你可以利用这一点，将直方图统计数据用
+作缓存。如果列最多有 1024 个唯一值，它就会发挥主要作用，因为这是支持的最大桶数，所以 1024
+是可以使用单列直方图的最大值数。
+
+清单 27-1 显示了一个使用直方图返回世界数据库中印度（CountryCode = IND）城市数量的示例。
+
+#+begin_src sql
+  analyze table world.city
+    update histogram on CountryCode
+      with 1024 buckets\G
+#+end_src
+
+#+begin_src sql
+  select Bucket_Value, Frequency
+  from (
+    select (Row_ID-1) as Bucket_Number,
+      SUBSTRING_INDEX(Bucket_Value, ':', -1)
+        as Bucket_Value,
+      (Cumulative_Frequency
+       - LAG(Cumulative_Frequency, 1, 0)
+          OVER(order by Row_ID))
+       as Frequency
+     from information_schema.COLUMN_STATISTICS
+       inner join JSON_TABLE(
+         histogram->'$.buckets',
+         '$[*]' COLUMNS(
+           Row_ID for orderinality,
+  	 Bucket_Value varchar(42) PATH '$[0]',
+  	 Cumulative_Frequency double PATH '$[1]'
+        )
+      ) buckets
+  where SCHEMA_NAME='world'
+        and TABLE_NAME='city'
+        and COLUMN_NAME='CountryCode'
+  ) stats
+  where Bucket_Value='IND'
+#+end_src
+
+#+begin_src sql
+  select TABLE_ROWS
+  from information_schema.TABLES
+  where TABLE_SCHEMA='world'
+    and TABLE_NAME='city';
+#+end_src
+
+#+begin_src sql
+  SELECT 0.08359892130424124*4188;
+#+end_src
+
+#+begin_src sql
+  select COUNT(*)
+  from world.city
+  where CountryCode='IND';
+#+end_src
+
+如果你觉得针对 COLUMN_STATITICS 的查询看起来很熟悉，那么它就来自于第 16 章中列出单个直方图
+的水桶信息时使用的查询。必须在子查询中收集直方图信息，否则无法计算频率。
+
+您还需要知道总行数。您可以使用 information_schema.TABLES 视图中的近似值，或者缓存该表的
+SELECT COUNT(*) 结果。在示例中，估计城市表有 4188 行（您的估计值可能不同），加上印度的频率，
+表明表中大约有 350 个印度城市。精确计数显示有 341 个。偏差来自总行数估计值（城市表中有
+4079 行）。
+
+将直方图用作缓存主要适用于最多具有 1024 个唯一值的列的大型表，尤其是在列上没有索引的情况下。
+这意味着它并不适合所有的使用案例。不过，它确实是一个跳出框框思考问题的例子--这在尝试寻找缓
+存解决方案时非常有用。
+
+** Memcached
+
+Memcached 是一种简单但具有高度可扩展性的内存键值存储，作为一种缓存工具广受欢迎。传统上，它
+主要用于网络服务器，但也可用于任何类型的应用程序。Memcached 的优势在于它可以分布在多个主机
+上，这样就可以创建一个大型缓存。
+
+#+begin_comment
+  Memcached 仅在 Linux 和 Unix 上获得官方支持。
+#+end_comment
+
+在 MySQL 中使用 Memcached 有两种方法。可以使用常规的独立 Memcached，也可以使用 MySQL
+InnoDB Memcached 插件。本节将展示使用这两种方式的一个简单示例。有关 Memcached 的完整文档，
+请访问官方主页 https://memcached.org/ 和官方维基
+https://github.com/memcached/memcached/wiki。
+
+** 独立 Memcached
+
+独立的 Memcached 是 https://memcached.org/ 的官方守护进程。它允许您将其用作分布式缓存，或
+将缓存设置在离应用程序非常近的地方（可能在同一台主机上），从而降低查询缓存的成本。
+
+安装 Memcached 有几种选择，包括使用操作系统的软件包管理器和从源代码编译。最简单的方法是使
+用软件包管理器，例如在 Oracle Linux、Red Hat Enterprise Linux 和 CentOS 7 上：
+
+#+begin_src shell
+  sudo yum install memcached libevent
+#+end_src
+
+由于 memcached 需要 libevent 软件包，因此将其包含在内。在 Ubuntu Linux 上，该软件包名为
+libevent-dev。您可能已经安装了 libevent 和/或 memcached，在这种情况下，软件包管理器会告诉
+您无需进行任何操作。
+
+您可以使用 memcached 命令启动守护进程。例如，使用所有默认选项启动它
+
+#+begin_src shell
+  memcached
+#+end_src
+
+如果在生产中使用，则应配置 systemd 或使用的任何服务管理器，以便在操作系统启动和关闭时启动
+和停止守护进程。测试时，只需从命令行启动即可。
+
+#+begin_comment
+  Memcached 没有安全支持。将缓存数据限制为非敏感数据，确保 Memcached 实例只能在内部网络中
+  使用，并使用防火墙限制访问。一种方法是将 Memcached 部署在与应用程序相同的主机上，并防止
+  远程连接。
+#+end_comment
+
+现在，您可以使用 Memcached，将从 MySQL 获取的数据存储到缓存中。多种编程语言都支持
+Memcached。在本讨论中，将使用 Python 的 pymemcache 模块1 和 MySQL Connector/ Python。清单
+27-2 展示了如何使用 pip 安装模块。输出结果可能会有些不同，这取决于您使用的 Python 版本和已
+经安装的版本，Python 命令的名称也取决于您的系统。在撰写本文时，pymemcache 支持 Python 2.7、
+3.5、3.6 和 3.7。示例使用的 Python 3.6 是作为 Oracle Linux 7 的一个额外软件包安装的。
+
+#+begin_src shell
+  python3 -m pip install --user pymemcache
+#+end_src
+
+#+begin_src shell
+  python3 -m pip install --user mysql-connector-python
+#+end_src
+
+在您的应用程序中，您可以通过一个键来查询 Memcached。如果键被找到，Memcached 将返回与该键一
+起存储的值，如果没有找到，则需要查询 MySQL 并将结果存储到缓存中。清单 27-3 展示了一个查询
+world.city 表的简单示例。该程序也可以在本书 GitHub 代码库中的 listing_27_3.py 文件中找到。
+如果要执行该程序，需要更新 connect_args 中的连接参数，以反映连接到 MySQL 实例时使用的设置。
+
+#+begin_src python
+  from pymemcache.client.base import Client
+  import mysql.connector
+
+  connect_args={
+      "user":"root",
+      "password":"password",
+      "host":"localhost",
+      "port":3306,
+  }
+
+  db=mysql.connector.connect(**connect_args)
+  cursor=db.cursor()
+  memcache=Client(("localhost", 11211))
+
+  sql="select CountryCode,Name from world.city where id=%s"
+  city_id=130
+  city=memcache.get(str(city_id))
+  if city is not None:
+      country_code, name=city.decode("utf-8").split("|")
+      print("memcached: country: {0} - city: {1}".format(country_code, name))
+  else:
+      cursor.execute(sql, (city_id))
+      country_code, name=cursor.fetchone()
+      memcache.set(str(city_id), "|".join([country_code, name]), expire=60)
+      print("MySQL: country: {0} - city: {1}".format(country_code, name))
+
+  memcache.close()
+  cursor.close()
+  db.close()
+#+end_src
+
+程序一开始会同时创建 MySQL 和 memcached 守护进程的连接。在这种情况下，连接参数和要查询的
+id 都是硬编码。在实际程序中，应从配置文件或类似文件中读取连接参数。
+
+#+begin_comment
+  切勿在应用程序中存储连接详情，尤其是切勿硬编码密码。在应用程序中存储连接详情既不灵活也不
+  安全。
+#+end_comment
+
+然后，程序尝试从 Memcached 抓取数据；注意整数是如何转换为字符串的，因为 Memcached 使用字符
+串作为键。如果键被找到，则通过在 | 字符处分割字符串，从缓存值中提取国家代码和名称。如果在
+缓存中没有找到键，则从 MySQL 获取城市数据并存储在缓存中，缓存中保留该值的时间设置为 60 秒。
+每种情况都会添加打印语句，以显示从哪里获取数据。
+
+每次重启 memcached 后第一次执行程序时，它都会查询 MySQL：
+
+#+begin_src sh
+  python3 listing_27_3.py
+#+end_src
+
+在随后长达一分钟的执行中，数据将在缓存中找到：
+
+#+begin_src sh
+  python3 listing_27_3.py
+#+end_src
+
+完成对 Memcached 的测试后，可以在运行 memcached 的会话中使用 Ctrl+C 或向其发送 SIGTEM (15)
+信号等方式停止 Memcached：
+
+#+begin_src sh
+  kill -s SIGTERM $(pidof memcached)
+#+end_src
+
+在本例中直接使用 Memcached 的优点是可以拥有一个守护进程池，而且可以在靠近应用程序的地方运
+行守护进程，甚至可以与应用程序在同一台主机上运行。缺点是必须自己维护缓存。另一种方法是使用
+MySQL 的 memcached 插件，它可以为您管理缓存，甚至可以自动持续写入缓存。
+
+** MySQL的InnoDb Memcached插件
+
+InnoDB Memcached 插件是在 MySQL 5.6 中引入的，用于访问 InnoDB 数据，而无需解析 SQL 语句。
+该插件的主要用途是让 InnoDB 通过其缓冲池处理缓存，而仅使用 Memcached 作为查询数据的机制。
+这样使用插件的一些好处是，写入插件的内容会被写入 InnoDB 的底层表，数据始终是最新的，而且可
+以同时使用 SQL 和 Memcached 访问数据。
+
+#+begin_comment
+  在安装 MySQL innoDB Memcached 插件之前，请确保已停止独立 Memcached 进程，因为它们默认使
+  用相同的端口。
+#+end_comment
+
+在安装 MySQL memcached 守护进程之前，必须确保已安装 libevent 软件包，就像独立安装
+Memcached 一样。安装 libevent 后，需要安装 innodb_memcache 模式，其中包括用于配置的表。安
+装的方法是获取 MySQL 发行版中的 share/innodb_memcached_config.sql 文件。该文件是相对于
+MySQL 基本目录的，例如，您可以通过 basedir 系统变量找到该目录：
+
+#+begin_src sql
+  select @@global.basedir as basedir;
+#+end_src
+
+如果使用 https://dev.mysql.com/downloads/ 中的 RPM 安装了 MySQL，命令是
+
+#+begin_src sql
+  source /usr/share/mysql-8.0/innodb_memcached_config.sql
+#+end_src
+
+#+begin_comment
+  请注意，该命令在 MySQL Shell 中不起作用，因为脚本中的 USE 命令没有分号，而 MySQL Shell
+  在脚本中不支持分号。
+#+end_comment
+
+脚本还创建了 test.demo_test 表，该表将在接下来的讨论中使用。innodb_memcache 模式由三个表组
+成：
+
++ cache_policies: 缓存策略的配置，用于定义缓存的工作方式。默认情况下使用 InnoDB。这通常是
+  推荐的做法，可确保不会读取过期数据。
++ config_options: 插件的配置选项。其中包括返回多列值时使用的分隔符和表格映射分隔符。
++ containers: InnoDB 表映射的定义。您必须为所有要与 InnoDB memcached 插件一起使用的表添加
+  映射。
+
+containers表是最常用的表。默认情况下，该表包含 test.demo_test 表的映射：
+
+#+begin_src sql
+  select * from innodb_memcached.containers\G
+#+end_src
+
+在查询表时，可以使用该名称来引用由 db_schema 和 db_table 定义的表。key_columns 列定义了
+InnoDB 表中用于键查找的列。你可以在 value_columns 列中指定要包含在查询结果中的列。如果包含
+多列，则使用 config_options 表中配置的分隔符（默认为 |）来分隔列名。
+
+cas_column 列和 expire_time_column 列很少用到，在此不再讨论。最后一列
+unique_idx_name_on_key 是表中唯一索引的名称，最好是主键。
+
+#+begin_comment
+  有关表格及其使用的详细说明，请参见
+  https://dev.mysql.com/doc/refman/en/innodb-memcachedinternals.html。
+#+end_comment
+
+现在您可以安装插件了。您可以使用 INSTALL PLUGIN 命令进行安装（请记住，该命令在 Windows 系
+统上无效）：
+
+#+begin_src sql
+  install plugin daemon_memcached soname 'libmemcached.so';
+#+end_src
+
+该语句必须使用传统的 MySQL 协议（默认端口为 3306）执行，因为 X 协议（默认端口为 33060）不
+允许安装插件。就是这样--InnoDB memcached 插件现在可以进行测试了。最简单的测试方法是使用
+telnet 客户端。清单 27-4 展示了一个明确指定容器和使用默认容器的简单示例。
+
+#+begin_src sh
+  telnet localhost 11211
+  get @@aaa.AA
+  value @@aaa.AA 8 12
+  HELLO, HELLO
+  end
+  get AA
+  value AA 8 12
+  HELLO, HELLO
+  end
+#+end_src
+
+为了便于查看这两条命令，在每条命令前都插入了一行空行。第一条命令使用 @@ 在键值之前指定容器
+名称。第二条命令依赖于 Memcached 使用默认容器（按容器名称字母升序排序时的第一个条目）。按
+Ctrl+] 退出 telnet，然后按 quit 命令：
+
+#+begin_src sh
+  ^]
+  quit 
+#+end_src
+
+与独立 Memcached 实例一样，守护进程默认使用 11211 端口。如果要更改端口或任何其他 Memcached
+选项，可以使用 daemon_memcached_option 选项，该选项包含一个包含 memcached 选项的字符串。例
+如，要将端口设置为 22222
+
+#+begin_export ascii
+  [mysqld]
+  daemon_memcached_option="-p22222"
+#+end_export
+
+该选项只能在 MySQL 配置文件或命令行中设置，因此需要重启 MySQL 才能使更改生效。
+
+如果在容器表中添加新条目或更改现有条目，则需要重启 memcached 插件，使其重新读取定义。为此，
+您可以重启 MySQL 或卸载并安装插件：
+
+#+begin_src sh
+  uninstall plugin daemon_memcached;
+
+  install plugin daemon_memcached soname 'libmemcached.so';
+#+end_src
+
+在实践中，您大多会在应用程序中使用该插件。如果您习惯使用 Memcached，那么使用方法就很简单。
+例如，清单 27-5 显示了使用 pymemcache 模块的几条 Python 命令。请注意，该示例假定您已将端口
+设置为 11211。
+
+#+begin_src python
+  from pymemcache.client.base import Client
+  client=Client(('localhost', 11211))
+  client.get('@@aaa.AA')
+  client.set('@@aaa.BB', 'Hello World')
+  client.get('@@aaa.BB')
+#+end_src
+
+交互式 Python 环境用于通过 memcached 插件查询 test.demo_test 表。创建连接后，使用 get() 方
+法查询现有记录，并使用 set() 方法插入新记录。在这种情况下不需要设置超时，因为 set() 方法最
+终会直接写入 InnoDB。最后，再次检索新记录。请注意，与需要自己维护缓存的常规 Memcached 相比，
+这个示例是多么简单。
+
+您可以通过在 MySQL 中查询来验证新记录是否真的插入到了表中：
+
+#+begin_src sql
+  select * from test.demo_test;
+#+end_src
+
+使用 MySQL InnoDB Memcached 插件还有更多内容。如果您计划使用它，建议您阅读
+https://dev.mysql.com/doc/refman/en/innodb-memcached.html 参考手册中的 “InnoDB memcached
+插件 ”部分。
+
+** ProxySQL
+
+ProxySQL 项目2 由 René Cannaò 创立，是一个高级代理，支持负载平衡、基于查询规则的路由、缓存
+等功能。缓存功能根据查询规则进行缓存，例如，你可以设置要缓存具有给定摘要的查询。缓存会根据
+你为查询规则设置的有效时间值自动过期。
+
+您可以从 https://github.com/sysown/proxysql/releases/ 下载 ProxySQL。在撰写本文时，最新版
+本是 2.0.8，也就是示例中使用的版本。
+
+#+begin_comment
+  proxySQL 仅受 Linux 正式支持。有关支持的发行版的完整文档（包括安装说明），请参见
+  https:// github.com/sysown/proxysql/wiki。
+#+end_comment
+
+清单 27-6 显示了在 Oracle Linux 上使用 ProxySQL GitHub 代码库中的 RPM 安装 ProxySQL 2.0.8
+的示例。在其他 Linux 发行版上，使用该发行版的软件包命令，安装过程也类似（当然，根据使用的
+软件包命令，输出结果会有所不同）。安装完成后，启动 ProxySQL。
+
+#+begin_src sh
+  wget https://github.com/sysown/proxysql/releases/download/v2.0.8/ proxysql-2.0.8-1-centos7.x86_64.rpm
+  sudo yum install proxysql-2.0.8-1-centos7.x86_64.rpm
+  sudo systemctl start proxysql
+#+end_src
+
+只能通过 ProxySQL 的管理界面进行配置。该界面使用 mysql 命令行客户端，对 MySQL 管理员来说有
+一种熟悉的感觉。默认情况下，ProxySQL 的管理界面使用 6032 端口，管理员用户名为 admin，密码
+设为 admin。清单 27-7 显示了一个连接到管理界面并列出可用模式和表的示例。
+
+#+begin_src sh
+  mysql --host=127.0.0.1 --port=6032 \
+        --user=admin --password \
+        --default-character-set=utf8mb4 \
+        --prompt='ProxySQL> '
+#+end_src
+
+#+begin_src sql
+  show schemas;
+  show tables;
+#+end_src
+
+虽然表是按模式分组的，但可以直接访问表，而无需引用模式。SHOW TABLES 的输出会显示主模式中与
+ProxySQL 配置相关的表。
+
+配置过程分为两个阶段，首先是准备新配置，然后是应用新配置。应用更改意味着将更改保存到磁盘
+（如果要持久保存），并将其加载到运行线程中。
+
+名称中带有 runtime_ 前缀的表用于向运行时线程推送配置。配置 ProxySQL 的一种方法是使用 SET
+语句，类似于在 MySQL 中设置系统变量，但也可以使用 UPDATE 语句。第一步应该是更改管理员密码
+（也可选择更改管理员用户名），可以通过设置 admin-admin_credentials 变量来完成，如清单 27-8
+所示。
+
+#+begin_src sql
+  set admin-admin_crendentials='admin:password'
+  save admin variables to disk;
+  load admin variables to runtime;
+  select @@admin-admin_crendentials;
+#+end_src
+
+admin-admin_credentials 选项的值是以冒号分隔的用户名和密码。SAVE ADMIN VARIABLES TO DISK
+语句将持续更改，LOAD ADMIN VARIABLES TO RUNTIME 命令将更改应用到运行时线程。有必要将变量加
+载到运行时线程中，因为出于性能考虑，ProxySQL 会在每个线程中保留一份变量副本。你可以像在
+MySQL 中查询系统变量一样，查询当前值（无论是已应用还是待应用）。
+
+在 mysql_servers 表中配置 ProxySQL 可用于引导查询的 MySQL 后端实例。在本讨论中，将使用与
+ProxySQL 位于同一主机上的单个实例。清单 27-9 显示了如何将其添加到 ProxySQL 可以路由到的服
+务器列表中。
+
+#+begin_src sql
+  show create table mysql_servers\G
+#+end_src
+
+#+begin_src sql
+  insert into mysql_servers (hostname, port, use_ssl)
+  values('127.0.0.1', 3306, 1);
+  save mysql servers to disk;
+  load mysql servers to runtime;
+#+end_src
+
+示例显示了如何使用 SHOW CREATE TABLE 获取 mysql_servers 表的信息。表的定义包括可以包含的设
+置和允许值的信息。除主机名外，所有设置都有默认值。列表的剩余部分将为本地主机端口 3306 上的
+MySQL 实例插入一行，并要求使用 SSL。然后将更改持久化到磁盘并加载到运行时线程中。
+
+#+begin_comment
+  SSL 只能在 proxySQL 与 MySQL 实例之间使用，而不能在客户端与 proxySQL 之间使用。
+#+end_comment
+
+您还需要指定哪些用户可以使用该连接。首先，在 MySQL 中创建一个用户：
+
+#+begin_src sql
+  create user myuser@'127.0.01' identified with mysql_native_password;
+  grant all on world.* to myuser@'127.0.0.1';
+#+end_src
+
+ProxySQL 目前不支持缓存_sha2_password 身份验证插件（在 MySQL 8 中，使用 MySQL Shell 连接时
+默认使用该插件）（但使用 mysql 命令行客户端时支持该插件），因此需要使用
+mysql_native_password 插件创建用户。然后在 ProxySQL 中添加用户：
+
+#+begin_src sql
+  insert into mysql_users(username, password)
+  values('myuser', 'password');
+  save mysql users to disk;
+  load mysql users to runtime;
+#+end_src
+
+现在可以通过 ProxySQL 连接到 MySQL。SQL 接口默认使用端口 6033。除了端口号和可能的主机名外，
+通过 ProxySQL 的连接方式与通常相同：
+
+#+begin_src sh
+  mysqlsh --user=myuser --password \
+  	--host=127.0.0.1 --port=6033 \
+  	--sql --table \
+  	-e "SELECT * FROM world.city WHERE ID = 130;"
+#+end_src
+
+ProxySQL 收集统计数据的方式与性能模式类似。你可以在 stats_mysql_query_digest 和
+stats_mysql_query_digest_ reset 表中查询统计数据。这两个表的区别在于，后者只包含上次查询后
+的摘要。例如，要获得按总执行时间排序的查询结果
+
+#+begin_src sql
+  select count_star, sum_time,
+         digest, digest_text
+  from stats_mysql_query_digest_reset
+  order by sum_time desc \G
+#+end_src
+
+如果您想缓存查询结果，可以根据查询摘要添加查询规则。假设您想缓存按 ID（摘要
+0x94656E0AA2C6D499）查询 world.city 表的结果，您可以添加如下规则：
+
+#+begin_src sql
+  insert into mysql_query_rules
+         (active, digest, cache_ttl, apply)
+  values (1, '0x94656E0AA2C6D499', 60000, 1);
+  save mysql query rules to disk;
+  load mysql query rules to runtime;
+#+end_src
+
+active 列指定 ProxySQL 在评估可使用的规则时是否应考虑该规则。digest 是要缓存的查询的摘要，
+cache_ttl 则指定使用多长时间（以毫秒为单位）后结果才会被视为过期，并刷新结果。存活时间设置
+为 60000 毫秒（1 分钟），以便在缓存失效前有时间执行几次查询。将 “应用 ”设为 1 意味着当查询
+与此规则匹配时，将不会评估后面的规则。
+
+如果在一分钟内执行几次查询，就可以查询 stats_mysql_global 表中的缓存统计数据，了解缓存的使
+用情况。输出示例如下
+
+#+begin_src sql
+  select *
+  from stats_mysql_glbal
+  where Variable_Name like 'Query_Cache%';
+#+end_src
+
+您的数据很可能会有所不同。它显示缓存使用了 3659 字节，对缓存进行了六次查询，其中五次查询的
+结果都是从缓存返回的。六次查询中的最后一次需要在 MySQL 后端执行查询。
+
+您可以设置两个选项来配置缓存。它们是
+
++ mysql-query_cache_size_MB: 缓存的最大容量（兆字节）。这是一个软限制，由清除线程决定从缓
+  存中清除多少查询。因此，内存使用量可能会暂时大于配置的大小。默认值为 256。
+
++ mysql-query_cache_stores_empty_result: 是否缓存没有记录的结果集。默认为 “true”。也可以在
+  查询规则表中按查询进行配置。
+
+更改配置的方式与之前更改管理员密码的方式类似。例如，要将查询缓存限制为 128 兆字节
+
+#+begin_src sql
+  set mysql-query_cache_size_MB=128;
+  save mysql variables to disk;
+  load mysql variables to runtime;
+#+end_src
+
+首先准备配置更改，然后将其保存到磁盘，最后将 MySQL 变量加载到运行线程中。
+
+** 缓存提示
+
+如果决定为 MySQL 实例实施缓存，有几件事需要考虑。本节将介绍一些一般的缓存技巧。
+
+最重要的考虑因素是缓存什么。本章前面提到的缓存单行主键查找结果的示例并不能很好地说明哪类查
+询最适合缓存。一般来说，查询越复杂、越昂贵、执行次数越多，就越适合使用缓存。有一种方法可以
+使缓存更有效，那就是将复杂查询拆分成较小的部分。这样你就可以分别缓存复杂查询每个部分的结果，
+从而使其更有可能被重复使用。
+
+您还应该考虑查询返回的数据量。如果查询返回的结果集很大，您可能会为一次查询耗尽所有缓存内存。
+
+另一个考虑因素是缓存的位置。缓存离应用程序越近，效率就越高，因为这样可以减少网络通信时间。
+缺点是，如果有多个应用程序实例，就必须在复制缓存和远程共享缓存之间做出选择。如果需要在其他
+MySQL 表中使用缓存数据，则属于例外情况。在这种情况下，最好以缓存表或类似形式将缓存保留在
+MySQL 内部。
+
+** 总结
+
+本章概述了 MySQL 的缓存。它首先描述了缓存是如何从 CPU 内部到专用缓存进程随处可见的。然后讨
+论了如何在 MySQL 内部使用缓存表和直方图进行缓存。
+
+这两个主要部分讨论了使用 Memcached 和 ProxySQL 进行缓存。Memcached 是一种内存键值存储，你
+可以在应用程序中使用它，也可以使用 MySQL 附带的特殊版本，它允许你直接与 InnoDB 交互。
+ProxySQL 结合了路由器和缓存机制，可根据你定义的查询规则透明地存储结果集。
+
+最后，还介绍了有关缓存的一些注意事项。执行查询的频率越高，执行查询的成本越高，就越能从缓存
+中获益。第二个考虑因素是，缓存离应用程序越近越好。
+
+MySQL 8 查询性能调优之旅的最后一章到此结束。希望这是一次收获颇丰的旅程，你已经准备好在工作
+中使用这些工具和技术了。请记住，查询调优练习得越多，你就会做得越好。祝你查询调优愉快。
+
+
 
 
 
