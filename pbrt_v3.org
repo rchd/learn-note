@@ -1,0 +1,1604 @@
+* 简介
+
+渲染是根据三维场景的描述生成图像的过程。显然，这是一项非常广泛的任务，存在多种实现方法。基于物理的渲染
+技术致力于模拟现实世界，即运用物理原理建模光线与物质的交互作用。尽管基于物理的方法看似是最直观的渲染途
+径，但其实际应用普及仅始于近十余年。本章末尾的第1.7节简要介绍了基于物理渲染的发展历程，及其近期在电影
+离线渲染和游戏交互式渲染中的应用。本书阐述了基于光线追踪算法的物理渲染系统pbrt。多数计算机图形学著作仅
+呈现算法与理论，偶尔辅以代码片段。而本书则将理论与功能完整的渲染系统实现相结合。该系统的源代码（以及示
+例场景和渲染数据集）可在pbrt网站pbrt.org上获取。
+
+
+** 文学式编程
+
+在编写TEX排版系统时，唐纳德·克努斯基于一个简单却具有革命性的理念——程序的编写应更多面向人类而非计算机——
+开创了一种全新的编程方法论。他将这种方法论命名为“文书式编程”。本书（包括你正在阅读的章节）本身就是一个
+长篇文书式程序。这意味着在阅读过程中，你将完整阅读pbrt渲染系统的实现代码，而非仅获取其高层次描述。 文
+书式程序采用混合元语言编写，融合了文档格式化语言（如TEX或HTML）与编程语言（如C++）。该程序由两个独立系
+统处理：将文书式程序转换为排版文档的“编织器”，以及生成可编译源代码的“缠绕器”。我们的文书化编程系统虽属
+自主研发，但深受诺曼·拉姆齐的noweb系统影响。
+
+可读性编程元语言提供了两项重要特性。其一是能够将散文与源代码混合编写。该特性使程序描述与实际源代码同等
+重要，从而促进精心设计与文档编写。其次，该语言提供了机制，能够以完全不同于编译器输入的顺序向读者呈现程
+序代码。因此程序可按逻辑顺序进行描述。每个命名代码块称为片段，每个片段均可通过名称引用其他片段。
+
+以一个简单的例子来说明，考虑一个名为 InitGlobals() 的函数，它负责初始化程序中的所有全局变量：
+
+#+begin_src cpp
+  void InitGlobals(){
+    nMarbles=25.7;
+    shoeSize=13;
+    dielectric=true;
+  }
+#+end_src
+
+尽管代码简短，但若缺乏上下文，此函数仍难以理解。例如，变量nMarbles为何能取浮点数值？仅凭代码本身，读者
+需要遍历整个程序才能查明每个变量的声明位置及其使用方式，从而理解其用途和合法取值范围。虽然这种系统结构
+对编译器而言尚可接受，但人类读者更希望看到每个变量的初始化代码独立呈现，紧邻实际声明和使用该变量的代码
+位置。
+
+在具备语法分析能力的程序中，可以像这样编写 InitGlobals() 函数：
+
+#+begin_export ascii
+  〈Function Definitions〉 ≡
+     void InitGlobals() {
+     〈Initialize Global Variables 2〉
+     }
+#+end_export
+
+这定义了一个名为〈函数定义〉的片段，其中包含InitGlobals()函数的定义。InitGlobals()函数本身引用了另一个
+片段〈初始化全局变量〉。由于初始化片段尚未定义，我们仅知该函数可能包含对全局变量的赋值操作。当前这种抽
+象层次恰到好处，因为尚未声明任何变量。当程序后续引入全局变量shoeSize时，我们即可编写代码。
+
+#+begin_export ascii
+  〈Initialize Global Variables〉 ≡
+     shoeSize = 13;
+#+end_export
+
+在此我们开始定义〈初始化全局变量〉的内容。当文书化程序被编译为源代码时，文书化编程系统会在
+InitGlobals()函数的定义中替换代码shoeSize = 13;。后续文本中，我们可能定义另一个全局变量dielectric，并
+将其初始化代码追加到该片段中：
+
+#+begin_export ascii
+  〈Initialize Global Variables〉 +≡
+      dielectric = true;
+#+end_export
+
+片段名称后的+≡符号表示我们对先前定义的片段进行了扩展。当这三个片段被编织时，其结果生成的代码为：
+
+#+begin_src cpp
+  void InitGlobals(){
+    shoeSize=13;
+    dielectric=true;
+  }
+#+end_src
+
+通过这种方式，我们可以将复杂函数分解为逻辑上独立的部分，使其更易于理解。例如，我们可以将一个复杂函数写
+成一系列片段：
+
+#+begin_export ascii
+  〈Function Definitions〉 +≡
+     void complexFunc(int x, int y, double *values) {
+     〈Check validity of arguments〉
+        if (x < y) {
+          〈Swap parameter values〉
+          }
+          〈Do precomputation before loop〉
+          〈Loop through and update values array〉
+    }
+#+end_export
+
+同样地，每个片段的内容都会在编译时通过 complexFunc() 进行内联展开。在文档中，我们可以依次介绍每个片段
+及其实现。这种分解方式让我们能够逐行呈现代码，从而更易于理解。这种编程风格的另一优势在于：通过将函数拆
+分为逻辑片段，每个片段都具有单一且界定清晰的用途，从而能够独立编写、验证或阅读。通常我们会尽量使每个片
+段控制在10行以内。
+
+从某种意义上说，文书式编程系统不过是经过增强的宏替换工具包，专门用于重组程序源代码。这看似微不足道的改
+变，实则使文书式编程与其他软件系统架构方式截然不同。
+
+*** 索引与交叉引用
+
+以下功能旨在方便读者浏览文本。页面边栏的索引标注了该页所用函数、变量和方法的定义页码。书末索引汇集了所
+有这些标识符，以便按名称查找定义。附录C《片段索引》列出了每个片段的定义页码及其使用页码。正文内出现已
+定义的片段名称时，其后会列出该片段的使用页码列表。例如，假设存在如下片段定义：
+
+#+begin_export ascii
+〈A fascinating fragment〉 ≡
+    nMarbles += .001;
+#+end_export
+
+该标记表示此代码片段出现在第184页和第690页。有时我们会省略印刷版中属于模板代码或与其他片段高度重复的代
+码片段；当这些片段被使用时，将不会列出页码。
+
+当片段在另一个片段内部使用时，其首次定义所在的页码会出现在片段名称之后。例如：
+
+#+begin_export ascii
+〈Do something interesting〉+ ≡
+    InitializeSomethingInteresting();
+    〈Do something else interesting 486〉
+     CleanUp();
+#+end_export
+
+表示〈做其他有趣的事〉片段定义在第486页。若该片段的定义未收录于本书，则不会列出页码。
+
+** 照片级真实感渲染与光线追踪算法
+
+光渲染的目标是生成与真实场景照片难以区分的3D场景图像。在描述渲染过程之前，需要明确的是：此处的"难以区
+分"具有不精确性，因为它涉及人类观察者——不同观察者可能对同一图像产生不同感知。尽管本书将探讨若干感知问
+题，但精确描述特定观察者的特征仍属极其困难且尚未完全解决的难题。在多数情况下，我们将满足于精确模拟光的
+物理特性及其与物质的交互作用，并依托对显示技术的理解，为观者呈现最佳图像效果。
+
+几乎所有逼真渲染系统都基于光线追踪算法。光线追踪本质上是一种非常简单的算法，其原理是追踪光线在场景中的
+传播路径，记录其与环境中物体的交互及反射过程。尽管光线追踪器的实现方式多种多样，但所有系统至少会模拟以
+下对象和现象：
+
++ 相机：相机模型决定了场景的观察方式和观察位置，包括场景图像如何在传感器上记录。许多渲染系统会从相机出
+  发生成观察射线，并追踪这些射线进入场景。
++ 射线与物体的交点：我们必须能够精确判断给定射线与特定几何物体的交点位置。此外，还需要确定物体在交点处
+  的某些属性，例如表面法线或材质属性。大多数射线追踪器还具备检测射线与多个物体交点的功能，通常会返回射
+  线上最近的交点。
++ 光源：若无照明，渲染场景便毫无意义。光线追踪器必须模拟光线在场景中的分布，不仅要考虑光源的位置，还要
+  考虑它们如何在空间中散布能量。
++ 可见性：要判断给定光源是否在表面某点沉积能量，必须确认该点到光源之间是否存在无阻碍路径。幸运的是，在
+  光线追踪器中这个问题很容易解答——只需从表面向光源构造光线，找出最近的光线-物体交点，并将交点距离与光
+  源距离进行比较即可。
++ 表面散射：每个物体都必须提供其外观描述，包括光线与物体表面相互作用的信息，以及再辐射（或散射）光的特
+  性。表面散射模型通常采用参数化设计，以便能够模拟多种外观效果。
++ 间接光传输：由于光线可能在到达某一表面之前先经过其他表面的反射或穿透，通常需要追踪该表面发出的额外光
+  线，才能完整捕捉这种效应。
++ 光线传播：我们需要了解沿光线传播的光在穿过空间时会发生什么变化。若在真空中渲染场景，光线沿途的光能保
+  持恒定。尽管地球上真正的真空环境较为罕见，但对于许多场景而言，真空模型仍是一种合理的近似。针对雾气、
+  烟雾、地球大气层等介质的光线追踪，则存在更为复杂的模型。
+
+
+本节将简要讨论这些模拟任务。在下一节中，我们将展示pbrt对底层模拟组件的高级接口，并追踪单条光线在主渲染
+循环中的传播过程。同时，我们将呈现基于Turner Whitted原始光线追踪算法的表面散射模型实现方案。
+
+*** 相机
+
+几乎所有人都用过相机，对其基本功能也了然于心：当你想要记录世界影像时（通常通过按下按钮或轻触屏幕），图
+像便会被记录在胶片或电子传感器上。最简单的摄影装置之一便是针孔相机。针孔相机由一个密封的暗箱构成，一端
+开有微小孔洞（图1.1）。当孔洞暴露时，光线便穿透此孔，投射到固定在暗箱另一端的相纸上。尽管结构极其简单，
+这类相机至今仍在使用，常用于艺术创作。为使胶片获得足够光线形成影像，需要极长的曝光时间。
+
+尽管大多数相机比针孔相机复杂得多，但它仍是模拟的便捷起点。相机最重要的功能是界定将被记录到胶片上的场景
+区域。如图1.1所示，将针孔与胶片边缘连接后，会形成一个延伸至场景内部的双金字塔结构。位于该金字塔范围外
+的物体无法成像于胶片。由于实际相机的成像区域比金字塔更为复杂，我们将能够被成像的空间区域称为"成像空间"。
+
+[[./images/pwKxVj.png]]
+
+[[./images/5fmEN7.png]]
+
+另一种理解针孔相机的方式是将胶片平面置于针孔前方但保持相同距离（图1.2）。请注意，将孔洞与胶片相连所定
+义的观察体积与之前完全相同。当然，这种构造方式并不适用于实际相机制造，但在模拟研究中却是一种便捷的抽象
+模型。当胶片（或像）平面位于针孔前方时，针孔常被称为"目镜"。
+
+现在我们来到渲染中的关键问题：在图像的每个点上，相机记录的是什么颜色值？如果我们回想原始针孔相机，显然
+只有沿着针孔与胶片上某一点之间的矢量传播的光线才能为该胶片位置提供贡献。在我们模拟的相机中，胶片平面位
+于眼睛前方，我们关注的是从像点传播到眼睛的光量。
+
+因此，相机模拟器的一项重要任务是选取图像上的一个点，并生成沿该点传播的光线——这些入射光线将共同构成该图
+像位置的成像。由于光线由起点和方向向量构成，对于图1.2所示的针孔相机模型，该任务尤为简单： 其以针孔作为
+原点，并将针孔到近平面的向量作为光线方向。对于涉及多透镜的复杂相机模型，计算图像上给定点对应的光线可能
+更为复杂。（第6.4节描述了此类模型的实现。）由于图像位置到光线的转换过程完全封装在相机模块中，渲染系统
+的其余部分可专注于评估这些光线沿途的光照效果，从而支持多种相机模型。pbrt的相机抽象机制详见第6章。
+
+**** 
+
+每次相机生成一条射线时，渲染器的首要任务是确定该射线首先与哪个物体相交（若存在相交），以及相交点的位置。
+该相交点即射线沿途的可见点，我们需要在此点模拟光线与物体的交互作用。要找到交点，必须将光线与场景中所有
+物体进行交点测试，并选出光线首先穿透的物体。对于给定光线 r，我们首先将其表示为参数形式：
+
+$$ r(t)=o+d $$
+
+其中o为射线的起点，d为其方向向量，t为参数，其有效范围为$$ (0, \infty) $$。通过指定参数t的值并求解上述
+方程，即可获得射线上的任意一点。
+
+通常很容易找到射线 r 与由隐式函数 $$ F(x,y,z)=0 $$ 定义的曲面之间的交点。首先将射线方程代入隐式方程，
+得到一个仅含参数 t 的新函数。接着求解该函数的 t 值，并将最小正根代入射线方程即可求得目标点。例如，以原
+点为中心、半径为 r 的球体的隐式方程为：
+
+
+
+$$x^2+y^2+z^2-r^2=0$$
+
+代入光线方程，我们得到
+
+$$(o_x + td_x )^2 + (o_y + td_y)^2 + (o_z + td_z)^2 - r^2 = 0 $$
+
+除t之外的所有值均已知，这使我们得到一个易解的关于t的二次方程。若无实数解，则射线与球面相交；若有实数解，
+则最小正解对应交点位置。
+
+仅有交点信息对光线追踪器的后续处理而言尚不充分，它还需要了解该点处表面的特定属性。首先，必须确定该点处
+材质的表示形式，并将其传递给光线追踪算法的后续阶段。其次，为实现该点的着色效果，还需要获取关于交点的额
+外几何信息。例如，表面法线n始终是必需的。尽管许多光线追踪器仅使用n即可运行，但更复杂的渲染系统（如pbrt）
+需要更多信息，例如关于表面局部参数化的位置和表面法线的各种偏导数。
+
+当然，大多数场景都由多个物体构成。暴力解法是依次将光线与每个物体进行测试，选择所有交点中最小正t值来确
+定最近交点。这种方法虽然正确，但效率极低，即使面对中等复杂度的场景也是如此。更优的方法是引入加速结构，
+在光线交点处理过程中快速剔除整组物体。这种快速剔除无关几何体的特性，使得光线追踪常能在O(I log N)时间内
+运行——其中I为图像像素数，N为场景物体数。（但构建加速结构本身至少需要O(N)时间。）
+
+第3章介绍了brt的几何接口及其在多种形状中的实现，第4章则展示了加速度接口及其具体实现方案。
+
+*** 光分布
+
+光线-物体相交阶段为我们提供了一个待着色的点，以及该点局部几何结构的相关信息。需知我们的最终目标是计算
+从该点朝向摄像机方向发出的光量。为此，必须先确定到达该点的光量，这涉及场景中光线的几何分布与辐射分布。
+对于极简光源（如点光源），光照的几何分布仅需知晓光源位置即可。然而点光源并不存在于现实世界，因此基于物
+理的照明通常采用面光源模型——即光源与几何物体关联，通过物体表面发光。本节仍将使用点光源来阐释光分布的组
+成要素；关于光测量与分布的严谨讨论将详见第5章与第12章。
+
+我们常需了解交点周围差分区域接收的光功率（图1.3）。假设点光源具有特定功率，且向所有方向均匀辐射光线。
+这意味着光源周围单位球面上每单位面积接收的光功率为 $$ \Phi/(4\pi) $$。（相关测量方法将在第5.4节中阐述并形式
+化。）
+
+若考虑两个这样的球体（图1.4），显然较大球体上某点的单位面积功率必然小于较小球体上对应点的功率，因为相
+同的总功率分布在更大的面积上。具体而言，到达半径为r的球面某点的单位面积功率与1/r²成正比。此外，可证明
+当微小表面区域dA相对于表面点到光源的矢量偏离角度θ时，沉积在dA上的功率与$$ \cos\theta $$成正比。综合上述关系，单
+位面积的微分功率dE（即微分辐照度）可表示为：
+
+$$ dE=\frac{\Phi cos \theta}{4\pi r^2}$$
+
+熟悉计算机图形学基础光照原理的读者会发现，该方程中蕴含着两条经典定律：其一是前述倾斜表面光照的余弦衰减
+规律，其二是光照随距离衰减的平方反比规律。
+
+多光源场景的处理非常简单，因为光照呈线性关系：每盏光源的贡献值可分别计算，再相加即可获得整体贡献值。
+
+[[./images/hcX3ei.png]]
+
+*** 可见性
+
+前文所述的光照分布忽略了一个至关重要的要素：阴影。只有当被遮蔽点到光源位置的路径畅通无阻时，每个光源才
+会为该点提供照明（图1.5）。
+
+幸运的是，在光线追踪器中，很容易判断光线是否从正在着色的点可见。我们只需构造一条新光线，其起点位于表面
+点，方向指向光源。这类特殊光线被称为阴影光线。若将该光线投射至环境中，可通过比较光线起点与光源位置沿光
+线方向的参数化t值，来检测两者是否存在交点。若光源与表面之间无遮挡物体，则计入该光源的贡献值。
+
+*** 表面散射
+
+现在我们能够计算出两个对点正确着色至关重要的信息：其位置和入射光照。 接下来需要确定入射光照在表面如何
+散射。具体而言，我们关注的是沿着最初用于寻找交点的光线方向散射回来的光能总量，因为该光线最终指向摄像机
+（图1.6）。
+
+场景中的每个物体都提供一种材质，该材质描述了其表面每个点的外观属性。这种描述由双向反射分布函数（BRDF）
+给出。该函数告诉我们从入射方向$$ \omega_i $$反射到出射方向$$ \omega_i $$的能量有多少。我们将点p处的BRDF记为$$ fr(p, \omega_o, \omega_i) $$。
+现在，计算散射回摄像机方向的光量L变得直截了当：
+
+[[./images/F9dizM.png]]
+
+#+begin_comment
+for each light:
+  if light is not bloced:
+    incident_light = light.L(point)
+    amount_reflected =
+      surface.BRDF(hit_point, camera_vector, light_vector)
+    L += amount_reflected * incident_light
+#+end_comment
+
+在此我们使用符号L代表光；这与之前使用的dE略有不同，L代表辐射度——一种用于测量光的单位，后续内容中我们将
+频繁见到该单位。
+
+将BRDF的概念推广至透射光（获得BTDF）或描述来自表面两侧的光的普遍散射现象都很容易。描述普遍散射的函数称
+为双向散射分布函数（BSDF）。pbrt支持多种BSDF模型，详见第8章。更为复杂的是双向次表面散射反射率分布函数
+（BSSRDF），该模型描述光线从表面不同点入射与出射的现象。BSSRDF的具体说明详见第5.6.2节、第11.4节及第
+15.5节。
+
+*** 间接光传输
+
+特纳·惠特在1980年发表的原始光线追踪论文中，强调了其递归特性——正是这一特性使得在渲染图像中纳入间接镜面
+反射和透射成为可能。例如，当摄像机发出的光线击中镜面等高光物体时，我们可在交点处沿表面法线反射光线，并
+递归调用光线追踪程序来追踪抵达镜面该点的光线，将其贡献叠加到原始摄像机光线上。同样的技术也可用于追踪穿
+透透明物体的透射光线。长期以来，早期光线追踪案例多以镜面和玻璃球（图1.7）为展示对象，因为此类效果难以
+通过其他渲染技术实现。
+
+通常，从物体某一点到达相机的光量等于物体自身发出的光（若物体本身是光源）与反射光量的总和。这一概念通过
+光传输方程（亦常称为渲染方程）得以形式化，该方程表明：从点p沿方向$$ \omega_o $$发出的辐射度$$ L_o(p,\omega_o) $$等于该点
+在该方向的发射辐射度， $$ L_e(p, \omega_o) $$，加上围绕p点的球面S2上所有方向入射辐射度经BSDF函数$$ f(p, \omega_o, \oemga_i)$$缩
+放后的值，以及一个余弦项：
+
+
+$$ L_o(p, \omega_o)=L_e(p,\omega_o)+\int_{g2}f(p,\omega_o,\omega_i)L_i(p,\omega_i)\lvert cos \theta_i \rvert d\omega_i $$
+
+我们将在这方程的推导过程中，于第5.6.1节和第14.4节展示更完整的推导过程。除了最简单的场景外，该积分无法
+通过解析方法求解，因此我们必须采用简化假设或数值积分技术。
+
+惠特算法通过忽略来自大多数方向的入射光，仅对光源方向以及完全反射和折射方向计算$$ L_i(p, \omega_i)$$，从而简化了
+该积分。换言之，它将积分转化为对少数几个方向的求和。
+
+惠特方法可扩展以捕捉除完美镜面和玻璃之外的更多效果。例如，通过在镜面反射方向附近追踪多条递归光线并求其
+贡献值的平均，可获得高光反射的近似效果。实际上，每次遇到物体时我们都可以递归追踪射线。例如，可随机选择
+反射方向ωi，并通过计算BRDF函数 $$ fr(p, \omega_o,\omega_i)$$来权衡这条新生射线的贡献。这个简单而强大的思路能生成极
+具真实感的图像，因为它捕捉到了物体间所有光线的相互反射。当然，我们需要确定递归终止的时机，而完全随机选
+择方向可能导致渲染算法收敛至合理结果的速度变慢。不过这些问题均可解决，相关内容将在第13至16章中详细探讨。
+
+[[./images/IMr8mh.png]]
+
+当我们以这种方式递归追踪光线时，实际上是在每个图像位置关联一棵光线树（图1.8），其中相机发出的光线位于
+该树的根节点。树中每条光线都可关联一个权重值，这使我们能够建模某些表面——例如无法反射100%入射光的镜面材
+质。
+
+*** 射线传播
+
+迄今为止的讨论都假设光线是在真空中传播的。例如，在描述点光源的光分布时，我们假设光的能量均匀分布在以光
+源为中心的球体表面上，且传播过程中不会衰减。烟雾、雾气或尘埃等散射介质的存在会使该假设失效。这些效应在
+模拟中至关重要：即便我们并非渲染烟雾弥漫的室内场景，几乎所有户外场景都会受到散射介质的显著影响。例如，
+地球大气层会导致远距离物体显得饱和度降低（图1.9）。
+
+参与介质影响光线传播的方式主要有两种。首先，介质可通过吸收或向不同方向散射光线来消灭（或衰减）光线。我
+们可通过计算光线起点与交点之间的透射率T来捕捉这种效应。透射率反映了在交点散射的光线中有多少能返回至光
+线起点。
+
+[[./images/8bkq9y.png]]
+
+[[./images/ImqVag.png]]
+
+参与介质也可沿光线方向增强光强。这种增强可能源于介质自身发光（如火焰），也可能源于介质将其他方向的光线
+沿光路散射回原方向（图1.10）。我们可通过数值求解体积光传输方程来获取该量值，其方法与求解表面反射光量时
+采用的光传输方程求解方式相同。关于参与介质与体积渲染的详细描述将留待第11章和第15章阐述。目前只需说明：
+我们能够计算参与介质的影响，并将该效应纳入光线携带的光量中。
+
+** pbrt:系统总览
+
+pbrt采用标准面向对象技术构建：为重要实体定义抽象基类（例如，Shape抽象基类定义所有几何形状必须实现的接
+口，Light抽象基类对光源起类似作用等）。系统的大部分功能完全基于这些抽象基类提供的接口实现；例如，检测
+光源与被阴影点之间是否存在遮挡物体的代码，只需调用形状的相交方法，而无需考虑场景中具体存在的形状类型。
+这种设计使得系统扩展变得简单——添加新形状只需实现一个继承自Shape接口的类，并将其链接到系统中即可。
+
+| Base class | Directory     | Section |
+|------------+---------------+---------|
+| Shape      | shapes/       |     3.1 |
+| Aggregate  | accelerators/ |     4.2 |
+| Camera     | cmaeras/      |     6.1 |
+| Sampler    | samplers/     |     7.2 |
+| Filter     | filters/      |     7.8 |
+| Material   | meatrials/    |     9.2 |
+| Texture    | textures/     |    10.3 |
+| Medium     | media/        |    11.3 |
+| Light      | lights/       |    12.2 |
+| Integrator | integrators/  |   1.3.3 |
+
+pbrt采用总计10个关键抽象基类构建，详见表1.1。向系统添加此类类型的新实现非常简单：该实现必须继承自相应
+的基类，编译后链接至可执行文件，并在附录B中修改对象创建例程，以便在解析场景描述文件时按需创建对象实例。
+B.4节将详细阐述此类系统扩展机制。
+
+pbrt源代码可在pbrt.org获取。（大量示例场景也作为独立下载提供。） pbrt核心代码全部位于src/core目录下，
+主函数main()包含在简短的src/main/pbrt.cpp文件中。抽象基类的实例实现分别存放于不同目录：src/shapes目录
+包含Shape基类的实现，src/materials目录包含Material的实现，依此类推。
+
+本节中展示了多幅使用增强版pbrt渲染的图像。其中图1.11至图1.14尤为突出：这些作品不仅视觉效果震撼，更值得
+一提的是它们均出自渲染课程学员之手——该课程的最终课题要求学员通过扩展pbrt功能来渲染独特图像，这些作品堪
+称该系列课程的顶尖成果。图1.15和1.16则采用LuxRender渲染系统生成，该系统采用GPL许可证，其原始代码基于本
+书第一版中的pbrt源代码。（有关LuxRender的更多信息，请参阅www.luxrender.net。）
+
+[[./images/mcRARu.png]]
+
+*** 执行阶段
+
+从概念上讲，pbrt的执行过程可分为两个阶段。首先，它解析用户提供的场景描述文件。该文本文件指定了构成场景
+的几何形状、其材质属性、照明光源、虚拟摄像机在场景中的位置，以及系统中所有独立算法的参数。输入文件中的
+每条语句都与附录B中的某个例程直接对应；这些例程构成了描述场景的过程化接口。场景文件格式已在pbrt官网
+pbrt.org上详细说明。
+
+解析阶段的最终结果是生成一个Scene类的实例和一个Integrator类的实例。Scene类包含场景内容的表示（几何对象、
+光源等），而Integrator类则实现用于渲染场景的算法。该类之所以命名为Integrator，是因为其主要任务是求解方
+程(1.1)中的积分。
+
+[[./images/jkSBTZ.png]]
+
+场景定义完成后，执行进入第二阶段，主渲染循环开始运行。此阶段通常占据pbrt大部分运行时间，本书主要内容也
+描述了该阶段执行的代码。渲染循环通过执行Integrator::Render()方法的实现来完成，该方法是第1.3.4节的核心
+内容。
+
+本章将介绍一个名为采样积分器的特定积分器子类，其Render()方法通过模拟大量光线来确定到达虚拟胶片平面的光
+线，从而建模成像过程。在计算所有胶片样本的贡献后，最终图像会被写入文件。内存中的场景描述数据将被释放，
+系统随后继续处理场景描述文件中的指令直至耗尽，此时用户可选择指定另一个场景进行渲染。
+
+[[./images/dRerFz.png]]
+
+*** 场景呈现
+
+pbrt 的 main() 函数位于 main/pbrt.cpp 文件中。该函数结构简单：首先遍历 argv 中提供的命令行参数，初始化
+Options 结构中的值，并将参数中提供的文件名存储起来。若以 --help 作为命令行参数运行 pbrt，将打印所有可
+指定的命令行选项。解析命令行参数的代码片段〈Process command-line arguments〉逻辑清晰，故本书中不再赘述。
+
+[[./images/jEs72W.png]]
+
+选项结构随后传递给 pbrtInit() 函数，该函数执行系统范围的初始化。main() 函数接着解析给定的场景描述，从
+而创建 Scene 和 Integrator 对象。所有渲染完成后，pbrtCleanup() 在系统退出前执行最终清理工作。
+
+pbrtInit() 和 pbrtCleanup() 函数出现在页边的小索引中，并标注了它们实际定义所在页码。这些小索引包含指向
+几乎所有函数、类、方法及成员变量的定义的指针，这些定义在每页中被使用或提及。
+
+[[./images/su7ZKc.png]]
+
+#+begin_export ascii
+  〈Main program〉 ≡
+      int main(int argc, char *argv[]) {
+         Options options;
+         std::vector<std::string> filenames;
+        〈Process command-line arguments〉
+         pbrtInit(options);
+        〈Process scene description 21〉
+         pbrtCleanup(); return 0;
+}
+#+end_export
+
+如果在运行 pbrt 时未提供输入文件名，则场景描述将从标准输入中读取。否则，程序将遍历提供的文件名，依次处
+理每个文件。
+
+#+begin_export ascii
+  〈Process scene description〉 ≡
+      if (filenames.size() == 0) {
+       〈Parse scene from standard input 22〉
+       } else {
+        〈Parse scene from input files 22〉
+   }
+#+end_export
+
+ParseFile()函数解析场景描述文件，可从标准输入或磁盘文件读取；若无法打开文件则返回false。本书不详述场景
+描述文件的解析机制；解析器的实现分别位于lex文件core/pbrtlex.ll和yacc文件core/pbrtparse.y中。若读者希望
+理解解析子系统但对这些工具不熟悉，可参考Levine、Mason和Brown（1992）的相关著作。
+
+[[./images/QTJODB.png]]
+
+我们采用常见的UNIX惯例，将名为“-”的文件表示为标准输入：
+
+#+begin_export ascii
+  〈Parse scene from standard input〉 ≡
+     ParseFile("-");
+#+end_export
+
+如果某个输入文件无法打开，Error() 例程会将此信息报告给用户。Error() 使用与 printf() 相同的格式字符串语
+义。
+
+#+begin_export ascii
+  〈Parse scene from input files〉 ≡
+    for (const std::string &f : filenames)
+      if (!ParseFile(f))
+        Error("Couldn’t open scene file \"%s\"", f.c_str());
+#+end_export
+
+在解析场景文件时，会创建代表场景中光源和几何基元的对象。这些对象均存储于场景对象中，该对象由附录B第
+B.3.7节中的RenderOptions::MakeScene()方法创建。场景类在core/scene.h中声明，并在core/scene.cpp中定义。
+
+#+begin_export ascii
+ 〈Scene Declarations〉 ≡
+    class Scene {
+      public:
+        〈Scene Public Methods 23〉
+        〈Scene Public Data 23〉
+      private:
+        〈Scene Private Data 23〉
+    };
+    〈Scene Public Methods〉 ≡
+     Scene(std::shared_ptr<Primitive> aggregate,
+           const std::vector<std::shared_ptr<Light>> &lights)
+     : lights(lights), aggregate(aggregate) {
+       〈Scene Constructor Implementation 24〉
+    }
+#+end_export
+
+场景中的每个光源都由一个Light对象表示，该对象指定光源的形状及其发出的能量分布。场景通过C++标准库的
+shared_ptr实例向量存储所有光源。pbrt使用共享指针追踪对象被其他实例引用的次数。当最后一个持有引用的实例
+（此处为场景）被销毁时，引用计数归零，光源即可安全释放——此时系统会自动执行释放操作。
+
+虽然某些渲染器支持为每个几何对象单独创建光源列表，从而使光源仅照亮场景中的部分对象，但这种思路与pbrt采
+用的基于物理的渲染方法并不契合，因此pbrt仅支持全局性的单场景光源列表。由于系统中许多组件都需要访问光源
+信息，场景对象将其作为公共成员变量提供。
+
+#+begin_export ascii
+  〈Scene Public Data〉 ≡
+     std::vector<std::shared_ptr<Light>> lights;
+#+end_export
+
+场景中的每个几何对象都由一个基元表示，该基元组合了两个对象：指定其几何形状的形状（Shape），以及描述其
+外观（例如对象颜色、表面是否为哑光或亮光）的材质（Material）。所有几何基元都被收集到场景成员变量
+Scene::aggregate中的单一聚合基元中。该聚合体是一种特殊类型的基元，自身持有对众多其他基元的引用。由于它
+实现了Primitive接口，在系统其他部分看来与单个基元并无差异。聚合体的实现将场景中所有基元存储于加速数据
+结构中，从而减少了与远离给定射线基元进行不必要的射线相交测试的次数。
+
+#+begin_export ascii
+  〈Scene Private Data〉 ≡
+     std::shared_ptr<Primitive> aggregate;
+#+end_export
+
+构造函数将场景几何体的边界框缓存到worldBound成员变量中。
+
+#+begin_export ascii
+  〈Scene Constructor Implementation〉 ≡
+     worldBound = aggregate->WorldBound();
+
+  〈Scene Private Data〉 +≡
+     Bounds3f worldBound;
+#+end_export
+
+该绑定通过 WorldBound() 方法提供。
+
+#+begin_export ascii
+  〈Scene Public Methods〉 +≡
+     const Bounds3f &WorldBound() const { return worldBound; }
+#+end_export
+
+某些Light实现发现，在场景定义完成后、渲染开始前执行额外初始化操作颇为实用。Scene构造函数会调用它们的
+Preprocess()方法以实现此目的。
+
+#+begin_export ascii
+  〈Scene Constructor Implementation〉 +≡
+     for (const auto &light : lights) light->Preprocess(*this);
+#+end_export
+
+Scene类提供了两个与射线-基元相交相关的函数。其Intersect()函数将给定射线追踪至场景中，并返回一个布尔值
+以指示射线是否与任何基元相交。若存在相交，则该函数会填充提供的SurfaceInteraction结构体，其中包含射线沿
+路径上最近相交点的信息。SurfaceInteraction结构体的定义详见第4.1节。
+
+#+begin_export ascii
+  〈Scene Method Definitions〉 ≡
+  bool Scene::Intersect(const Ray &ray, SurfaceInteraction *isect) const {
+    return aggregate->Intersect(ray, isect);
+  }
+#+end_export
+
+一个密切相关的方法是Scene::IntersectP()，它检查射线沿途是否存在交点，但不返回任何关于这些交点的信息。
+由于该例程无需搜索最近交点或计算任何额外的交点信息，因此通常比Scene::Intersect()更高效。此例程用于阴影
+射线。
+
+#+begin_export ascii
+  〈Scene Method Definitions〉 +≡
+     bool Scene::IntersectP(const Ray &ray) const {
+      return aggregate->IntersectP(ray);
+    }
+#+end_export
+
+*** 积分器接口与采样积分器
+
+场景图像的渲染由实现Integrator接口的类实例负责。Integrator是一个抽象基类，定义了所有积分器必须提供的
+Render()方法。本节将定义一种Integrator实现——采样积分器（SamplerIntegrator）。基础积分器接口定义于
+core/integrator.h文件中，积分器使用的部分实用函数位于core/integrator.cpp文件。各类积分器的具体实现存放
+于integrators目录下。
+
+#+begin_export ascii
+  〈Integrator Declarations〉 ≡
+       class Integrator {
+          public:  〈Integrator Interface 25〉
+       };
+#+end_export
+
+积分器必须提供的方法是Render()；该方法接收场景的引用，用于计算场景图像或更普遍地说，计算场景光照的一组
+测量值。该接口被刻意设计得非常通用，以支持多种实现方式——例如，可以实现一种仅在场景中稀疏分布的位置点进
+行测量而非生成常规二维图像的积分器。
+
+#+begin_export ascii
+  〈Integrator Interface〉 ≡
+     virtual void Render(const Scene &scene) = 0;
+#+end_export
+
+本章将重点探讨SamplerIntegrator（作为Integrator的子类）以及实现SamplerIntegrator接口的
+WhittedIntegrator。（其他SamplerIntegrator的实现将在第14章和第15章介绍；第16章中的积分器直接继承自
+Integrator。） 采样积分器之名源于其渲染过程由采样器输出的采样流驱动——每个采样点都标识图像中积分器需计
+算入射光线以形成图像的位置。
+
+#+begin_export ascii
+  〈SamplerIntegrator Declarations〉 ≡
+    class SamplerIntegrator : public Integrator {
+      public:
+        〈SamplerIntegrator Public Methods 26〉
+      protected:
+        〈SamplerIntegrator Protected Data 26〉
+      private:  〈SamplerIntegrator Private Data 25〉
+    };
+#+end_export
+
+采样器积分器存储着指向采样器的指针。采样器的作用虽微妙，但其实现方式会显著影响系统生成的图像质量。首先，
+采样器负责选择图像平面上用于追踪光线的路径点。其次，它负责为积分器提供采样位置，用于估算光传输积分值
+（公式(1.1)）。例如某些积分器需在光源上随机选取点位以计算区域光源的照度分布。生成优质的采样分布是渲染
+流程的关键环节，对整体效率影响深远——此主题将是第七章的核心探讨内容。
+
+#+begin_export ascii
+  〈SamplerIntegrator Private Data〉 ≡ 
+     std::shared_ptr<Sampler> sampler;
+#+end_export
+
+第7.9节。渲染器负责将最终图像写入文件，并在计算过程中可能将其显示在屏幕上。
+
+#+begin_export ascii
+  〈SamplerIntegrator Protected Data〉 ≡
+     std::shared_ptr<const Camera> camera;
+#+end_export
+
+SamplerIntegrator构造函数将这些对象的指针存储在成员变量中。采样积分器在RenderOptions::MakeIntegrator()
+方法中创建，该方法由pbrtWorldEnd()调用，而后者由输入文件解析器调用——当解析器完成从输入文件解析场景描述
+并准备渲染场景时，便会调用pbrtWorldEnd()。
+
+#+begin_export ascii
+  〈SamplerIntegrator Public Methods〉 ≡
+     SamplerIntegrator(std::shared_ptr<const Camera> camera,
+                       std::shared_ptr<Sampler> sampler)
+                       : camera(camera), sampler(sampler) { }
+#+end_export
+
+SamplerIntegrator实现可选择性地实现Preprocess()方法。该方法在场景完全初始化后被调用，为积分器提供执行
+场景相关计算的机会，例如根据场景中光源数量分配额外数据结构，或预先计算场景中辐射度分布的粗略表示。无需
+执行此类操作的实现可省略该方法的实现。
+
+#+begin_export ascii
+  〈SamplerIntegrator Public Methods〉 +≡
+     virtual void Preprocess(const Scene &scene, Sampler &sampler) { }
+#+end_export
+
+*** 主渲染循环
+
+在Scene和Integrator完成分配与初始化后，将调用Integrator::Render()方法，由此启动pbrt执行的第二阶段：主
+渲染循环。在SamplerIntegrator对该方法的实现中，该方法会在图像平面上的一系列位置处，利用Camera和Sampler
+生成射向场景的光线，随后通过Li()方法计算沿该光线抵达图像平面的光照强度。该数值会被传递至Film组件，用于
+记录光照贡献值。图1.17总结了本方法中使用的主要类及其间数据流向。
+
+#+begin_export ascii
+  〈SamplerIntegrator Method Definitions〉 ≡
+      void SamplerIntegrator::Render(const Scene &scene) {
+         Preprocess(scene, *sampler);
+         〈Render image tiles in parallel 27〉
+         〈Save final image after rendering 32〉
+      }
+#+end_export
+
+为了使渲染能在多处理器核心系统上并行进行，图像被分解为小块像素图块。每个图块可独立并行处理。
+ParallelFor()函数（详见A.6节）实现了并行for循环，其中多个迭代可并行运行。循环体由C++ lambda表达式提供。
+此处采用针对二维域迭代的ParallelFor()变体，用于遍历图像瓦片。
+
+[[./images/luI9AE.png]]
+
+#+begin_export ascii
+  〈Render image tiles in parallel〉 ≡
+    〈Compute number of tiles, nTiles, to use for parallel rendering 28〉
+       ParallelFor2D( [&](Point2i tile) {
+         〈Render section of image corresponding to tile 28〉
+       }, nTiles);
+
+#+end_export
+
+在决定图像瓦片大小时，需要权衡两个因素：负载均衡与每瓦片开销。一方面，我们希望图块数量远超系统处理器数
+量：试想一台四核计算机仅分配四个图块。通常某些图块的处理时间会短于其他图块——负责处理场景相对简单的图像
+区域时，其耗时往往少于处理复杂场景区域的图块。因此，若瓦片数量等于处理器数量，部分处理器将提前完成任务，
+在等待运行最长时间瓦片的处理器时处于空闲状态。图1.18展示了这一问题：它呈现了用于渲染图1.7中闪亮球体场
+景的瓦片执行时间分布，其中耗时最长的瓦片运行时间是最短瓦片的151倍。
+
+另一方面，过小的瓦片同样效率低下。处理器核心每次确定应执行哪个循环迭代时，都会产生一小笔固定开销；瓦片
+数量越多，这种开销就需要支付更多次。
+
+[[./images/uZ6JDX.png]]
+
+为简化起见，pbrt始终采用16×16像素的贴片；这种粒度对几乎所有图像都效果良好，仅极低分辨率的图像例外。我
+们隐含地认为，在追求最高渲染效率时，小尺寸图像并非特别重要。Film类的GetSampleBounds()方法会返回当前渲
+染图像所需采样生成的像素范围。在计算 nTiles 时添加 tileSize - 1 的操作，使得当某轴向的采样边界无法被
+16 整除时，瓦片数量会被向上取整为最接近的整数。这意味着 ParallelFor() 调用的 lambda 函数必须能够处理包
+含部分未使用像素的残缺瓦片。
+
+#+begin_export ascii
+  〈Compute number of tiles, nTiles, to use for parallel rendering〉 ≡
+     Bounds2i sampleBounds = camera->film->GetSampleBounds();
+     Vector2i sampleExtent = sampleBounds.Diagonal();
+     const int tileSize = 16;
+     Point2i nTiles((sampleExtent.x + tileSize - 1) / tileSize,
+                    (sampleExtent.y + tileSize - 1) / tileSize);
+
+#+end_export
+
+当附录A.6.4中定义的并行for循环实现决定在特定处理器上执行循环迭代时，将调用lambda函数并传入瓦片坐标。该
+函数首先执行少量初始化工作：确定其负责的胶片平面区域，为临时数据分配存储空间，随后通过采样器生成图像样
+本，借助相机确定离开胶片平面的对应射线，并调用Li()方法计算抵达胶片的射线沿路径的辐射度。
+
+#+begin_export ascii
+  〈Render section of image corresponding to tile〉 ≡
+    〈Allocate MemoryArena for tile 29〉
+    〈Get sampler instance for tile 29〉
+    〈Compute sample bounds for tile 29〉
+    〈Get FilmTile for tile 30〉
+    〈Loop over pixels in tile to render them 30〉
+      〈Merge image tile into Film 32〉
+#+end_export
+
+Li()方法的实现通常需要为每次辐射度计算临时分配少量内存。由此产生的海量分配操作极易压垮系统的常规内存分
+配例程（如malloc()或new），这些例程必须维护并同步复杂的内部数据结构，以追踪处理器间自由内存区域的集合。
+若采用简单粗暴的实现方式，可能导致相当大比例的计算时间耗费在内存分配器上。
+
+为解决此问题，我们将向Li()方法传递MemoryArena类的实例。MemoryArena实例通过管理内存池，实现了比标准库例
+程更高效的内存分配。
+
+内存区域的内存池始终整体释放，从而无需复杂的内部数据结构。该类的实例仅限单线程使用——不允许在未进行额外
+同步的情况下进行并发访问。我们为每次循环迭代创建可直接使用的唯一内存区域，这也确保了该区域仅被单线程访
+问。
+
+#+begin_export ascii
+  〈Allocate MemoryArena for tile〉 ≡
+     MemoryArena arena;
+#+end_export
+
+大多数 Sampler 实现发现维护某些状态很有用，例如当前正在采样的像素坐标。这意味着多个处理线程无法同时使
+用同一个 Sampler 。因此采样器提供了Clone()方法来创建指定采样器的新实例；该方法需要一个种子参数，某些实
+现会用它来初始化伪随机数生成器，从而避免在每个瓦片中生成相同的伪随机数序列。（需注意并非所有采样器都使
+用伪随机数；不使用的采样器会直接忽略该种子参数。）
+
+#+begin_export ascii
+  〈Get sampler instance for tile〉 ≡
+    int seed = tile.y * nTiles.x + tile.x;
+    std::unique_ptr<Sampler> tileSampler = sampler->Clone(seed);
+#+end_export
+
+接下来，根据瓦片索引计算本循环迭代中需采样的像素范围。此计算需考虑两点：首先，采样范围可能不等于图像完
+整分辨率。例如用户可能指定了仅采样部分像素的"裁剪窗口"；其次，若图像分辨率非16的整数倍，则右侧和底部的
+图块将无法达到完整的16×16像素尺寸。
+
+#+begin_export ascii
+  〈Compute sample bounds for tile〉 ≡
+     int x0 = sampleBounds.pMin.x + tile.x * tileSize;
+     int x1 = std::min(x0 + tileSize, sampleBounds.pMax.x);
+     int y0 = sampleBounds.pMin.y + tile.y * tileSize;
+     int y1 = std::min(y0 + tileSize, sampleBounds.pMax.y);
+     Bounds2i tileBounds(Point2i(x0, y0), Point2i(x1, y1));
+#+end_export
+
+最后，从胶片中获取一个FilmTile对象。该类提供了一个小型内存缓冲区，用于存储当前图块的像素值。其存储空间
+专属于循环迭代过程，因此像素值可被更新而无需担心其他线程并发修改相同像素。当渲染工作完成后，该图块将合
+并到胶片的存储空间中；此时会处理图像的并发更新序列化问题。
+
+#+begin_export ascii
+  〈Get FilmTile for tile〉 ≡
+     std::unique_ptr<FilmTile> filmTile = camera->film->GetFilmTile(tileBounds);
+#+end_export
+
+现在可以开始渲染了。实现通过基于范围的 for 循环遍历瓦片中的所有像素，该循环自动使用 Bounds2 类提供的迭
+代器。克隆的采样器会收到通知，开始为当前像素生成采样点，采样点依次处理直至 StartNextSample() 返回
+false。（正如我们在第 7 章将看到的，每个像素进行多次采样可显著提升最终图像质量。）
+
+#+begin_export ascii
+  〈Loop over pixels in tile to render them〉 ≡
+     for (Point2i pixel : tileBounds) {
+       tileSampler->StartPixel(pixel);
+       do {
+         〈Initialize CameraSample for current sample 30〉
+         〈Generate camera ray for current sample 31〉
+         〈Evaluate radiance along camera ray 31〉
+         〈Add camera ray’s contribution to image 32〉
+         〈Free MemoryArena memory from computing image sample value 32〉
+        } while (tileSampler->StartNextSample()); }
+#+end_export
+
+CameraSample 结构记录了相机应生成对应光线在胶片上的位置。它还存储时间和镜头位置采样值，前者用于渲染包
+含移动物体的场景，后者则用于模拟非针孔光圈的相机模型。
+
+#+begin_export ascii
+  〈Initialize CameraSample for current sample〉 ≡
+     CameraSample cameraSample = tileSampler->GetCameraSample(pixel);
+#+end_export
+
+Camera接口提供了两种生成射线的方法：Camera::GenerateRay() 用于返回给定图像采样位置的射线，而
+Camera::GenerateRayDifferential() 则返回射线微分值——该值整合了相机在图像平面上沿 x 和 y 方向相距一个像
+素的采样点所能生成的射线信息。光线微分用于优化第10章定义的某些纹理函数效果，可计算纹理随像素间距变化的
+速度——这是纹理抗锯齿的关键要素。
+
+在返回光线差分后，ScaleDifferentials() 方法会对差分光线进行缩放，以适应每像素采集多个采样点时胶片平面
+上采样点之间的实际间距。
+
+相机还会返回与光线相关的浮点权重值。对于简单相机模型，每条光线权重相等；但更精确模拟透镜成像过程的相机
+模型可能生成权重不同的光线。此类模型可模拟胶片边缘区域光线弱于中心区域的现象，即所谓的暗角效应。该权重
+值将在后续处理中用于调整光线对图像的贡献比例。
+
+#+begin_export ascii
+  〈Generate camera ray for current sample〉 ≡
+     RayDifferential ray;
+     Float rayWeight = camera->GenerateRayDifferential(cameraSample, &ray);
+     ray.ScaleDifferentials(1 / std::sqrt(tileSampler->samplesPerPixel));
+#+end_export
+
+请注意大写的浮点类型 Float：根据 pbrt 的编译标志，它可能是 float 或 double 的别名。关于此设计选择的更
+多细节，请参阅第 A.1 节。
+
+给定一条光线后，下一步任务是确定沿该光线到达成像面的辐射度。Li()方法负责处理此任务。
+
+#+begin_export ascii
+  〈Evaluate radiance along camera ray〉 ≡
+     Spectrum L(0.f);
+     if (rayWeight > 0)
+       L = Li(ray, scene, *tileSampler, arena);
+    〈Issue warning if unexpected radiance value is returned〉
+#+end_export
+
+Li() 是一个纯虚函数，用于返回给定射线在原点处的入射辐射度；SamplerIntegrator 的每个子类都必须提供此方
+法的实现。Li() 的参数如下：
+
++ ray：沿该光线方向评估入射辐射通量。
++ scene：正在渲染的场景。实现将向场景查询有关灯光和几何体等信息。
++ sampler：一种样本生成器，用于通过蒙特卡洛积分求解光传输方程。
++ arena：用于积分器高效分配临时内存的内存池。积分器应假定通过该内存池分配的任何内存将在Li()方法返回后
+  立即释放，因此不应使用该内存池分配任何必须持续存在于当前射线计算周期之外的内存。
++ depth：从相机出发直至当前调用Li()函数时所发生的射线反弹次数。
+
+该方法返回一个表示光线起点处入射辐射度的光谱：
+
+#+begin_export ascii
+  〈SamplerIntegrator Public Methods〉 +≡
+      virtual Spectrum Li(const RayDifferential &ray,
+                          const Scene &scene, Sampler &sampler,
+                          MemoryArena &arena, int depth = 0) const = 0;
+#+end_export
+
+渲染过程中常见的错误副作用是计算出不可能的辐射值。例如，除以零会导致辐射值等于IEEE浮点无穷大或“not a
+number”值。渲染器会检测这种情况以及负贡献的光谱，并在遇到时输出错误信息。本文不包含实现该功能的代码片
+段〈Issue warning if unexpected radiance value is returned〉。若需了解具体实现细节，请查阅核心文件
+core/integrator.cpp。
+
+当光线到达其发源点时的辐射强度已知后，即可更新图像：FilmTile::AddSample()方法会根据采样结果更新瓦片图
+像中的像素值。关于采样值如何记录在胶片中的细节，详见第7.8节和第7.9节。
+
+#+begin_export ascii
+  〈Add camera ray’s contribution to image〉 ≡
+      filmTile->AddSample(cameraSample.pFilm, L, rayWeight);
+#+end_export
+
+处理完一个样本后，当调用 MemoryArena::Reset() 时，MemoryArena 中分配的所有内存将被同时释放。（关于如何
+使用 MemoryArena 为交点处的 BSDF 分配内存的说明，请参见第 9.1.1 节。）
+
+#+begin_export ascii
+  〈Free MemoryArena memory from computing image sample value〉 ≡
+     arena.Reset();
+#+end_export
+
+当计算完图块中所有样本的光照值后，该FilmTile会被传递给影片的MergeFilmTile()方法，该方法负责将图块的像
+素贡献值添加到最终图像中。请注意，使用std::move()函数将unique_ptr的所有权转移给MergeFilmTile()。
+
+#+begin_export ascii
+  〈Merge image tile into Film〉 ≡
+     camera->film->MergeFilmTile(std::move(filmTile));
+#+end_export
+
+在所有循环迭代完成后，采样器集成器的Render()方法会调用影片的WriteImage()方法，将图像写入文件。
+
+#+begin_export ascii
+  〈Save final image after rendering〉 ≡
+     camera->film->WriteImage();
+#+end_export
+
+*** 一种用于切分光线追踪的积分器
+
+第14章和第15章包含多种积分器的实现方案，它们基于不同精度级别的算法。本文将介绍基于Whitted光线追踪算法
+的积分器。该积分器能精确计算玻璃、镜面和水面等镜面反射表面的反射光与透射光，但不考虑其他间接照明效应
+（如光线从墙面反射照亮房间的情况）。WhittedIntegrator类位于pbrt发行版的integrators/whitted.h和
+integrators/whitted.cpp文件中。
+
+#+begin_export ascii
+  〈WhittedIntegrator Declarations〉 ≡
+      class WhittedIntegrator : public SamplerIntegrator {
+         public:
+           〈WhittedIntegrator Public Methods 33〉
+         private:  〈WhittedIntegrator Private Data 33〉
+      };
+#+end_export
+
+[[./images/h1ZcXD.png]]
+
+#+begin_export ascii
+  〈WhittedIntegrator Public Methods〉 ≡
+      WhittedIntegrator(int maxDepth, std::shared_ptr<const Camera> camera,
+                        std::shared_ptr<Sampler> sampler)
+                  : SamplerIntegrator(camera, sampler), maxDepth(maxDepth) { }
+#+end_export
+
+Whitted积分器通过递归评估沿反射和折射光线方向的辐射度来工作。它会在预设的最大深度
+WhittedIntegrator::maxDepth处终止递归。默认情况下，最大递归深度为五。若无此终止条件，递归可能永不停止
+（例如想象镜厅场景）。该成员变量在WhittedIntegrator构造函数中初始化（此处未包含），其值基于场景描述文
+件中设置的参数。
+
+#+begin_export ascii
+  〈WhittedIntegrator Private Data〉 ≡
+     const int maxDepth;
+#+end_export
+
+作为SamplerIntegrator实现，WhittedIntegrator 必须提供 Li() 方法的实现，该方法返回到达给定光线原点的辐
+射度。图 1.19 总结了表面积分过程中主要类之间的数据流。
+
+#+begin_export ascii
+  〈WhittedIntegrator Method Definitions〉 ≡
+      Spectrum WhittedIntegrator::Li(const RayDifferential &ray,
+                   const Scene &scene, Sampler &sampler,
+                   MemoryArena &arena, int depth) const {
+                      Spectrum L(0.);
+                     〈Find closest ray intersection or return background radiance 34〉
+                     〈Compute emitted and reflected light at ray intersection point 34〉
+                     return L;
+   }
+#+end_export
+
+第一步是找到射线与场景中形状的首次相交点。Scene::Intersect() 方法接收一条射线，并返回一个布尔值以指示
+是否与形状相交。对于找到相交点的射线，该方法会使用相交的几何信息初始化提供的 SurfaceInteraction 对象。
+
+若未找到交点，辐射度可能沿光线传播，这是由于某些光源不关联几何体所致。此类光源的一个例子是无限区域光源
+（InfiniteArea Light），它可用于表示天空光照。通过调用 Light::Le() 方法，此类光源可返回其沿指定光线传
+播的辐射度。
+
+#+begin_export ascii
+  〈Find closest ray intersection or return background radiance〉 ≡
+      SurfaceInteraction isect;
+      if (!scene.Intersect(ray, &isect)) {
+        for (const auto &light : scene.lights)
+           L += light->Le(ray); return L;
+      }
+#+end_export
+
+否则即表明已找到有效的交点。积分器必须确定光线在交点处如何被物体表面散射，计算该点接收到的光源照度，并
+通过对式(1.1)进行近似处理来计算沿视线方向离开表面的光量。由于该积分器忽略了烟雾等参与介质的影响，因此
+交点处发出的辐射度与光线起点接收的辐射度相等。
+
+#+begin_export ascii
+  〈Compute emitted and reflected light at ray intersection point〉 ≡
+    〈Initialize common variables for Whitted integrator 34〉
+    〈Compute scattering functions for surface interaction 35〉
+    〈Compute emitted light if ray hit an area light source 35〉
+    〈Add contribution of each light source 36〉
+       if (depth + 1 < maxDepth) {
+       〈Trace rays for specular reflection and refraction 37〉
+       }
+#+end_export
+
+图1.20展示了后续章节中将频繁使用的若干量。n是交点处的表面法线，而从命中点到射线原点的归一化方向存储在$$ \omega_o $$中；相机负责对生成的射线方向分量进行归一化处理，因此此处无需重新归一化。本书中用ω符号表示归一化方向，而在pbrt代码中，我们将使用$$ \omega_o$$表示$$\omega_o$$——即散射光的出射方向。
+
+#+begin_export ascii
+  〈Initialize common variables for Whitted integrator〉 ≡
+      Normal3f n = isect.shading.n;
+      Vector3f wo = isect.wo;
+#+end_export
+
+若检测到表面与光线的交点，则需确定该表面材质的光散射特性。ComputeScatteringFunctions()方法负责处理此任
+务：它通过评估纹理函数来确定表面属性，随后在该点初始化BSDF（及可能的BSSRDF）的表示。该方法通常需要为构
+成此表示的对象分配内存；由于该内存仅需满足当前光线计算需求，故提供MemoryArena供其进行分配操作。
+
+[[./images/aR6AyN.png]]
+
+#+begin_export ascii
+  〈Compute scattering functions for surface interaction〉 ≡
+    isect.ComputeScatteringFunctions(ray, arena);
+#+end_export
+
+若光线恰好击中发光几何体（如区域光源），积分器将通过调用SurfaceInteraction::Le()方法处理任何发射的辐射
+度。这构成了光传输方程的第一项（见第12页的方程(1.1)）。若物体不具发光性，该方法将返回黑色光谱。
+
+#+begin_export ascii
+  〈Compute emitted light if ray hit an area light source〉 ≡
+    L += isect.Le(wo);
+#+end_export
+
+对于每盏光源，积分器调用Light::Sample_Li()方法，计算该光源照射到阴影点所在表面上的辐射度。该方法同时返回从阴影点到光源的方向向量，该向量存储在变量wi中（表示入射方向$$ \omega_i $$）。
+
+该方法返回的光谱并未考虑其他形状可能阻挡光源并阻止光线到达阴影点的可能性。相反，它返回一个
+VisibilityTester对象，可用于判断是否有任何基元阻挡了表面点与光源之间的路径。该测试通过在阴影点与光源之
+间追踪一条阴影射线来验证路径是否畅通。pbrt的代码采用此种组织方式，旨在避免非必要的阴影射线追踪：通过先
+确认若光线未被阻挡，照射到表面的光线会沿$$\omega_o$$方向散射。例如当表面不具透射性时，抵达表面背侧的光线不会参
+与反射计算。
+
+Sample_Li()方法还会将光线采样方向wi的概率密度值存储在pdf变量中。该值用于处理复杂区域光源的蒙特卡罗积
+分——尽管此处仅采样单一方向，但光线实际来自多方向；对于点光源等简单光源，pdf值始终为1。该概率密度在渲染
+中的具体计算与应用机制详见第13章与第14章；最终需将光线贡献值除以pdf，此处实现即完成了该操作。
+
+若入射辐射度不为零，且表面分布函数（BSDF）表明来自方向$$ \omega_i $$的部分入射光确实散射至出射方向$$ \omega_o $$，则积分器将
+辐射度值$$ \omega_i$$与BSDF函数f的值及余弦项相乘。余弦项通过AbsDot()函数计算，该函数返回两个向量点积的绝对值。若
+向量均已归一化（如本例中的$$ \omega_i$$和n），则该值等同于两向量夹角余弦的绝对值（参见第2.2.1节）。
+
+该产品代表光线对光传输方程积分项（方程(1.1)）的贡献，并被加到总反射辐射度L中。在考虑所有光源后，积分器
+计算出直接照明的总贡献——即直接从发光体到达表面的光线（区别于场景中经其他物体反射后才到达该点的光线）。
+
+#+begin_export ascii
+  〈Add contribution of each light source〉 ≡
+     for (const auto &light : scene.lights) {
+       Vector3f wi; Float pdf;
+       VisibilityTester visibility;
+       Spectrum Li = light->Sample_Li(isect, sampler.Get2D(), &wi, &pdf, &visibility);
+       if (Li.IsBlack() || pdf == 0)
+         continue;
+         Spectrum f = isect.bsdf->f(wo, wi);
+         if (!f.IsBlack() && visibility.Unoccluded(scene)) L += f * Li * AbsDot(wi, n) / pdf;
+     }
+#+end_export
+
+该积分器还处理由镜面或玻璃等完全镜面散射的光线。利用镜面特性确定反射方向相当简单（图1.21），而运用斯涅
+尔定律确定透射方向也较为容易（第8.2节）。随后积分器可递归追踪新方向上的相应光线，并将该光线对原始摄像
+机视点处反射辐射度的贡献累加。镜面反射与透射效应的计算分别由独立的实用方法处理，因此这些功能可轻松复用
+至其他SamplerIntegrator实现中。
+
+[[./images/bLj7h0.png]]
+
+#+begin_export ascii
+  〈Trace rays for specular reflection and refraction〉 ≡
+      L += SpecularReflect(ray, isect, scene, sampler, arena, depth);
+      L += SpecularTransmit(ray, isect, scene, sampler, arena, depth);
+#+end_export
+
+#+begin_export ascii
+  〈SamplerIntegrator Method Definitions〉 +≡
+     Spectrum SamplerIntegrator::SpecularReflect(const RayDifferential &ray,
+                             const SurfaceInteraction &isect, const Scene &scene,
+                             Sampler &sampler, MemoryArena &arena, int depth) const {
+                             〈Compute specular reflection direction wi and BSDF value 38〉
+                             〈Return contribution of specular reflection 38〉
+     }
+#+end_export
+
+在 SpecularReflect() 和 SpecularTransmit() 方法中，BSDF::Sample_f() 方法会根据给定的出射方向和光散射模
+式返回入射光线方向。该方法是蒙特卡罗光传输算法的基础之一，本书最后几章将对此进行详细探讨。在此，我们将
+仅利用该方法寻找完全镜面反射或折射对应的出射方向，通过标志位告知BSDF::Sample_f()忽略其他反射类型。尽管
+BSDF::Sample_f()可为概率积分算法采样随机出射方向，但其随机性受限于BSDF散射特性的约束。在完美镜面反射或
+折射情况下，仅存在单一可能方向，因此完全不存在随机性。
+
+这些函数中对 BSDF::Sample_f() 的调用会将 wi 初始化为选定方向，并返回 BSDF 在方向 $$ (\omega_o, \omega_i) $$上的值。若
+BSDF值不为零，积分器将调用SamplerIntegrator::Li()方法获取沿ωi方向的入射辐射度，该方法在此情况下将转而
+调用WhittedIntegrator::Li()方法。
+
+#+begin_export ascii
+  〈Compute specular reflection direction wi and BSDF value〉 ≡
+     Vector3f wo = isect.wo, wi; Float pdf;
+     BxDFType type = BxDFType(BSDF_REFLECTION | BSDF_SPECULAR);
+     Spectrum f = isect.bsdf->Sample_f(wo, &wi, sampler.Get2D(), &pdf, type);
+#+end_export
+
+为利用光线微分消除反射或折射中可见纹理的锯齿现象，必须理解反射与透射如何影响光线在屏幕空间的覆盖范围。
+计算这些光线微分的片段将在第10.1.3节中定义。当光线微分完全初始化后，通过递归调用Li()可获得入射辐射度，
+该值需按公式(1.1)经由BSDF值（余弦项）进行缩放，并除以概率分布函数（PDF）。
+
+#+begin_export ascii
+  〈Return contribution of specular reflection〉 ≡
+     const Normal3f &ns = isect.shading.n;
+     if (pdf > 0 && !f.IsBlack() && AbsDot(wi, ns) != 0) {
+       〈Compute ray differential rd for specular reflection 607〉
+        return f * Li(rd, scene, sampler, arena, depth + 1) * AbsDot(wi, ns) / pdf;
+     }
+     else return Spectrum(0.f);
+#+end_export
+
+SpecularTransmit() 方法本质上与 SpecularReflect() 相同，只是请求 BSDF 的 SpecularTransmission 镜面反射
+分量（若存在），而非 SpecularReflect() 所使用的 SpecularReflection 分量。因此本书正文将不再赘述其实现
+细节。
+
+** pbrt的并行化
+
+如今几乎不可能买到仅配备单个处理核心的新款笔记本或台式电脑。（事实上，手机也同样如此。） 当今及未来的
+计算机系统将日益采用多处理器核心架构，无论是CPU还是GPU这类高度并行吞吐处理器皆是如此。与此同时，核心计
+算能力的提升却日渐缓慢；因此，唯有能够并行运行的程序——即通过多个独立执行线程在多核上同时进行计算——才能
+实现性能的显著提升。
+
+编写并行程序比编写串行程序更为困难。当程序员认为相互独立的两个计算任务同时执行时，若它们意外产生交互，
+程序可能崩溃或产生异常结果。然而，此类错误在程序再次运行时未必会重现——或许因为特定计算任务在下一次运行
+中并未同时执行。值得庆幸的是，越来越完善的工具正不断涌现，帮助开发者发现此类交互现象。
+
+要使并行程序在多处理器环境下实现良好扩展，它必须能够提供大量独立计算：任何依赖先前计算结果的操作都无法
+与其依赖的计算并行执行。值得庆幸的是，基于光线追踪的大多数渲染算法都具备丰富的并行性；以
+SamplerIntegrator为例，每个图像采样点都与其他采样点完全独立，而高质量图像可能需要数百万个采样点。
+
+并行光线追踪面临的最大挑战之一，在于非并行计算阶段的影响。例如，在场景构建过程中高效并行化构建大量加速
+结构的难度，远高于并行化渲染任务。虽然这看似次要问题，但描述含串行与并行阶段工作负载加速率的阿姆达尔定
+律揭示了其挑战性：当n个核心执行计算时，若工作负载中固有串行计算占比为s，则最大加速率为
+
+$$
+\frac{1}{s+\frac{1}{n}(1-s)}
+$$
+
+
+因此，即使拥有无限数量的处理核心，最大加速比也仅为1/s。例如，若程序中看似无足轻重的5%运行时间用于串行
+处理场景文件解析和加速结构构建，那么无论并行阶段执行得多快，其最大加速比也仅为1/0.05 = 20倍。
+
+*** 数据竞赛与协调
+
+在pbrt中，我们假设计算是在提供一致性共享内存的处理器上运行的。一致性共享内存的核心思想在于：所有线程均
+可读写同一组内存位置，且某线程对内存的修改最终会被其他线程感知。这些特性极大简化了系统实现，因为无需在
+核心间显式传递数据。（当前CPU普遍支持一致性共享内存，未来CPU也极可能延续这一特性。但需注意：若在集群中
+跨多台计算机进行计算，通常无法获得一致性共享内存支持。）
+
+尽管一致性共享内存消除了独立线程之间显式通信数据的需求，但它们仍需协调对共享数据的访问；一致性共享内存
+的隐患在于数据竞争。若两个线程在未协调的情况下同时修改同一内存位置，程序几乎必然会计算出错误结果甚至崩
+溃。考虑两个处理器同时运行以下看似无害的代码示例，其中全局计数器globalCounter初始值为二：
+
+#+begin_src c
+  extern int globalCounter;
+  if (--globalCounter == 0)
+    printf("done!\n");
+#+end_src
+
+由于两个线程未协调对全局计数器的读写操作，"done"可能被打印零次、一次甚至两次！编译器生成的汇编指令很可
+能对应如下步骤：
+
+#+begin_src c
+  extern int globalCounter;
+  int temp=globalCounter;
+  temp=temp-1;
+  if(globalCounter == 0)
+    print("done!\n");
+#+end_src
+
+现在，考虑这段代码在两个处理器上可能执行的不同方式。例如，第二个处理器可能在第一个处理器之后稍晚开始执
+行，但第一个处理器在执行前几条指令后可能会空闲几个时钟周期：
+
+Thread A
+
+#+begin_src c
+  int temp=globalCounter;
+  temp=temp-1;
+  globalCounter=temp;
+
+  //(idle)
+
+  if(globalCounter == 0)
+    printf("done!\n");
+#+end_src
+
+Thread B
+
+#+begin_src c
+  // (idle)
+
+  int temp=globalCounter;
+  temp=temp-1;
+  globalCounter=temp;
+  if(globalCounter==0)
+    printf("done!\n");
+#+end_src
+
+（许多不可预测的事件都可能引发此类执行气泡，从操作系统中断线程到缓存未命中皆有可能。）在此排序中，两个
+线程均从globalCounter读取零值，并执行printf()调用。此情况下的错误虽不致命，但若系统在if代码块中释放资
+源，则会尝试重复释放相同资源，极可能导致崩溃。现在考虑以下潜在执行顺序：
+
+Thread A
+
+#+begin_src c
+  int temp=globalCounter;
+  temp=temp-1;
+  globalCounter=temp;
+  //(idle)
+  if (globalCounter==0)
+    printf("done!\n");
+#+end_src
+
+Thread B
+
+#+begin_src c
+  int temp=globalCounter;
+  temp=temp-1;
+  //(idle)
+  globalCounter=temp;
+  if(globalCounter==0)
+    printf("done!\n");
+#+end_src
+
+在此情况下，globalCounter最终取值为1，且两个线程均未执行if代码块。这些示例说明了以下原则：当多个执行线
+程访问共享的可变数据时，必须通过某种方式同步其访问操作。
+
+目前实现此类同步主要有两种机制：互斥与原子操作。互斥机制在 pbrt 中通过 std::mutex 对象实现。std::mutex
+可用于保护资源访问，确保每次仅有一个线程能访问该资源。请看以下对先前计算的更新版本：此处通过
+std::lock_guard对象获取互斥锁，并在最后花括号作用域结束时释放锁。
+
+#+begin_src c
+  extern int globalCounter;
+  extern std::mutex globalCounterMutex;
+  {
+    std::lock_guard<std::mutex> lock(globalCounterMutex);
+    int temp=globalCounter;
+    temp=temp-1;
+    globalCounter=temp;
+    if(globalCounter==0)
+      printf("done!\n");
+  }
+#+end_src
+
+若两个线程同时执行此代码并尝试获取互斥锁，则互斥锁仅允许其中一个线程继续执行，另一个线程将在
+std::lock_guard 构造函数中被阻塞。只有当第一个线程完成计算且其 std::lock_guard 脱离作用域时，释放对互
+斥锁的锁定，第二个线程才能获取互斥锁并继续执行计算。
+
+Thread A
+
+#+begin_src c
+  {
+    std::lock_guard<std::mutex> lock(globalCounter);
+    int temp=globalCounter;
+    // ...
+  } // (mutex relased)
+#+end_src
+
+Thread B
+
+#+begin_src c
+  {
+    std::lock_guard<std::mutex> lock(globalCounterMutex);
+    // (stalled by mutex)
+
+    // (mutex acquired)
+    int temp=globalCounter;
+    // ...
+  } // (mutex relased)
+#+end_src
+
+在此处采用正确的互斥机制后，无论两个线程的执行顺序如何，printf() 函数都只会执行一次。
+
+原子内存操作（或称原子操作）是多线程环境下正确执行此类内存更新的另一种方案。原子操作是机器指令，能确保
+其对应的内存更新在单次事务中完成（此处"原子"指内存更新不可分割的特性）。pbrt中的原子操作实现源自C++11
+标准库，详见附录A.6.2。通过原子操作，上述计算可改用std::atomic<int>类型实现，该类型重载了加、减、递增
+和递减运算，具体如下：
+
+#+begin_src c
+  extern std::atomic<int> globalCounter;
+  if(--globalCounter==0)
+    printf("done!\n");
+#+end_src
+
+std::atomic -- 运算符对给定变量 globalCounter 减去 1，并返回该变量的先前值。使用原子操作可确保：当两个
+线程同时尝试更新该变量时，不仅变量的最终值将符合预期，每个线程还将仅获得其独立更新后的变量值。因此在此
+示例中，globalCounter 最终值将如预期为零：一个线程必然获得原子减法操作返回的值 1，另一个线程则必然获得
+返回值 0。
+
+另一种选项——事务性内存——在本文撰写时才刚开始在CPU中出现。事务性内存将一组内存写操作打包为事务：若事务
+执行期间没有其他线程访问这些内存位置，则所有写操作将通过单次原子操作提交。否则事务将回滚，所有写操作均
+不会写入内存，计算结果因此无效；此时必须重新尝试该事务。事务内存弥合了原子操作的精细粒度与互斥锁较高开
+销之间的差距。但由于尚未广泛普及，pbrt目前尚未采用事务内存技术。
+
+附录A的A.6节提供了更多关于并行编程的信息，其中包含性能问题和常见陷阱的详细说明，以及在pbrt并行实现中使
+用的各种例程。
+
+*** pbrt中的约定
+
+在pbrt中（与大多数光线追踪器类似），渲染时绝大多数数据均为只读（例如场景描述和纹理贴图）。场景文件的解
+析与内存中场景表示的创建几乎完全由单线程执行完成，因此该阶段不存在同步问题。在渲染过程中，多个线程对
+所有只读数据的并发读取均能正常工作；我们只需关注内存中数据被修改的情况。
+
+在向 pbrt 添加新代码时，务必确保不会无意中添加修改共享数据却未进行适当同步的代码。这通常很简单：例如，
+当添加新的 Shape 实现时，该 Shape 在创建后通常只会对其成员变量进行读取操作。但有时仍可能无意中引入共享
+数据。请考虑以下常见于单线程代码的惯用写法：
+
+#+begin_src c
+  static bool firstCall=true;
+  if(firstCall){
+    // additional initialization
+    firstCall=false;
+   }
+#+end_src
+
+该代码在多线程环境下存在安全隐患，因为多个线程可能同时看到 firstCall 的值为 true，从而导致所有线程都执
+行初始化代码。要安全地编写此代码，需要使用原子操作或互斥锁。（此特定编程模式也可通过 std::call_once()
+函数安全实现。）
+
+*** pbrt中的线程安全期望
+
+pbrt 中许多类方法必须确保在多个并发线程中安全执行。这些方法的具体实例必须天然安全——要么因不更新共享全
+局数据而安全，要么通过使用互斥锁或原子操作来安全地执行任何必要的更新。
+
+通常而言，系统中的低级类和结构体并不具备线程安全特性。例如，用于存储三个浮点数值以表示三维空间中点的
+Point3f类，就不支持多个线程同时调用修改其属性的方法。（当然，多个线程可同时将Point3f作为只读数据使用。）
+若为实现线程安全而增加运行时开销，将显著影响性能却收效甚微。
+
+同样的情况也适用于Vector3f、Normal3f、Spectrum、Transform、Quaternion和SurfaceInteraction等类。这些类
+通常要么在场景构造时创建并作为只读数据使用，要么在渲染期间分配在栈上且仅供单线程使用。
+
+实用类 MemoryArena（用于高性能临时内存分配）和 RNG（伪随机数生成）同样不适合多线程使用；这些类存储的状
+态会在方法调用时被修改，而通过互斥机制保护状态修改所产生的开销，相对于其计算量而言将过于庞大。因此，在
+上文 SamplerIntegrator::Render() 方法等场景中，实现方案会在栈上为每个线程分配这些类的实例。
+
+除两个例外情况外，表1.1所列的高级抽象基类的实现均应能安全地供多线程同时使用。只要稍加注意，通常就能轻
+松实现这些基类的具体实例，使其方法中不修改任何共享状态。
+
+首个例外是采样器积分器（SamplerIntegrator）和光预处理（Light Preprocess()）方法。这些方法在场景构建期
+间由系统调用，其实现通常会修改共享状态——例如构建表示场景中光照分布的数据结构。因此，允许实现者假设仅有
+单线程调用这些方法是有益的。（这与另一考量无关：当这些方法的实现涉及计算密集型操作时，可使用
+ParallelFor() 实现计算并行化。）
+
+pbrt 中所有独立函数均支持多线程安全（前提是多个线程不会向其传递指向相同数据的指针）。
+
+** 如何阅读本书
+
+我们撰写本书时，假设读者大致会按从前到后的顺序阅读。我们尽量减少对尚未介绍的概念和接口的超前引用，但假
+设读者在阅读任何段落时都已掌握前文内容。不过某些章节深入探讨了高级主题，部分读者可能希望跳过（尤其初次
+阅读时）；此类高级章节的标题均标有星号标识。
+
+由于系统的模块化特性，主要要求读者熟悉低级类（如Point3f、Ray和Spectrum）；表1.1中列出的抽象基类定义的
+接口；以及采样器积分器中的渲染循环SamplerIntegrator::Render()。基于此认知，例如对基于透视投影矩阵的相
+机模型如何将CameraSample映射为光线不感兴趣的读者，可跳过该相机的具体实现，只需记住
+Camera::GenerateRayDifferential()方法能将CameraSample转化为RayDifferential即可。
+
+本书其余部分分为四个主要章节，每章包含若干小节。首先，第2至4章定义了系统中的主要几何功能。第2章涵盖低
+级类，如Point3f、Ray和Bounds3f。第3章定义了Shape接口，提供了多种形状的实现方案，并展示了如何执行射线与
+形状的相交测试。第四章则实现了加速结构，通过跳过那些可确定不与射线相交的基元测试，从而加速射线追踪过程。
+
+第二部分涵盖成像过程。首先，第5章介绍了用于测量光的物理单位，以及表示波长变化分布（即颜色）的Spectrum
+类。第六章定义了相机接口并提供了若干相机实现方案。第七章探讨了将采样点放置于成像平面的采样器类，而第七
+节9则阐述了将胶片上的辐射度值转化为适于显示的图像的整体流程。
+
+本书第三部分探讨光线及其在表面和散射介质中的散射现象。第八章提供了一组基础构建类，用于定义表面反射的多
+种类型。第九章介绍的材质系统利用这些反射函数实现多种表面材质，如塑料、玻璃和金属。第十章引入纹理概念，
+用于描述材料属性（颜色、粗糙度等）在表面上的变化；第十一章则提供抽象模型，描述光线在参与介质中的散射与
+吸收机制。最后，第十二章包含光源接口及多种光源实现方案。
+
+最后一章将全书其他章节的理念融会贯通，实现了若干有趣的光传输算法。第13章介绍了蒙特卡罗积分理论——一种用
+于估算复杂积分值的统计技术，并描述了将蒙特卡罗方法应用于照明与光散射的底层程序。第14、15、16章中的积分
+器采用蒙特卡罗积分技术，通过路径追踪、双向路径追踪、大都会光传输和光子映射等方法，实现了比
+WhittedIntegrator更精确的光传输方程近似计算。
+
+第十七章作为本书的终章，简要回顾并探讨了系统设计决策，同时针对比练习题更具远见的项目提出若干建议。附录
+部分阐述了实用函数，并详细说明了在解析输入文件时场景描述的生成机制。
+
+** 使用与理解代码
+
+我们用C++编写了pbrt，但通过限制使用该语言的晦涩特性，着重提升了非C++专家的可读性。紧贴核心语言特性也有
+助于提升系统的可移植性。具体而言，我们避免了多重继承、运行时异常处理，以及过度使用C++11和C++14特性。同
+时，我们仅使用了C++庞大标准库中的一个小子集。
+
+本书将偶尔省略部分pbrt源代码的短段落。例如，当存在多个需处理的案例且代码几乎完全相同时，我们将展示其中
+一个案例，并注明其余案例的代码已在正文中省略。当然，所有省略的代码均可在pbrt源代码分发包中找到。
+
+
+*** 指针或引用
+
+C++ 提供了两种不同的机制，用于将数据结构的地址传递给函数或方法：指针和引用。如果函数参数并非作为输出变
+量使用，则两者皆可用于避免在栈上传递整个结构的开销。按惯例，当参数将被函数或方法完全修改时，pbrt使用指
+针；当部分内部状态被修改但不会完全重新初始化时，使用引用；当参数完全不被修改时，使用const引用。此规则
+的一个重要例外是：当需要通过传递nullptr来表示参数不可用或不应使用时，我们始终使用指针。
+
+*** 抽象性与效率
+
+在设计软件系统接口时，主要矛盾之一在于抽象与效率之间寻求合理的平衡。例如，许多程序员会严格遵循惯例，将
+所有类中的数据设为私有，并提供方法来获取或修改数据项的值。对于简单类（如Vector3f），我们认为这种做法不
+必要地隐藏了实现的基本属性——该类持有三个浮点坐标——而我们完全有理由认为这些属性永远不会改变。当然，完全
+不使用信息隐藏并暴露所有类的内部细节，会导致代码维护噩梦。然而我们认为，在系统中审慎地暴露基本设计决策
+并无不妥。例如，射线（Ray）通过点、向量以及表示其范围、时间和递归深度的数值来表示，这一设计决策无需隐
+藏在抽象层之后。当此类细节被暴露时，其他位置的代码会更简洁且更易理解。
+
+在编写软件系统并进行此类权衡时，需牢记系统预期最终规模这一关键因素。pbrt的核心部分（不包含具体形状、光
+源等的实现），即定义所有基础接口、抽象层和策略决策的部分，其代码行数不足20,000行。向系统添加新功能通常
+仅会增加各类抽象基类的实现代码量。pbrt绝不会膨胀至百万行代码规模——这一特性应当体现在系统采用的信息隐藏
+程度上。若为适应如此复杂的系统而设计接口，不仅是程序员时间的浪费，更可能导致运行时效率低下。
+
+*** 代码优化
+
+我们试图通过精心选择的算法而非局部微优化来提升pbrt的效率，从而使系统更易于理解。不过，对于占用最多执行
+时间的pbrt模块，只要不会导致代码过于晦涩，我们仍实施了局部优化。代码中主要遵循两条局部优化原则：
+
++ 在当前CPU架构中，最耗时的数学运算包括除法、开方和三角函数运算。加法、减法和乘法通常比这些运算快10到
+  50倍。减少耗时数学运算的次数能显著提升性能；例如，与其反复执行除以某个值v的操作，我们通常会预先计算
+  倒数1/v，然后直接与该值相乘。
++ CPU的速度持续增长，其增速已超过数据从主存储器加载至CPU的速度。这意味着等待从内存中获取值的过程可能成
+  为性能的主要瓶颈。通过优化算法和数据结构以充分利用内存缓存性能，其提升程序执行速度的效果远超单纯减少
+  指令执行总量。附录A的A.4节阐述了内存高效编程的通用原则；这些理念主要应用于第4章的光线交点加速结构和
+  第10.4.3节的图像贴图表示法，但其影响贯穿整个系统的诸多设计决策。
+
+
+*** 图书网站
+
+我们为本书创建了一个配套网站，网址为 pbrt.org。该网站包含系统的源代码、文档、使用 pbrt 渲染的图像、示
+例场景、勘误表以及指向错误报告系统的链接。我们鼓励您访问该网站并订阅 pbrt 邮件列表。
+
+*** 扩展系统
+
+撰写本书并构建pbrt系统的目标之一，就是让开发者和研究人员更轻松地尝试渲染领域的新（或旧！）创意。计算机
+图形学最令人欣喜之处，莫过于编写能生成新图像的软件；即使对系统进行微小改动，实验过程也充满乐趣。全书中
+的练习提供了大量系统改造方案，涵盖从细微调整到开放式研究项目的各类实践。附录B的B.4节详细说明了如何为表
+1.1所列抽象基类添加新实现方案。
+
+** 基于物理渲染简史
+
+在20世纪70年代计算机图形学的早期阶段，最关键的待解问题是可见性算法和几何表示等基础性课题。当时，1兆字
+节的内存堪称稀缺昂贵的奢侈品，而每秒能执行百万次浮点运算的计算机动辄价值数十万美元。受限于硬件性能，计
+算机图形学的实现复杂度极为有限，任何试图通过物理模拟实现精确渲染的尝试都难以实现。
+
+随着计算机性能不断提升且价格日益亲民，人们得以探索更复杂的渲染算法，这反过来又使基于物理原理的渲染技术
+成为可能。这一发展进程可由布林定律精辟阐释："随着技术进步，渲染时间保持不变。"
+
+吉姆·布林的简明论述揭示了一个关键制约因素：当需要渲染一定数量的图像时（无论是研究论文所需的寥寥数张，
+还是电影所需的十万余张），每张图像所能耗费的处理时间必然有限。既定的计算资源和渲染截止时间共同决定了每
+张图像的最大计算量必然受到限制。
+
+布林定律同样揭示了这样一个现象：人们期望呈现的图像与实际能够呈现的图像之间始终存在差距。随着计算机运算
+速度的提升，内容创作者并未满足于以更快的速度呈现相同场景，而是持续利用增强的计算能力，通过更精密的渲染
+算法来呈现更复杂的场景。渲染技术始终在消耗着所有可用的计算资源。
+
+*** 研究
+
+基于物理的渲染方法在20世纪80年代开始受到图形学研究者的认真关注。惠特（Whitted）在1980年的论文中提出利
+用光线追踪实现全局光照效果的构想，为精确模拟场景中的光线分布打开了大门。该方法生成的渲染图像与此前所见
+截然不同，由此引发了业界对此技术的热烈反响。
+
+物理渲染领域的另一项早期重要进展是库克与托伦斯提出的反射模型（1981年、1982年），该模型首次将微面反射理
+论引入图形学领域。其贡献之一在于证明：通过精确模拟微面反射，能够实现金属表面的真实渲染——而早期方法对此
+类材质的呈现效果并不理想。
+
+不久之后，Goral等人（1984）将热传递文献与渲染技术相联系，展示了如何通过基于物理的光传输近似方法实现全
+局漫反射照明效果。该方法基于有限元技术，场景中各表面区域通过能量交换实现交互。因其采用的物理量单位，该
+方法被命名为“辐射度”。随后Cohen与Greenberg（1985）以及Nishita与Nakamae（1985）的研究实现了重要突破。物
+理基础方法再度突破渲染图像的局限，呈现出前所未见的照明效果，由此激发众多研究者投身该领域的改进工作。
+
+尽管辐射度方法在物理单位和能量守恒方面具有坚实基础，但随着时间推移，人们逐渐意识到它无法衍生出可行的渲
+染算法：其渐近计算复杂度为难以掌控的$$ O(n^2)$$级，且为获得良好效果必须能在阴影边界处重新对几何模型进行细
+分。研究人员难以为此开发出稳健高效的细分算法，导致辐射度方法在实际应用中的普及受到限制。
+
+在辐射度渲染盛行的年代，一小群研究者致力于基于物理原理的渲染方法，这些方法以光线追踪和蒙特卡洛积分技术
+为基础。当时许多人对他们的研究持怀疑态度：蒙特卡洛积分产生的图像噪点似乎难以避免，而辐射度渲染方法却能
+迅速呈现视觉效果出色的结果——至少在相对简单的场景中如此。
+
+1984年，Cook、Porter和Carpenter提出了分布式光线追踪技术，该技术将Whitted算法推广应用于计算相机运动模糊
+与失焦模糊、高光表面模糊反射以及区域光源的照明效果（Cook等人，1984），由此证明光线追踪技术能够生成一系
+列重要的光照效果。
+
+不久之后，Kajiya（1986）提出了路径追踪技术；他为渲染问题（光传输积分方程）建立了严谨的数学模型，并展示
+了如何运用蒙特卡洛积分法求解该问题。这项工作需要大量的计算：用路径追踪渲染两个球体的256×256像素图像，
+在IBM 4341计算机上需要7个小时的计算，该计算机在最初发布时售价约为28万美元（Farmer 1981）。卡吉亚与冯·
+赫尔岑共同将体积渲染方程引入图形学领域（Kajiya and von Herzen 1984）；该方程精确描述了参与介质中的光散
+射现象。
+
+库克等人与梶谷的研究再次创造出前所未见的图像，彰显了基于物理原理方法的价值。此后数年间，阿尔沃与柯克
+（1990）及柯克与阿尔沃（1991）的论文阐述了蒙特卡洛方法在真实图像合成领域的重要进展。雪莉的博士论文
+（1990）及其后续研究（雪莉等人，1996）为基于蒙特卡罗的方法做出了重要贡献。霍尔的专著《计算机生成图像中
+的照明与色彩》（1989）是首批以物理基础框架阐述渲染技术的著作之一，而安德鲁·格拉斯纳的《数字图像合成原
+理》（1995）则为该领域奠定了严谨的理论基础。沃德的Radiance渲染系统是早期开源物理基础渲染系统，专注于光
+照设计（Ward 1994）；而斯卢萨莱克的Vision渲染器旨在弥合物理基础方法与当时广泛使用的非物理基础RenderMan
+接口之间的鸿沟（Slusallek 1996）。
+
+继托伦斯和库克的研究之后，康奈尔大学计算机图形学项目的大部分研究都致力于探索基于物理的渲染方法。格林伯
+格等人（1997）总结了这项工作的动机，他们有力论证了基于真实物体材料特性测量数据以及对人类视觉系统深刻理
+解的物理准确渲染方法的必要性。
+
+基于物理渲染的关键性突破来自维奇的研究工作，其详细内容见于他的博士论文（Veach 1997）。维奇不仅深化了蒙
+特卡罗渲染的核心理论基础，还开发了多重重要性采样、双向路径追踪和梅特罗波利斯光传输等新算法，极大提升了
+渲染效率。我们认为，这些效率的显著提升对蒙特卡罗渲染方法的实际应用至关重要，而布林光照法正是推动这一进
+步的重要指引。
+
+大约在这个时期，随着计算机速度的提升和并行能力的增强，许多研究者开始致力于实时光线追踪技术。沃尔德、斯
+卢萨莱克和本廷发表了一篇具有深远影响的论文，其中描述了一种高度优化的光线追踪器，其效率远超此前存在的追
+踪器（Wald et al. 2001b）。此后众多论文陆续提出效率更高的光线追踪算法。尽管这些研究大多未基于物理原理，
+但成果显著推动了光线追踪加速架构的发展，并提升了几何组件的运算性能。由于物理渲染通常大量依赖光线追踪技
+术，这些研究与计算机性能提升同样具有推动作用，使得采用物理渲染方法呈现更复杂场景成为可能。
+
+至此，我们结束对基于物理渲染研究进展关键步骤的概述；后续还有更多成果。本书后续各章的"延伸阅读"部分将详
+细介绍这些工作。
+
+*** 生产
+
+随着1980年代计算机性能的提升，计算机图形学开始应用于动画与电影制作。早期案例包括吉姆·布林1981年对"旅行
+者2号"飞越土星的渲染效果，以及电影《星际迷航II：可汗之怒》（1982）、《电子世界争霸战》（1982）和《末日
+战士》（1984）中的视觉特效。
+
+在计算机生成图像的早期商业应用中，基于光栅化的渲染技术（尤其是Reyes算法（Cook等人，1987年））是唯一可
+行的选择。其原因之一在于当时的计算能力尚不足以处理复杂反射模型或实现基于物理的光线追踪技术所能提供的全
+局光照效果。更重要的是，光栅化技术具有显著优势——它无需将整个场景表示完全加载到主内存中。
+
+当内存资源极为匮乏时，几乎所有精彩场景都因体积过大而无法装入主内存。基于光栅化的算法使渲染成为可能——在
+任何时刻，只需将完整场景表示的极小子集保存在内存中即可完成渲染。若整个场景无法装入主内存，全局光照效果
+便难以实现。在计算机系统性能受限的漫长岁月里，内容创作者们实际上认定：几何结构与纹理复杂度对视觉真实感
+的贡献，远高于光照复杂度（进而影响物理准确性）。
+
+当时许多从业者也认为基于物理的方案不适合实际制作：计算机图形学的一大优势在于能肆无忌惮地“欺骗”现实以实
+现理想的艺术效果。例如传统电影的灯光设计师常为隐藏光源而苦恼，或费尽心思布置灯光照亮演员却避免背景过亮。
+计算机图形学则提供了更直接的解决方案：例如通过光源模型，使角色获得的照明强度是背景物体的两倍。在很长一
+段时间里，这种能力似乎比物理准确性实用得多。
+
+视觉特效从业者因需将渲染图像与实拍真实环境匹配，率先开创了捕捉真实世界光照与阴影效果的技术，并在1990年
+代末至2000年代初成为物理基础渲染技术的早期采用者。（例如，关于工业光魔公司在此领域的早期工作历程，可参
+见Snow（2010）的研究。）
+
+在此期间，蓝天工作室在其发展初期便采用了基于物理的渲染流程（Ohmer 1997）。他们1992年为博朗剃须刀制作的
+广告因逼真效果引发广泛关注，而1998年上映的短片《兔子》则成为蒙特卡洛全局光照技术应用于商业制作的早期典
+范。其视觉风格与采用Reyes渲染技术的电影短片截然不同，引发业界广泛关注。蓝天工作室后续长片亦延续此技术
+路线。遗憾的是，该工作室从未公开其核心技术细节，导致其影响力未能更广泛传播。
+
+在21世纪初，mental ray光线追踪系统被多家工作室采用，主要用于视觉特效制作。它是一款高效的光线追踪器，实
+现了复杂的全局光照算法。其开发者主要专注于计算机辅助设计和产品设计应用领域，因此缺乏处理极端复杂场景和
+海量纹理贴图的能力——而这些正是影视制作所必需的功能。
+
+继《兔子》之后，2001年又迎来一个分水岭时刻：马科斯·法哈多带着他开发的Arnold渲染器的早期版本亮相
+SIGGRAPH大会。他在蒙特卡洛图像合成课程中展示的渲染图不仅包含复杂几何结构、纹理和全局光照，更令人惊叹的
+是这些效果仅需数十分钟即可完成渲染。尽管这些场景的复杂度尚不及当时电影制作的标准，但他的成果向众人展现
+了全局光照技术在复杂场景中蕴藏的无限创意可能。
+
+法哈多将阿诺德引入索尼影业影像工作室，团队开始将其改造为具备制作能力的基于物理的渲染系统。高效运动模糊、
+可编程着色、超复杂场景支持、场景几何体的延迟加载，以及纹理缓存技术（仅将场景中少量纹理保存在内存中）等
+关键领域均需重点攻克。阿诺德首次应用于电影《怪物屋》，现已作为成熟产品广泛上市。
+
+2000年代中期，皮克斯的RenderMan渲染器开始支持混合光栅化与光线追踪算法，并引入了多项创新算法，用于计算
+复杂场景中的全局光照解决方案。近期RenderMan经过重构，转型为基于物理的光线追踪器，其系统架构遵循了pbrt
+（Christensen 2015）的通用设计原则。
+
+基于物理的蒙特卡罗渲染方法之所以能在实际制作中取得成功，主要原因之一在于它们最终提升了艺术家的生产效率。
+其中一些重要因素包括：
+
+[[./images/yNH0uI.png]]
+
++ 涉及的算法本质上仅有一个质量调节旋钮：每个像素采样多少次；这对艺术家极具价值。光线追踪算法既适用于渐
+  进式精炼，也能通过每个像素仅采样几次快速计算粗略预览；基于光栅化的渲染器则不具备同等能力。
++ 采用基于物理的反射模型后，表面材质的设计变得更为简便。此前使用非能量守恒反射模型时，常将物体置于单一
+  照明环境中调整表面反射参数。该物体在该环境中可能效果极佳，但移至其他照明环境时往往完全失真——因表面实
+  际反射能量过少或过多，导致材质属性被设定为不合理数值。
++ 基于光线追踪计算的阴影质量远优于光栅化技术。无需再调整阴影贴图分辨率、偏移量等参数，彻底消除了灯光师
+  繁琐的工作环节。此外，基于物理的渲染方法能自然呈现反弹光照等柔光效果，这些特性源于技术本身的特性，而
+  非依赖艺术家手动调试的过程。
+
+截至本文撰写之时，基于物理的渲染技术已被广泛应用于电影计算机生成图像的制作；图1.22和图1.23展示了两部近
+期采用基于物理方法制作的电影画面。
+
+[[./images/LVLOaM.png]]
+
+** 延伸阅读
+
+在一篇开创性的早期论文中，Arthur Appel（1968）首次阐述了光线追踪的基本思想，用于解决多边形场景中的隐藏
+表面问题并计算阴影。Goldstein和Nagel（1971）随后展示了如何运用光线追踪技术渲染具有二次曲面场景。凯与格
+林伯格（1979）提出基于光线追踪的透明渲染方法，而惠特在《计算机协会通讯》发表的开创性论文则阐述了本章实
+现的通用递归光线追踪算法，该算法能精确模拟镜面表面的反射折射及点光源投射的阴影（惠特 1980）。赫克伯特
+（1987）率先探索了甜点的真实渲染技术。
+
+早期关于基于物理的渲染与图像合成的代表性著作包括：Cohen与Wallace的《辐射度与逼真图像合成》（1993）、
+Sillion与Puech的《辐射度与全局照明》（1994），以及Ashdown的《辐射度：程序员视角》（1994），这些著作主
+要阐述了有限元辐射度方法。
+
+在一篇关于光线追踪系统设计的论文中，柯克和阿尔沃（1988）提出了许多如今已成为渲染器设计经典原则的理念。
+他们的渲染器被实现为一个核心内核，该内核封装了基础渲染算法，并通过精心构建的面向对象接口与基本图形元素
+及着色程序进行交互。这种方法使得系统能够轻松扩展，支持新增基本图形元素和加速方法。pbrt的设计正是基于这
+些理念。
+
+关于光线追踪器设计的另一本优秀参考书是《光线追踪导论》（Glassner 1989a），该书阐述了当时光线追踪技术的
+最新进展，其中Heckbert撰写的一章概述了基础光线追踪器的设计方案。近期出版的《真实光线追踪》（Shirley
+and Morley, 2003）以通俗易懂的方式介绍了光线追踪技术，并附有基础光线追踪器的完整源代码。Suffern的著作
+（2007）同样提供了循序渐进的光线追踪入门指南。
+
+康奈尔大学的研究人员历经多年开发了一套渲染测试平台；其设计与整体架构由Trumbore、Lytle和Greenberg（1993）
+阐述。该平台的前身由Hall和Greenberg（1983）提出。该系统由松散耦合的模块与库组成，每个组件专司单一任务
+（如光线-物体相交加速、图像存储等），其编写方式便于灵活组合模块以探索和开发新型渲染算法。该测试平台成
+效卓著，成为康奈尔大学众多渲染研究的基础支撑。
+
+Radiance 是首个广泛应用的、基于物理量原理的开源渲染器。它专为建筑设计提供精确的光照模拟而设计。Ward 在
+论文及专著中阐述了其设计理念与发展历程（Ward 1994；Larson 和 Shakespeare 1998）。Radiance采用UNIX风格
+设计，由一组交互式程序构成，各程序分别处理渲染流程的不同环节。此类通用渲染架构最初由Duff（1985）提出。
+
+Glassner（1993）的Spectrum渲染架构同样侧重于基于物理的渲染，其方法是通过信号处理框架来解决该问题。该系
+统采用可扩展的插件架构构建；其使用参数/值列表初始化主要抽象接口实现的方式与Spectrum相似。Spectrum的一
+个显著特点在于：所有描述场景的参数均可作为时间的函数。
+
+Slusallek 和 Seidel（1995, 1996；Slusallek 1996）描述了 Vision 渲染系统，该系统同样基于物理原理，旨在
+支持多种光传输算法。尤其值得注意的是，它雄心勃勃地设定了同时支持蒙特卡洛和基于有限元的光传输算法的目标。
+
+许多论文描述了其他渲染系统的设计与实现，包括面向娱乐与艺术应用的渲染器。Reyes架构作为皮克斯RenderMan渲
+染器的基石，最初由Cook等人（1987）提出，其原始算法的诸多改进由Apodaca和Gritz（2000）进行了系统总结。
+Gritz和Hahn（1996）阐述了BMRT光线追踪器。Maya建模与动画系统的渲染器由Sung等人（1998）描述，而mental
+ray渲染器的部分内部结构则在Driemeyer和Herken关于其API的专著中有所论述（Driemeyer和Herken 2002）。
+Bigler等人（2006）阐述了高性能Manta交互式光线追踪器的设计方案。
+
+pbrt的源代码采用BSD许可证授权；这使得其他开发者能够以pbrt代码为基础开展工作。LuxRender（可从
+www.luxrender.net获取）是一款基于物理渲染器，其开发以pbrt为起点；该渲染器提供了多项附加功能，并配备了
+丰富的场景导出插件集，可与建模系统无缝对接。
+
+《光线追踪通讯》是由埃里克·海恩斯编纂的电子通讯，创刊于1987年，至今仍不定期发行。该刊物是获取光线追踪
+基础知识的优质资源，尤其在交叉加速方法、实现难题及行业诀窍方面提供了极具价值的探讨。近年来，ompf2.com
+论坛吸引了众多经验丰富的光线追踪开发者活跃其中。
+
+用于构建pbrt的面向对象方法使系统易于理解，但并非构建渲染系统的唯一途径。与面向对象方法形成重要对照的是
+面向数据的设计（DoD），这种编程方式尤其受到众多游戏开发者的推崇（对他们而言性能至关重要）。数据导向设
+计的核心理念在于：传统面向对象设计的诸多原则与高性能软件系统存在冲突，因其导致内存中数据布局的缓存效率
+低下。其倡导者主张应优先基于内存数据布局及程序对数据的转换方式来驱动系统设计。例如可参阅迈克·阿克顿在
+C++大会上的主题演讲（Acton 2014）。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
