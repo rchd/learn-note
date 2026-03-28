@@ -1575,9 +1575,2710 @@ www.luxrender.net获取）是一款基于物理渲染器，其开发以pbrt为�
 低下。其倡导者主张应优先基于内存数据布局及程序对数据的转换方式来驱动系统设计。例如可参阅迈克·阿克顿在
 C++大会上的主题演讲（Acton 2014）。
 
+* 几何与变换
+
+几乎所有非简单的图形程序都建立在几何类的基础之上。这些类表示点、向量和射线等数学构造。由于这些类在系统
+中无处不在，良好的抽象和高效的实现至关重要。本章介绍了pbrt几何基础的接口及其实现。请注意，这些类并非表
+示实际场景几何体（如三角形、球体等）的类；那些类是第3章的主题。
+
+本章中的几何类定义在pbrt发行版的core/geometry.h和core/geometry.cpp文件中，而变换矩阵（第2.7节）的实现
+则位于core/transform.h和core/transform.cpp文件中。
+
+** 坐标系
+
+与计算机图形学中的典型做法一致，pbrt使用三个坐标值x、y和z来表示三维空间中的点、向量和法向量。若没有坐
+标系来定义空间原点，并提供三个线性无关的向量来确定空间的x、y、z轴，这些数值便毫无意义。原点与这三个向
+量共同构成了定义坐标系的基准框架。在三维空间中，任意点或方向的(x, y, z)坐标值取决于其与坐标系的关系。
+图2.1通过二维示例阐释了这一原理。
+
+在一般的n维情况下，坐标系原点$$ p_o $$及其n个线性无关基向量共同定义了一个n维仿射空间。该空间中所有向量v均可表
+示为基向量的线性组合。给定向量v与基向量$$v_i$$，存在唯一的一组标量值$$s_i$$，使得
+
+$$ v=s_1v_1+ ... +s_nv_n$$
+
+[[./images/m13eqb.png]]
+
+标量si是向量v在基向量$$ \{v_1, v_2, ..., v_n\} $$上的表示形式，即我们与该向量一同存储的坐标值。同样地，对于所
+有点p，都存在唯一的标量$$ s_i $$，使得该点可通过原点$$ p_o$$和基向量表示。
+
+$$ p=p_o+s_1v_1+...+s_nv_n $$
+
+因此，尽管点和向量在三维空间中都由x、y、z坐标表示，但它们是不同的数学实体，不能随意互换。
+
+这种基于坐标系定义点与向量的方式揭示了一个悖论：定义坐标系需要一个点和一组向量，但我们只能在特定坐标系
+的参照下有意义地讨论点与向量。因此在三维空间中，我们需要一个标准坐标系：原点为(0,0,0)，基向量为(1,0,0)、
+(0,1,0)和(0,0,1)。所有其他坐标系都将基于这个规范坐标系定义，我们称之为世界空间。
+
+*** 坐标系手性
+
+三条坐标轴的排列方式有两种，如图2.2所示。当x轴与y轴相互垂直时，z轴可指向两个方向之一。这两种选择分别称
+为左旋和右旋。选择任一方向均属任意，但会影响系统中某些几何操作的实现方式。pbrt采用左旋坐标系。
+
+[[./images/2ALKvu.png]]
+
+** 向量
+
+pbrt 同时提供二维和三维向量类。这两类均通过底层向量元素的类型进行参数化，从而便于实例化整数型和浮点型
+向量。
+
+#+begin_export ascii
+  〈Vector Declarations〉 ≡
+     template <typename T> class Vector2 {
+       public:
+         〈Vector2 Public Methods〉
+         〈Vector2 Public Data 59〉
+     };
+#+end_export
+
+#+begin_export ascii
+  〈Vector Declarations〉 +≡
+    template <typename T> class Vector3 {
+       public:
+         〈Vector3 Public Methods 60〉
+         〈Vector3 Public Data 59〉
+    };
+#+end_export
+
+在以下内容中，我们将主要包含Vector3方法的实现；所有方法均存在Vector2对应版本，其实现差异较为直接。
+
+向量通过一组分量组成的元组来表示，这些分量分别对应于向量所在空间中x、y、z（三维空间）轴的坐标。三维向量v的各分量分别记作$$v_x$$、$$v_y$$和$$v_z$$。
+
+#+begin_export ascii
+  〈Vector2 Public Data〉 ≡
+    T x, y;
+
+  〈Vector3 Public Data〉 ≡
+    T x, y, z;
+#+end_export
+
+另一种实现方案是采用单一模板类，该类同样通过整数维度参数化，并使用包含相应数量T值的数组表示坐标。虽然
+此方法能减少总代码量，但无法像v.x那样直接访问向量中的单个分量。我们认为在此情况下，向量实现中增加少量
+代码是值得的，这样能换取更透明的元素访问方式。
+
+然而，某些例程确实需要能够轻松遍历向量中的元素；向量类还提供了一个C++运算符用于索引元素，因此对于给定
+的向量v，v[0] == v.x，依此类推。
+
+#+begin_export ascii
+  〈Vector3 Public Methods〉 ≡
+    T operator[](int i) const {
+      Assert(i >= 0 && i <= 2);
+      if (i == 0) return x;
+      if (i == 1) return y;
+      return z;
+    }
+    T &operator[](int i) {
+      Assert(i >= 0 && i <= 2);
+      if (i == 0) return x;
+      if (i == 1) return y;
+      return z;
+    }
+#+end_export
+
+为方便起见，若干常用类型的向量被赋予了typedef，以便在其他代码中使用更简洁的名称。
+
+#+begin_export ascii
+  〈Vector Declarations〉 +≡
+    typedef Vector2<Float> Vector2f;
+    typedef Vector2<int> Vector2i;
+    typedef Vector3<Float> Vector3f;
+    typedef Vector3<int> Vector3i;
+#+end_export
+
+接触过面向对象设计的读者可能会质疑我们让向量元素数据公开可访问的决定。通常情况下，数据成员仅在其类内部
+可访问，外部代码若需访问或修改类的内容，必须通过由选择器和修改器函数构成的明确API实现。虽然我们总体认
+同这一设计原则（详见第一章"延伸阅读"中关于数据导向设计的讨论），但在此场景中并不适用。选择器与变异器函
+数的本质是隐藏类的内部实现细节。对于向量而言，隐藏其设计中的基础部分既无实际意义，又会增加使用代码的冗
+余量。
+
+#+begin_export ascii
+  〈Vector3 Public Methods〉 +≡
+     Vector3() {
+       x = y = z = 0;
+     }
+     Vector3(T x, T y, T z) : x(x), y(y), z(z) {
+       Assert(!HasNaNs());
+     }
+#+end_export
+
+用于检查NaN的代码只是对x、y和z的每个分量调用std::isnan()函数。
+
+#+begin_export ascii
+  〈Vector3 Public Methods〉 +≡
+     bool HasNaNs() const {
+       return std::isnan(x) || std::isnan(y) || std::isnan(z);
+     }
+#+end_export
+
+向量的加减运算按分量逐项进行。向量加减法的常规几何解释如图2.3和图2.4所示。
+
+#+begin_export ascii
+  〈Vector3 Public Methods〉 +≡
+    Vector3<T> operator+(const Vector3<T> &v) const {
+      return Vector3(x + v.x, y + v.y, z + v.z);
+    }
+    Vector3<T>& operator+=(const Vector3<T> &v) {
+      x += v.x; y += v.y; z += v.z;
+      return *this;
+    }
+#+end_export
+
+两个向量相减的代码类似，因此在此不作展示。
+
+[[./images/WbveGT.png]]
+
+[[./images/ap3VpC.png]]
+
+向量可与标量进行分量相乘，从而改变其长度。为覆盖该运算在源代码中可能出现的全部写法（即 v*s、s*v 和 v
+*= s），需要实现三个函数：
+
+#+begin_export ascii
+    〈Vector3 Public Methods〉 +≡
+     Vector3<T> operator*(T s) const {
+        return Vector3<T>(s*x, s*y, s*z);
+     }
+     Vector3<T> &operator*=(T s) {
+       x *= s; y *= s; z *= s; return *this;
+     }
+     〈Geometry Inline Functions〉 ≡
+     template <typename T> inline Vector3<T> operator*(T s, const Vector3<T> &v) {
+       return v * s;
+     }
+#+end_export
+
+同样地，向量可以按分量与标量相除。标量除法的代码与标量乘法类似，不过标量除以向量的运算定义不明确，因此
+不被允许。
+
+在实现这些方法时，我们采用单次除法运算计算标量的倒数，随后执行三次分量级乘法运算。这是避免除法运算的实
+用技巧——在现代CPU上，除法运算通常比乘法运算慢得多。
+
+我们使用 Assert() 宏来确保提供的除数不为零；这种情况绝不应发生，若出现则表明系统其他位置存在错误。
+
+#+begin_export ascii
+  〈Vector3 Public Methods〉 +≡
+    Vector3<T> operator/(T f) const {
+      Assert(f != 0);
+      Float inv = (Float)1 / f;
+      return Vector3<T>(x * inv, y * inv, z * inv);
+    }
+    Vector3<T> &operator/=(T f) {
+      Assert(f != 0);
+      Float inv = (Float)1 / f;
+      x *= inv; y *= inv; z *= inv;
+      return *this;
+    }
+#+end_export
+
+Vector3 类还提供了一个一元取反运算符，该运算符返回一个指向原始向量相反方向的新向量：
+
+#+begin_export ascii
+  〈Vector3 Public Methods〉 +≡
+     Vector3<T> operator-() const { return Vector3<T>(-x, -y, -z); }
+#+end_export
+
+最后，Abs() 返回一个向量，其每个分量都经过了绝对值运算。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T> Vector3<T> Abs(const Vector3<T> &v) {
+      return Vector3<T>(std::abs(v.x), std::abs(v.y), std::abs(v.z));
+     }
+#+end_export
+
+*** 点积与叉积
+
+向量上有两种有用的运算：点积（也称为标量积或内积）和叉积。对于两个向量 v 和 w，它们的点积 (v · w) 定义
+为：
+
+$$ v_xw_x+v_yw_y+v_zw_z $$
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T> inline T Dot(const Vector3<T> &v1, const Vector3<T> &v2) {
+       return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
+     }
+#+end_export
+
+点积与两个向量之间的夹角存在简单的关系：
+
+$$ (v \cdot w)=\Vert v \Vert  \Vert w \Vert cos \theta $$
+
+其中θ为v与w之间的夹角，‖v‖表示向量v的长度。由此可知，当且仅当v与w相互垂直时，(v · w)为零——前提是v和w均
+非退化向量（即不为(0, 0, 0)）。两个或多个相互垂直的向量组称为正交向量组。若正交向量组的每个向量均为单
+位向量，则该组称为正交规范向量组。
+
+由式(2.1)可直接推得：若v和w为单位向量，则它们的点积等于两者夹角的余弦值。由于在渲染过程中常需计算两个
+向量夹角的余弦值，我们将频繁运用此性质。
+
+从定义中可直接推导出若干基本性质。例如，若u、v和w是向量，s是标量值，则：
+
+$$ (u \cdot v)=(v \cdot u) $$ 
+$$   (su \cdot v)=s(v \cdot u) $$
+
+$$ (u \cdot (v+w)) = (u \cdot v)+(u \cdot w) $$
+
+我们还经常需要计算点积的绝对值。AbsDot()函数可直接完成此操作，从而无需额外调用std::abs()函数。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> inline T AbsDot(const Vector3<T> &v1, const Vector3<T> &v2) {
+      return std::abs(Dot(v1, v2));
+    }
+#+end_export
+
+向量积是三维向量中另一项有用的运算。给定两个三维向量，其向量积v×w是一个与两者均垂直的向量。当v和w为正
+交向量时，v×w被定义为满足(v, w, v×w)构成坐标系的向量。
+
+叉积定义为：
+
+$$ (v \times w)_x=v_yw_z-v_zw_y $$
+$$(v \times w)_y=v_zw_x-v_xw_z $$
+$$ (v \times w)_z=v_xw_y-v_yw_x $$
+
+记住这个方法的一种方式是计算矩阵的行列式：
+
+
+$$
+
+\[
+\mathbf{v} \times \mathbf{w} =
+\begin{vmatrix}
+\mathbf{i} & \mathbf{j} & \mathbf{k} \\
+v_x & v_y & v_z \\
+w_x & w_y & w_z
+\end{vmatrix}
+\]
+
+$$
+
+其中i、j和k分别代表轴(1, 0, 0)、(0, 1, 0)和(0, 0, 1)。需注意此方程仅为记忆辅助工具，并非严谨的数学构造，
+因矩阵元素包含标量与向量混合。
+
+在此实现中，向量元素在Cross()函数中进行减法运算前会被转换为双精度类型（无论原始浮点数类型为何）。此处
+为32位浮点数采用额外精度，可防范灾难性消去错误——当两个数值非常接近时进行减法运算可能引发的浮点误差。这
+并非理论上的担忧：此变更实为修复先前由此问题引发的缺陷所必需。有关浮点舍入误差的更多信息，请参阅第3.9
+节。
+
+[[./images/y7plbD.png]]
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> inline Vector3<T> Cross(const Vector3<T> &v1, const Vector3<T> &v2) {
+      double v1x = v1.x, v1y = v1.y, v1z = v1.z;
+      double v2x = v2.x, v2y = v2.y, v2z = v2.z;
+      return Vector3<T>((v1y * v2z) - (v1z * v2y),
+         (v1z * v2x) - (v1x * v2z),
+         (v1x * v2y) - (v1y * v2x));
+    }
+#+end_export
+
+根据叉积的定义，我们可以推导出
+
+$$
+\Vert v \times w \Vert = \Vert v \Vert \Vert w \Vert sin\theta$$
+
+其中θ是v与w之间的夹角。这一个式子的重要推论是：两个垂直单位向量的叉积本身仍是单位向量。另需注意，若v与
+w平行，则叉积结果为退化向量。
+
+该定义还提供了一种计算平行四边形面积的便捷方法（图2.5）。若平行四边形的两条边由向量$$v_1$$和$$ v_2 $$表示，且其高
+为h，则面积由$$ \Vert v_1 \Vert h $$给出。由于$$ h =sin \theta \Vert v_2 \Vert $$，可利用式(2.2)得出面积为$$ \Vert v_1 \times v_2 \Vert $$。
+
+*** 规范化
+
+通常需要对向量进行归一化处理——即计算一个指向相同方向但长度为单位的新向量。归一化后的向量常被称为单位向
+量。本书采用的归一化向量记号是：$$ \hat{\mathbf{v}} $$ 表示向量 v 的归一化形式。要对向量进行归一化，首先需要能够计算其长度。
+
+#+begin_export ascii
+  〈Vector3 Public Methods〉 +≡
+    Float LengthSquared() const { return x * x + y * y + z * z; }
+    Float Length() const { return std::sqrt(LengthSquared()); }
+#+end_export
+
+Normalize() 对向量进行归一化处理。它将每个分量除以向量的长度 $$ \Vert v \Vert $$。该函数返回一个新向量，不会就地归一
+化原始向量：
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T> inline Vector3<T> Normalize(const Vector3<T> &v) { return v / v.Length(); }
+#+end_export
+
+*** 杂项操作
+
+在处理向量时，还有几个额外的操作方法很有用。MinComponent() 和 MaxComponent() 方法分别返回最小的和最大
+的坐标值。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> T MinComponent(const Vector3<T> &v) {
+      return std::min(v.x, std::min(v.y, v.z));
+    }
+    template <typename T> T MaxComponent(const Vector3<T> &v) {
+      return std::max(v.x, std::max(v.y, v.z));
+    }
+#+end_export
+
+相关地，MaxDimension() 返回具有最大值的组件的索引。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> int MaxDimension(const Vector3<T> &v) {
+      return (v.x > v.y) ? ((v.x > v.z) ? 0 : 2) : ((v.y > v.z) ? 1 : 2);
+    }
+#+end_export
+
+还支持按组件进行最小值和最大值运算。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> Vector3<T> Min(const Vector3<T> &p1, const Vector3<T> &p2) {
+      return Vector3<T>(std::min(p1.x, p2.x), std::min(p1.y, p2.y), std::min(p1.z, p2.z));
+    }
+    template <typename T> Vector3<T> Max(const Vector3<T> &p1, const Vector3<T> &p2) {
+      return Vector3<T>(std::max(p1.x, p2.x), std::max(p1.y, p2.y), std::max(p1.z, p2.z));
+    }
+#+end_export
+
+最后，Permute() 函数根据提供的索引值对坐标值进行排列。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T> Vector3<T> Permute(const Vector3<T> &v, int x, int y, int z) {
+       return Vector3<T>(v[x], v[y], v[z]);
+     }
+#+end_export
+
+*** 从向量构造坐标系
+
+在仅给定单个三维向量的情况下，我们常需构造局部坐标系。由于两个向量的叉积与两者均正交，可通过两次叉积运
+算获得坐标系所需的三组正交向量。需注意：此方法生成的两个向量仅在围绕给定向量旋转时具有唯一性。
+
+该函数的实现假设传入的向量 v1 已被归一化。它首先通过将原始向量的一个分量设为零、交换剩余两个分量并取其
+中一个的负值来构造一个垂直向量。通过分析两种情况可知：v2将被归一化，且点积(v1 · v2)必然为零。基于这两
+个相互垂直的向量，通过单次叉积即可得到第三个向量，根据定义该向量将与前两个向量相互垂直。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> inline void CoordinateSystem(const Vector3<T> &v1,
+             Vector3<T> *v2, Vector3<T> *v3) {
+               if (std::abs(v1.x) > std::abs(v1.y))
+                  *v2 = Vector3<T>(-v1.z, 0, v1.x) / std::sqrt(v1.x * v1.x + v1.z * v1.z);
+               else *v2 = Vector3<T>(0, v1.z, -v1.y) / std::sqrt(v1.y * v1.y + v1.z * v1.z);
+                  *v3 = Cross(v1, *v2);
+    }
+#+end_export
+
+** 点
+
+点是二维或三维空间中的零维位置。pbrt中的Point2和Point3类以显而易见的方式表示点：使用相对于坐标系的x、y、
+z（在3D中）坐标。尽管向量也采用相同的表示方式，但点代表位置而向量代表方向这一事实，导致它们在处理方式
+上存在若干重要差异。文本中用p表示点。
+
+在本节中，我们将延续此前的做法，仅在此处的Point3类中包含3D点方法的实现。
+
+#+begin_export ascii
+  〈Point Declarations〉 ≡
+     template <typename T> class Point2 {
+       public:
+       〈Point2 Public Methods 68〉
+       〈Point2 Public Data 68〉
+     };
+
+   〈Point Declarations〉 +≡
+      template <typename T> class Point3 {
+        public:
+          〈Point3 Public Methods 68〉
+          〈Point3 Public Data 68〉
+      };
+#+end_export
+
+与向量类似，为常用点类型采用更短的类型名称会很有帮助。
+
+#+begin_export ascii
+  〈Point Declarations〉 +≡
+    typedef Point2<Float> Point2f;
+    typedef Point2<int> Point2i;
+    typedef Point3<Float> Point3f;
+    typedef Point3<int> Point3i;
+    
+   〈Point2 Public Data〉 ≡
+      T x, y;
+   〈Point3 Public Data〉 ≡
+      T x, y, z;
+#+end_export
+
+与向量类似，Point3构造函数也接受参数来设置x、y和z坐标值。
+
+#+begin_export ascii
+  〈Point3 Public Methods〉 ≡
+     Point3() { x = y = z = 0; }
+     Point3(T x, T y, T z) : x(x), y(y), z(z) {
+       Assert(!HasNaNs());
+     }
+#+end_export
+
+将Point3转换为Point2时，可通过舍弃z坐标实现。执行此转换的构造函数带有显式限定符，确保必须显式强制类型
+转换才能进行转换，避免意外发生。
+
+#+begin_export ascii
+  〈Point2 Public Methods〉 ≡
+    explicit Point2(const Point3<T> &p) : x(p.x), y(p.y) {
+      Assert(!HasNaNs());
+    }
+#+end_export
+
+能够将一种元素类型的点（例如Point3f）转换为另一种元素类型的点（例如Point3i），以及将点转换为具有不同底
+层元素类型的向量，同样非常有用。以下构造函数和转换运算符提供了这些转换功能。两者均需要显式强制转换，以
+便在源代码中明确标识其使用场景。
+
+[[./images/OU7N1t.png]]
+
+#+begin_export ascii
+  〈Point3 Public Methods〉 +≡
+    template <typename U>
+    explicit Point3(const Point3<U> &p) : x((T)p.x), y((T)p.y), z((T)p.z) {
+      Assert(!HasNaNs());
+    }
+    template <typename U> explicit operator Vector3<U>() const {
+      return Vector3<U>(x, y, z);
+    }
+#+end_export
+
+某些Point3方法会返回或接收Vector3对象。例如，可将向量添加至点，使其沿指定方向偏移以获得新点。
+
+#+begin_export ascii
+  〈Point3 Public Methods〉 +≡
+    Point3<T> operator+(const Vector3<T> &v) const {
+      return Point3<T>(x + v.x, y + v.y, z + v.z);
+    }
+    Point3<T> &operator+=(const Vector3<T> &v) {
+      x += v.x; y += v.y; z += v.z; return *this;
+    }
+#+end_export
+
+或者，也可以将一个点减去另一个点，从而得到两点之间的向量，如图2.6所示。
+
+#+begin_export ascii
+  〈Point3 Public Methods〉 +≡
+    Vector3<T> operator-(const Point3<T> &p) const {
+      return Vector3<T>(x - p.x, y - p.y, z - p.z);
+    }
+    Point3<T> operator-(const Vector3<T> &v) const {
+      return Point3<T>(x - v.x, y - v.y, z - v.z);
+    }
+#+end_export
+
+从一点减去一个向量得到一个新点。
+
+#+begin_export ascii
+  〈Point3 Public Methods〉 +≡
+    Point3<T> &operator-=(const Vector3<T> &v) {
+      x -= v.x; y -= v.y; z -= v.z;
+      return *this;
+    }
+#+end_export
+
+两点之间的距离可通过相减计算它们之间的向量，然后求该向量的长度来获得：
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> inline Float Distance(const Point3<T> &p1, const Point3<T> &p2) {
+      return (p1 - p2).Length();
+    }
+    template <typename T> inline Float DistanceSquared(const Point3<T> &p1, const Point3<T> &p2) {
+      return (p1 - p2).LengthSquared();
+    }
+#+end_export
+
+尽管从数学角度而言，用标量对点进行加权或将两个点相加通常没有意义，但点类仍允许执行这些操作，以便能够计
+算点的加权和——只要所用权重的总和为1，这种计算在数学上就具有意义。点与标量相乘及点与点相加的代码与向量
+对应的代码完全相同，因此在此不再赘述。
+
+顺带一提，能够在线性插值两个点之间进行插值是很实用的。Lerp() 在 t==0 时返回 p0，在 t==1 时返回 p1，并
+在其他 t 值处进行线性插值。对于 t<0 或 t>1 的情况，Lerp() 会进行外推。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> Point3<T> Lerp(Float t, const Point3<T> &p0, const Point3<T> &p1) {
+      return (1 - t) * p0 + t * p1;
+    }
+#+end_export
+
+Min() 和 Max() 函数返回表示两个给定点在分量方向上的最小值和最大值的点。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T> Point3<T> Min(const Point3<T> &p1, const Point3<T> &p2) {
+       return Point3<T>(std::min(p1.x, p2.x), std::min(p1.y, p2.y), std::min(p1.z, p2.z));
+     }
+     template <typename T> Point3<T> Max(const Point3<T> &p1, const Point3<T> &p2) {
+       return Point3<T>(std::max(p1.x, p2.x), std::max(p1.y, p2.y), std::max(p1.z, p2.z));
+     }
+#+end_export
+
+Floor()、Ceil() 和 Abs() 函数将对应的运算按分量形式应用于给定点。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> Point3<T> Floor(const Point3<T> &p) {
+      return Point3<T>(std::floor(p.x), std::floor(p.y), std::floor(p.z));
+    }
+    template <typename T> Point3<T> Ceil(const Point3<T> &p) {
+      return Point3<T>(std::ceil(p.x), std::ceil(p.y), std::ceil(p.z));
+    }
+    template <typename T> Point3<T> Abs(const Point3<T> &p) {
+      return Point3<T>(std::abs(p.x), std::abs(p.y), std::abs(p.z));
+    }
+#+end_export
+
+最后，Permute() 函数根据给定的排列规则对坐标值进行置换。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> Point3<T> Permute(const Point3<T> &p, int x, int y, int z) {
+      return Point3<T>(p[x], p[y], p[z]);
+    }
+#+end_export
+
+** 法线
+
+表面法线（或简称法线）是在特定位置与表面垂直的向量。它可定义为任意两个在某点切向于该表面的非平行向量之
+间的叉积。尽管法向量与普通向量表面上相似，但区分二者至关重要：由于法向量是通过其与特定曲面的关系定义的，
+因此在某些情况下（尤其是在应用变换时）其行为与普通向量不同。这种差异将在第2.8节中讨论。
+
+#+begin_export ascii
+  〈Normal Declarations〉 ≡
+    template <typename T> class Normal3 {
+      public:
+        〈Normal3 Public Methods 72〉
+        〈Normal3 Public Data〉
+    };
+   〈Normal Declarations〉 +≡
+      typedef Normal3<Float> Normal3f;
+#+end_export
+
+法线向量（Normal3）与向量（Vector3）的实现非常相似。如同向量，法线由三个分量x、y、z表示；它们可通过加
+减运算生成新法线；并支持缩放与归一化操作。但需注意：法线不能与点相加，两个法线之间也不能进行叉积运算。
+值得一提的是，术语上存在一个不甚理想的表述——法线并不必然经过归一化处理。
+
+Normal3提供了一个额外的构造函数，用于从Vector3初始化Normal3。由于Normal3和Vector3在细节上存在差异，我
+们需要确保在非预期情况下不会发生这种转换，因此在此再次使用了C++的explicit关键字。Vector3也提供了反向转
+换的构造函数。因此，若声明为Vector3f v; 和 Normal3f n;，则赋值语句n = v将被视为非法操作，必须显式转换
+向量，如n = Normal3f(v)。
+
+#+begin_export ascii
+  〈Normal3 Public Methods〉 ≡
+    explicit Normal3<T>(const Vector3<T> &v) : x(v.x), y(v.y), z(v.z) {
+      Assert(!v.HasNaNs());
+    }
+   〈Geometry Inline Functions〉 +≡
+    template <typename T> inline Vector3<T>::Vector3(const Normal3<T> &n) : x(n.x), y(n.y), z(n.z) {
+        Assert(!n.HasNaNs());
+    }
+#+end_export
+
+Dot()和AbsDot()函数也进行了重载，用于计算法线与向量之间各种可能组合的点积。此处不赘述相关代码。此外，
+本文也不详述Normal3类中其他各种方法的实现，因其与向量相关方法的实现逻辑相似。
+
+需要实现的一个新操作源于以下需求：常需翻转表面法线使其与给定向量处于同一半球——例如，经常需要使表面法线
+与射出光线处于同一半球。Faceforward() 实用函数封装了这一小型计算。（pbrt还提供了该函数的变体版本，支持
+将三个向量与三个法向量的其他三种组合作为参数。）但使用其他版本时需谨慎：例如使用接受两个向量参数的版本
+时，务必确保第一个参数是需要返回（可能需要翻转）的向量，第二个参数是用于测试的向量。若将两个参数顺序颠
+倒，将导致结果异常。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> inline Normal3<T> Faceforward(const Normal3<T> &n, const Vector3<T> &v) {
+      return (Dot(n, v) < 0.f) ? -n : n;
+    }
+#+end_export
+
+
+** 光线
+
+射线是由其起点和方向定义的半无限直线。pbrt表示一种射线，其起点为Point3f类型，方向为Vector3f类型。由于
+我们仅需浮点数类型的起点和方向，因此Ray并非像点、向量和法线那样采用任意类型参数化的模板类。射线用字母
+r 表示，其起点为 o，方向为 d，如图 2.7 所示。
+
+[[./images/oCjGqN.png]]
+
+#+begin_export ascii
+  〈Ray Declarations〉 ≡
+    class Ray {
+      public:
+        〈Ray Public Methods 74〉
+        〈Ray Public Data 73〉
+    };
+#+end_export
+
+由于在代码中会频繁引用这些变量，射线（Ray）的原点和方向成员被简洁地命名为o和d。请注意，为方便起见，我
+们再次将数据设为公开访问。
+
+#+begin_export ascii
+  〈Ray Public Data〉 ≡
+    Point3f o;
+    Vector3f d;
+#+end_export
+
+光线的参数形式将其表示为标量值t的函数，从而给出光线穿过的点集：
+
+$$ r(t)=o+t\mathbf{d}\quad 0<t<\infty $$
+
+射线还包含一个成员变量，用于将射线限制在其无限延伸范围内的某个区间段。该字段 tMax 允许我们将射线限制在
+点序列$$ [o, r(t_{max})]$$ 构成的区间段内。
+
+请注意该字段被声明为可变类型，这意味着即使包含它的射线为const类型，其值仍可被修改——因此当射线作为const
+Ray &参数传递给方法时，该方法不得修改其起点或方向，但可修改其范围。此约定契合系统中最常见的射线应用场
+景之一：作为射线-物体相交测试例程的参数，这些例程会将最近相交点的偏移量记录在tMax中。
+
+#+begin_export ascii
+  〈Ray Public Data〉 +≡
+    mutable Float tMax;
+#+end_export
+
+每条光线都关联着一个时间值。在包含动画对象的场景中，渲染系统会为每条光线构建其对应时间点下的场景表示。
+
+#+begin_export ascii
+  〈Ray Public Data〉 +≡
+    Float time;
+#+end_export
+
+最后，每条光线都会记录其起源所在的介质。介质类（详见第11.3节）封装了介质的属性（可能随空间变化），例如
+雾霾大气、烟雾，或是牛奶、洗发水等散射液体。将这些信息与光线关联起来，使得系统其他部分能够正确处理光线
+在不同介质间穿透时产生的效应。
+
+#+begin_export ascii
+  〈Ray Public Data〉 +≡
+    const Medium *medium;
+#+end_export
+
+构建射线的过程相当简单。默认构造函数依赖于Point3f和Vector3f构造函数，将原点和方向设置为(0, 0, 0)。此外，
+也可以提供特定的起点和方向。若同时指定原点和方向，构造函数允许为tMax参数赋值，该参数代表射线传播的时间
+和介质。
+
+#+begin_export ascii
+  〈Ray Public Methods〉 ≡
+    Ray() : tMax(Infinity), time(0.f), medium(nullptr) { }
+    Ray(const Point3f &o, const Vector3f &d, Float tMax = Infinity, Float time = 0.f,
+        const Medium *medium = nullptr) : o(o), d(d), tMax(tMax), time(time), medium(medium) { }
+#+end_export
+
+由于射线上的位置可视为单参数 t 的函数，Ray 类为射线重载了函数应用运算符。这样，当我们需要查找射线上特
+定位置的点时，可以编写如下代码：
+
+#+begin_export ascii
+  Ray r(Point3f(0, 0, 0), Vector3f(1, 2, 3));
+  Point3f p = r(1.7);
+#+end_export
+
+#+begin_export ascii
+  〈Ray Public Methods〉 +≡
+    Point3f operator()(Float t) const { return o + d * t; }
+#+end_export
+
+*** 射线差分
+
+为了能够更好地利用第10章定义的纹理函数进行抗锯齿处理，pbrt可以在光线追踪过程中记录一些额外信息。在第
+10.1节中，这些信息将用于计算纹理类所需的参数，从而估算场景局部区域在图像平面上的投影面积。基于此，纹理
+类可计算该区域的纹理平均值，最终生成更高质量的图像。
+
+RayDifferential 是 Ray 的子类，包含关于两条辅助射线的额外信息。这些额外射线代表相机射线在胶片平面上相
+对于主射线沿 x 和 y 方向偏移一个采样点的射线。通过确定这三条射线在被着色物体上投射的区域，纹理可以估算
+出用于正确抗锯齿的平均区域。
+
+由于RayDifferential类继承自Ray类，系统中的几何接口可设计为接受const Ray &参数，从而既能接收Ray也能接收
+RayDifferential对象。仅需处理抗锯齿和纹理映射的程序才需要RayDifferential参数。
+
+#+begin_export ascii
+  〈Ray Declarations〉 +≡
+    class RayDifferential : public Ray {
+      public:
+        〈RayDifferential Public Methods 75〉
+        〈RayDifferential Public Data 75〉
+    };
+#+end_export
+
+RayDifferential 的构造函数与 Ray 的构造函数完全一致。
+
+#+begin_export ascii
+  〈RayDifferential Public Methods〉 ≡
+    RayDifferential() { hasDifferentials = false; }
+    RayDifferential(const Point3f &o, const Vector3f &d, Float tMax = Infinity,
+           Float time = 0.f, const Medium *medium = nullptr) : Ray(o, d, tMax, time, medium) {
+       hasDifferentials = false;
+    }
+#+end_export
+
+#+begin_export ascii
+  〈RayDifferential Public Data〉 ≡
+    bool hasDifferentials;
+    Point3f rxOrigin, ryOrigin;
+    Vector3f rxDirection, ryDirection;
+#+end_export
+
+存在一个构造函数用于从射线创建射线差分。该构造函数初始化时将hasDifferentials设为false，因为此时尚未知
+晓邻近射线（若存在）。
+
+#+begin_export ascii
+  〈RayDifferential Public Methods〉 +≡
+    RayDifferential(const Ray &ray) : Ray(ray) { hasDifferentials = false; }
+#+end_export
+
+在pbrt中，相机实现通过假设相机射线间隔为一个像素来计算射出相机的射线微分。诸如采样积分器
+（SamplerIntegrator）等积分器可为每个像素生成多条相机射线，此时样本间的实际距离更小。第一章中遇到的片
+段〈为当前样本生成相机射线〉调用了下文定义的ScaleDifferentials()方法，以更新估计样本间距s的微分射线。
+
+#+begin_export ascii
+  〈RayDifferential Public Methods〉 +≡
+    void ScaleDifferentials(Float s) {
+      rxOrigin = o + (rxOrigin - o) * s;
+      ryOrigin = o + (ryOrigin - o) * s;
+      rxDirection = d + (rxDirection - d) * s;
+      ryDirection = d + (ryDirection - d) * s;
+    }
+#+end_export
+
+** 边界框
+
+系统中的许多部分都在轴向对齐的空间区域上运行。例如，pbrt中的多线程通过将图像划分为可独立处理的矩形瓦片
+来实现，而第4.3节中的边界体层次结构则使用三维盒子来限定场景中的几何基元。Bounds2与Bounds3模板类用于表
+示此类区域的范围。两者均通过类型T进行参数化，该类型用于表示其边界的坐标。
+
+#+begin_export ascii
+  〈Bounds Declarations〉 ≡
+    template <typename T> class Bounds2 {
+      public:
+        〈Bounds2 Public Methods〉
+        〈Bounds2 Public Data〉
+    };
+#+end_export
+
+#+begin_export ascii
+  〈Bounds Declarations〉 +≡
+    template <typename T> class Bounds3 {
+      public:
+        〈Bounds3 Public Methods 76〉
+        〈Bounds3 Public Data 77〉
+    };
+#+end_export
+
+#+begin_export ascii
+  〈Bounds Declarations〉 +≡
+    typedef Bounds2<Float> Bounds2f;
+    typedef Bounds2<int> Bounds2i;
+    typedef Bounds3<Float> Bounds3f;
+    typedef Bounds3<int> Bounds3i;
+#+end_export
+
+此类边界框有多种可能的表示方式；pbrt采用轴对齐边界框（AABB），其边界相互垂直且与坐标系轴对齐。另一种选
+择是定向边界框（OBB），不同侧面的边界仍相互垂直，但不一定与坐标系对齐。三维AABB可通过其一个顶点和三个
+长度来描述，每个长度分别代表沿x、y、z坐标轴延伸的距离。或者，也可用框体的两个对角顶点来描述。我们为
+pbrt的Bounds2和Bounds3类选择了两点表示法：它们分别存储最小坐标值顶点与最大坐标值顶点的位置。图2.8展示
+了包围框及其表示法的二维示意图。
+
+默认构造函数通过将范围设置为无效配置来创建空盒子，这违反了 pMin.x <= pMax.x 的不变性（其他维度亦然）。
+通过用可表示的最大数和最小数初始化两个角点，任何涉及空盒子的操作（如 Union()）都将产生正确结果。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 ≡
+    Bounds3() {
+      T minNum = std::numeric_limits<T>::lowest();
+      T maxNum = std::numeric_limits<T>::max();
+      pMin = Point3<T>(maxNum, maxNum, maxNum);
+      pMax = Point3<T>(minNum, minNum, minNum);
+    }
+#+end_export
+
+[[./images/GSsP9i.png]]
+
+#+begin_export ascii
+  〈Bounds3 Public Data〉 ≡
+     Point3<T> pMin, pMax;
+#+end_export
+
+能够初始化一个Bounds3对象以包围单个点也是很有用的：
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+     Bounds3(const Point3<T> &p) : pMin(p), pMax(p) { }
+#+end_export
+
+若调用方传递两个角点（p1 和 p2）来定义矩形框，构造函数需要计算它们的分量最小值与最大值，因为 p1 和 p2
+的选择未必满足 p1.x <= p2.x 等条件。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+    Bounds3(const Point3<T> &p1, const Point3<T> &p2)
+      : pMin(std::min(p1.x, p2.x), std::min(p1.y, p2.y),
+             std::min(p1.z, p2.z)), pMax(std::max(p1.x, p2.x),
+             std::max(p1.y, p2.y), std::max(p1.z, p2.z)) {
+
+      }
+#+end_export
+
+在某些情况下，使用数组索引在矩形两端点之间进行选择也颇为实用。这些方法的实现会根据i的值在pMin和pMax之
+间进行选择。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+     const Point3<T> &operator[](int i) const;
+     Point3<T> &operator[](int i);
+#+end_export
+
+Corner() 方法返回边界框八个角点之一的坐标。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+     Point3<T> Corner(int corner) const {
+       return Point3<T>((*this)[(corner & 1)].x,
+                        (*this)[(corner & 2) ? 1 : 0].y,
+                        (*this)[(corner & 4) ? 1 : 0].z);
+     }
+#+end_export
+
+给定一个边界框和一个点，Union() 函数返回一个新的边界框，该框同时包含该点和原始边界框。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T> Bounds3 <T>
+     Union(const Bounds3<T> &b, const Point3<T> &p) {
+       return Bounds3<T>(Point3<T>(std::min(b.pMin.x, p.x),
+                                   std::min(b.pMin.y, p.y),
+                                   std::min(b.pMin.z, p.z)),
+                         Point3<T>(std::max(b.pMax.x, p.x),
+                                   std::max(b.pMax.y, p.y),
+                                   std::max(b.pMax.z, p.z)));
+     }
+#+end_export
+
+同样地，也可以构造一个新边界框，使其包含另外两个边界框所包围的空间。该函数的定义与之前接受Point3f参数
+的Union()方法类似，区别在于第二个边界框的pMin和pMax值分别用于std::min()和std::max()的测试。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡  template <typename T>
+     Bounds3 <T> Union(const Bounds3<T> &b, const Point3<T> &p) {
+       return Bounds3<T>(Point3<T>(std::min(b.pMin.x, p.x),
+                                   std::min(b.pMin.y, p.y), std::min(b.pMin.z, p.z)),
+                         Point3<T>(std::max(b.pMax.x, p.x), std::max(b.pMax.y, p.y),
+                                   std::max(b.pMax.z, p.z)));
+     }
+#+end_export
+
+两个边界框的交点可通过计算其各自最小坐标的最大值与最大坐标的最小值来确定。（见图2.9。）
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T> Bounds3<T>
+        Intersect(const Bounds3<T> &b1, const Bounds3<T> &b2) {
+           return Bounds3<T>(Point3<T>(std::max(b1.pMin.x, b2.pMin.x),
+                                       std::max(b1.pMin.y, b2.pMin.y),
+                                       std::max(b1.pMin.z, b2.pMin.z)),
+                             Point3<T>(std::min(b1.pMax.x, b2.pMax.x),
+                                       std::min(b1.pMax.y, b2.pMax.y),
+                                       std::min(b1.pMax.z, b2.pMax.z)));
+    }
+#+end_export
+
+[[./images/JAuUTv.png]]
+
+我们能够通过检查两个边界框在x、y和z方向上的范围是否完全重叠，来判断它们是否存在重叠：
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T>
+    bool Overlaps(const Bounds3<T> &b1, const Bounds3<T> &b2) {
+      bool x = (b1.pMax.x >= b2.pMin.x) && (b1.pMin.x <= b2.pMax.x);
+      bool y = (b1.pMax.y >= b2.pMin.y) && (b1.pMin.y <= b2.pMax.y);
+      bool z = (b1.pMax.z >= b2.pMin.z) && (b1.pMin.z <= b2.pMax.z);
+      return (x && y && z);
+    }
+#+end_export
+
+三个一维容纳测试用于判断给定点是否位于边界框内：
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+    template <typename T> bool Inside(const Point3<T> &p, const Bounds3<T> &b) {
+      return (p.x >= b.pMin.x && p.x <= b.pMax.x &&
+              p.y >= b.pMin.y && p.y <= b.pMax.y &&
+              p.z >= b.pMin.z && p.z <= b.pMax.z);
+    }
+#+end_export
+
+Inside() 的 InsideExclusive() 变体不将上边界上的点视为边界内部。该变体主要适用于整数类型的边界。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T>
+     bool InsideExclusive(const Point3<T> &p, const Bounds3<T> &b) {
+       return (p.x >= b.pMin.x && p.x < b.pMax.x &&
+               p.y >= b.pMin.y && p.y < b.pMax.y &&
+               p.z >= b.pMin.z && p.z < b.pMax.z);
+     }
+#+end_export
+
+Expand() 函数将边界框在两个维度上均按常数因子进行填充。
+
+#+begin_export ascii
+  〈Geometry Inline Functions〉 +≡
+     template <typename T, typename U>inline Bounds3<T>
+     Expand(const Bounds3<T> &b, U delta) {
+        return Bounds3<T>(b.pMin - Vector3<T>(delta, delta, delta),
+                          b.pMax + Vector3<T>(delta, delta, delta));
+     }
+#+end_export
+
+Diagonal() 返回从最小点到最大点沿盒子对角线方向的向量。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+    Vector3<T> Diagonal() const { return pMax - pMin; }
+#+end_export
+
+计算盒子六个面面积及其内部体积的方法也常被广泛应用。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+     T SurfaceArea() const {
+       Vector3<T> d = Diagonal();
+       return 2 * (d.x * d.y + d.x * d.z + d.y * d.z);
+     }
+     
+   〈Bounds3 Public Methods〉 +≡
+     T Volume() const {
+       Vector3<T> d = Diagonal(); return d.x * d.y * d.z;
+     }
+#+end_export
+
+Bounds3::MaximumExtent() 方法返回三条轴线中最长轴线的索引。例如，在构建某些射线相交加速结构时，该方法
+可用于决定应沿哪条轴线进行细分。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+     int MaximumExtent() const {
+       Vector3<T> d = Diagonal();
+       if (d.x > d.y && d.x > d.z)
+         return 0;
+       else if (d.y > d.z)
+         return 1;
+       else
+         return 2;
+     }
+#+end_export
+
+Lerp()方法在每个维度上按给定量值对盒子的四个角进行线性插值。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+  Point3<T> Lerp(const Point3f &t) const {
+    return Point3<T>(::Lerp(t.x, pMin.x, pMax.x),
+                     ::Lerp(t.y, pMin.y, pMax.y),
+                     ::Lerp(t.z, pMin.z, pMax.z));
+  }
+#+end_export
+
+Offset() 返回相对于框角点的连续位置，其中位于最小角点的偏移量为 (0, 0, 0)，位于最大角点的偏移量为 (1,
+1, 1)，依此类推。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+     Vector3<T> Offset(const Point3<T> &p) const {
+       Vector3<T> o = p - pMin;
+       if (pMax.x > pMin.x)
+         o.x /= pMax.x - pMin.x;
+       if (pMax.y > pMin.y)
+         o.y /= pMax.y - pMin.y;
+       if (pMax.z > pMin.z)
+         o.z /= pMax.z - pMin.z;
+       return o;
+     }
+#+end_export
+
+Bounds3 还提供了一种方法，用于返回包围边界框的球体的中心和半径。通常情况下，这种方法生成的球体可能比直
+接包围 Bounds3 原始内容的球体更松散，但该方法仍具有实用价值。
+
+#+begin_export ascii
+  〈Bounds3 Public Methods〉 +≡
+     void BoundingSphere(Point3<T> *center, Float *radius) const {
+       *center = (pMin + pMax) / 2;
+       *radius = Inside(*center, *this) ? Distance(*center, pMax) : 0;
+     }
+#+end_export
+
+最后，针对整数边界，存在一种迭代器类满足C++前向迭代器的要求（即仅支持向前推进）。具体实现细节略显繁琐
+且缺乏趣味性，因此本书未收录相关代码。该定义使得编写基于范围的for循环成为可能，从而能够遍历边界框中的
+整数坐标：
+
+#+begin_export ascii
+  Bounds2i b = ...;
+  for (Point2i p : b) {
+    ...
+  }
+#+end_export
+
+在实际实现中，迭代过程会遍历至每个维度中最大范围的等值点，但不会访问这些点。
+
+** 变换
+
+一般而言，变换 T 是将点映射到点、将向量映射到向量的映射：
+
+$$ p^{\prime}=\mathbf{T}(p) \quad v^{\prime}=\mathbf{T}(v) $$
+
+变换 T 可能是任意过程。然而，在本章中我们将考虑所有可能变换的一个子集。具体而言，它们将为：
+
++ 线性：若 T 是任意线性变换，s 是任意标量，则 $$ \mathbf{T}(sv) = s\mathbf{T}(v)$$ 且 $$ T(v1 + v2) = T(v1) +
+  T(v2)$$。这两个性质能极大简化对变换的推理过程。
+
++ 连续性：大致而言，映射 T 将点 p 和 v 周围的邻域映射到点 $$ p^{\prime}$$ 和 $$ v^{\prime}$$ 周围的邻域。
+
++ 一对一且可逆：对于每个元素 p，变换 T 将 p 映射到唯一对应的 $$ p^{\prime} $$。此外，存在逆变换 $$T^{-1}$$，可将 $$ p^{\prime} $$ 映射
+  回 p。
+
+我们常需要将某个坐标系中定义的点、向量或法向量，转换为另一坐标系中的坐标值。通过线性代数的基本性质，可
+证明4×4矩阵能表达点或向量在不同坐标系间的线性变换。此外，这样的4×4矩阵足以描述固定坐标系内所有点与向量
+的线性变换，例如空间平移或绕点旋转。因此矩阵存在两种截然不同（且互不相容！）的解释方式：
+
++ 坐标系变换：给定一个点，该矩阵能够表达如何计算同一坐标系下代表原始点变换的新点（例如通过沿某个方向平
+  移该点）。
++ 从一个坐标系到另一个坐标系的转换：矩阵能够通过原始坐标系中的坐标来表示新坐标系中点或向量的坐标。
+
+在pbrt中，变换功能主要用于将点从一个帧转换到另一个帧。
+
+通常，变换使我们能够在最便捷的坐标系中进行操作。例如，我们可以编写定义虚拟摄像机的程序，假设该摄像机位
+于原点，沿z轴向下观察，其y轴向上，x轴向右。这些假设极大简化了摄像机的实现过程。随后，若需将摄像机置于
+场景任意位置并朝任意方向观察，只需构造一个变换，将场景坐标系中的点映射到摄像机坐标系即可。（有关pbrt中
+摄像机坐标系的更多信息，请参阅第6.1.1节。）
+
+*** 齐次坐标
+
+给定由$$ (p, v_1, v_2, v_3) $$定义的坐标系，当点$$ (p_x, p_y, p_z) $$与向量$$(v_x, v_y, v_z)$$具有相同的$$(x, y, z)$$坐标
+时，存在表征歧义。运用本章开头引入的点与向量表示法，可将点表示为内积$$[s_1 s_2 s_3 1][v_1 v_2 v_3 p_o]^T$$，向
+量表示为内积$$[s^\prime_1 s^\prime_2 s^\prime_3 1][v_1 v_2 v_3 p_o]^T $$。这四个由三个实数值和一个零或一组成的向量称为点与向量的齐次
+表示。齐次表示的第四个坐标有时称为权重。对于点而言，其值可取任意非零标量：齐次点[1, 3, −2, 1]与[−2,
+−6, 4, −2]描述同一个笛卡尔点(1, 3, −2)。将齐次点转换为普通点需将前三项除以权重：
+
+$$ (x,y,z,w)= \begin{pmatrix} \frac{x}{w},\frac{y}{w},\frac{z}{w}\end{pmatrix} $$
+
+我们将利用这些事实来探讨变换矩阵如何描述一个坐标系中的点和向量如何映射到另一个坐标系。考虑一个描述从一
+个坐标系到另一个坐标系的变换的矩阵 M：
+
+
+$$M=\begin{pmatrix}
+m_{0,0} & m_{0,1} & m_{0,2} & m_{0,3} \\
+m_{1,0} & m_{1,1} & m_{1,2} & m_{1,3} \\
+m_{2,0} & m_{2,1} & m_{2,2} & m_{2,3} \\
+m_{3,0} & m_{3,1} & m_{3,2} & m_{3,3}
+\end{pmatrix} $$
+
+（本书中，我们从零开始定义矩阵元索引，以便方程与源代码更直接地对应。）那么，若将由M表示的变换应用于x轴
+向量(1, 0, 0)，则有
+
+$$ Mx=M[1\quad0\quad0\quad0]^T=[m_{0,0} m_{1,0} m_{2,0} m_{3,0} ]^T $$
+
+因此，直接读取矩阵的列向量即可看出基向量和当前坐标系原点如何被该矩阵变换：
+
+$$
+M_y=[m_{0,1} m_{1,1} m_{2,1} m_{3,1}]^T $$
+$$M_z=[m_{0,2} m_{1,2} m_{2,2} m_{3,2}]^T $$
+$$M_p=[m_{0,3} m_{1,3} m_{2,3} m_{3,3}]^T$$
+
+一般而言，通过描述基底如何变换，我们便知晓任何以该基底表示的点或向量将如何变换。由于当前坐标系中的点和
+向量是以该坐标系的坐标系框架表示的，直接对其施加变换等同于对当前坐标系的基底施加变换，并求得其在变换后
+基底中的坐标。
+
+我们在代码中不会显式使用齐次坐标；pbrt中并不存在Homogeneous类。然而，下一节中的各类变换例程会隐式地将
+点、向量和法线转换为齐次形式，对齐次点进行变换，并在返回结果前将其转换回原始形式。这种设计将齐次坐标的
+细节集中处理在单一位置（即变换的实现过程中）。
+
+#+begin_export ascii
+  〈Transform Declarations〉 ≡
+    class Transform {
+      public:
+        〈Transform Public Methods 84〉
+      private:
+        〈Transform Private Data 84〉
+     };
+#+end_export
+
+变换由矩阵 m 的元素表示，m 是一个 Matrix4x4 对象。底层的 Matrix4x4 类在 A.5.3 节中定义。矩阵m采用行优
+先存储格式，因此元素m[i][j]对应于mi,j，其中i为行号，j为列号。为方便使用，Transform还通过
+Transform::mInv成员存储矩阵m的逆矩阵；考虑到pbrt的需求，直接调用逆矩阵比反复计算更为高效。
+
+这种变换表示方式对内存需求较大：假设浮点数占用4字节存储空间，则一个变换体需要128字节存储空间。若简单粗
+暴地使用此方法，可能造成资源浪费；当场景包含数百万个形状但仅有数千种独特变换时，没有必要在内存中重复存
+储相同的变换。因此，pbrt中的形状仅存储变换的指针，而B.3.5节定义的场景规范代码通过TransformCache机制确
+保所有共享相同变换的形状，在内存中均指向该变换的单一实例。
+
+共享变换的决策意味着灵活性会有所损失：当场景中多个对象共享同一变换（且这些对象不期望变换发生变化）时，
+该变换创建后其元素就不应被修改。这种限制在实际应用中并不构成问题，因为场景中的变换通常在pbrt解析场景描
+述文件时创建，渲染时无需再进行修改。
+
+#+begin_export ascii
+  〈Transform Private Data〉 ≡
+     Matrix4x4 m, mInv;
+#+end_export
+
+*** 基础操作
+
+创建新的变换时，默认采用恒等变换——该变换将每个点和每个向量映射到其自身。此变换由单位矩阵表示：
+
+$$ \mathbf{I}=\begin{pmatrix}
+       1 & 0 & 0 & 0 \\
+       0 & 1 & 0 & 0 \\
+       0 & 0 & 1 & 0 \\
+       0 & 0 & 0 & 1
+       \end{pmatrix}$$
+
+此处的实现依赖于默认的Matrix4x4构造函数来填充m和mInv的单位矩阵。
+
+#+begin_export ascii
+  〈Transform Public Methods〉 ≡
+     Transform() { }
+#+end_export
+
+Transform也可以从给定的矩阵创建。在这种情况下，必须显式地对给定的矩阵进行求逆。
+
+#+begin_export ascii
+  〈Transform Public Methods〉 +≡
+    Transform(const Float mat[4][4]) {
+      m = Matrix4x4(mat[0][0], mat[0][1], mat[0][2], mat[0][3],
+                    mat[1][0], mat[1][1], mat[1][2], mat[1][3],
+                    mat[2][0], mat[2][1], mat[2][2], mat[2][3],
+                    mat[3][0], mat[3][1], mat[3][2], mat[3][3]);
+      mInv = Inverse(m);
+    }
+
+   〈Transform Public Methods〉 +≡
+      Transform(const Matrix4x4 &m) : m(m), mInv(Inverse(m)) { }
+#+end_export
+
+最常用的构造函数会接收变换矩阵的引用以及显式提供的逆矩阵。这种方法优于在构造函数中计算逆矩阵，因为许多
+几何变换的逆矩阵非常简单，这样可以避免计算通用4×4矩阵逆矩阵所带来的开销和潜在的数值精度损失。当然，这
+要求调用方确保提供的逆矩阵正确无误。
+
+#+begin_export ascii
+  〈Transform Public Methods〉 +≡
+     Transform(const Matrix4x4 &m, const Matrix4x4 &mInv) : m(m), mInv(mInv) { }
+#+end_export
+
+表示变换逆变换的变换，只需交换 mInv 和 m 的角色即可返回。
+
+#+begin_export ascii
+  〈Transform Public Methods〉 +≡
+     friend Transform Inverse(const Transform &t) { return Transform(t.mInv, t.m); }
+#+end_export
+
+将变换中的两个矩阵进行转置以计算新的变换也可能很有用。
+
+#+begin_export ascii
+  〈Transform Public Methods〉 +≡
+     friend Transform Transpose(const Transform &t) { return Transform(Transpose(t.m), Transpose(t.mInv)); }
+#+end_export
+
+我们提供了 Transform 的相等性（及不等性）测试方法；其实现方式简单明了，此处不再赘述。Transform 还提供
+了 IsIdentity() 方法，用于检查转换是否为恒等映射。
+
+*** 平移
+
+最简单的变换之一是平移变换$$ T(\Delta x, \Delta y, \Delta z)$$。当作用于点 p 时，它会将 p 的坐标沿 $$ \Delta x
+$$、$$ \Delta y$$ 和 $$\Delta z $$
+方向平移，如图 2.10 所示。例如，$$ T(2, 2, 1)(x, y, z) = (x + 2, y + 2, z +
+1)$$。
+
+平移具有一些基本特性：
+
+\begin{align*}
+T(0,0,0) &= \mathbf{I} \\
+T(x_1, y_1, z_1)T(x_2,y_2,z_2) &=T(x_1+x_2, y_1+y_2, z_1+z_2) \\
+T(x_1, y_1, z_1)T(x_2, y_2, z_2) &=T(x_2, x_2, z_2)T(x_1, y_1, z_1)\\
+T^{-1}(x,y,z) &= T(-x, -y, -z)
+\end{align*}
+
+
+平移仅影响点的位置，不改变向量。在矩阵形式下，平移变换为：
 
 
 
+$$
+T(\Delta x, \Delta y, \Delta z)=\begin{pmatrix}
+                                  1 & 0 & 0 & \Delta x \\
+                                  0 & 1 & 0 & \Delta y \\
+                                  0 & 0 & 1 & \Delta z \\
+                                  0 & 0 & 0 & 1
+                                  \end{pmatrix}
+$$
+
+[[./images/dVxr8P.png]]
+
+当我们考察变换矩阵对一点的作用时，便能理解齐次坐标的价值。考虑将表示点$$(x, y, z)$$的矩阵$$ T(\Delta x,
+\Delta y, \Delta z) $$
+与齐次坐标点$$ p[x ,y, z, 1]$$相乘：
+
+
+\begin{align*}
+\begin{pmatrix}
+1 & 0 & 0 & \Delta x \\
+0 & 1 & 0 & \Delta y \\
+0 & 0 & 1 & \Delta z \\
+0 & 0 & 0 & 1
+\end{pmatrix}
+\begin{pmatrix}
+x \\
+y \\
+z \\
+1
+\end{pmatrix}=\begin{pmatrix}
+x+\Delta x \\
+y+\Delta y \\
+z+\Delta z \\
+1
+\end{pmatrix}
+\end{align*}
+
+
+正如预期的那样，我们计算出了一个新点，其坐标偏移量为(x, y, z)。然而，若将变换T应用于向量v，则有：
+
+\begin{align*}
+\begin{pmatrix}
+1 & 0 & 0 & \Delta x \\
+0 & 1 & 0 & \Delta y \\
+0 & 0 & 1 & \Delta z \\
+0 & 0 & 0 & 1
+\end{pmatrix}
+\begin{pmatrix}
+x \\
+y \\
+z \\
+0
+\end{pmatrix}=\begin{pmatrix}
+x \\
+y \\
+z \\
+0
+\end{pmatrix}
+\end{align*}
+
+结果仍是相同的向量 v。这合乎逻辑，因为向量代表方向，因此平移操作不会改变它们。
+
+我们将定义一个例程，用于创建表示给定平移的矩阵——这是平移矩阵方程的直接应用。该例程会完全初始化返回的变
+换，同时初始化表示平移逆运算的矩阵。
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 ≡
+     Transform Translate(const Vector3f &delta) {
+       Matrix4x4 m(1, 0, 0, delta.x,
+                   0, 1, 0, delta.y,
+                   0, 0, 1, delta.z,
+                   0, 0, 0,       1);
+       Matrix4x4 minv(1, 0, 0, -delta.x,
+                      0, 1, 0, -delta.y,
+                      0, 0, 1, -delta.z,
+                      0, 0, 0, 1);
+       return Transform(m, minv); }
+#+end_export
+
+*** 缩放
+
+另一种基本变换是缩放变换，$$ S(s_x, s_y, s_z) $$。它将点或向量的各分量分别乘以$$ x、y、z $$方向的缩放因子
+：
+$$ S(2, 2, 1)(x, y, z) = (2x, 2y,
+z)$$。该变换具有以下基本性质：
+
+\begin{align}
+S(1,1,1)&=\mathbf{I} \\
+S(x_1,y_1,z_1)S(x_2,y_2,z_2) &= S(x_1x_2, y_1y_2, z_1z_2) \\
+S^{-1}(x,y,z) &= S(\frac{1}{x}, \frac{1}{y}, \frac{1}{z})
+\end{align}
+
+
+我们可以区分均匀缩放（其中三个缩放因子具有相同值）与非均匀缩放（其中它们可能具有不同值）。一般的缩放矩
+阵为：
+
+\begin{align*}
+S(x,y,z)=\begin{pmatrix}
+         x & 0 & 0 & 0 \\
+         0 & y & 0 & 0 \\ 
+         0 & 0 & z & 0 \\
+         0 & 0 & 0 & 1
+         \end{pmatrix}
+\end{align*}
+
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 +≡
+     Transform Scale(Float x, Float y, Float z) {
+       Matrix4x4 m(x, 0, 0, 0,
+                   0, y, 0, 0,
+                   0, 0, z, 0,
+                   0, 0, 0, 1);
+       Matrix4x4 minv(1/x, 0, 0, 0,
+                      0, 1/y, 0, 0,
+                      0, 0, 1/z, 0,
+                      0, 0, 0, 1);
+       return Transform(m, minv);
+     }
+#+end_export
+
+能够检测变换中是否包含缩放项很有用；一种简便的方法是变换三个坐标轴，观察它们的长度是否明显偏离1。
+
+#+begin_export ascii
+  〈Transform Public Methods〉 +≡
+     bool HasScale() const {
+       Float la2 = (*this)(Vector3f(1, 0, 0)).LengthSquared();
+       Float lb2 = (*this)(Vector3f(0, 1, 0)).LengthSquared();
+       Float lc2 = (*this)(Vector3f(0, 0, 1)).LengthSquared();
+       #define NOT_ONE(x) ((x) < .999f || (x) > 1.001f)
+         return (NOT_ONE(la2) || NOT_ONE(lb2) || NOT_ONE(lc2));
+       #undef NOT_ONE
+      }
+#+end_export
+
+*** x轴、y轴和z轴旋转
+
+另一种有用的变换类型是旋转变换R。通常，我们可以从原点任意方向定义一条轴线，然后围绕该轴线旋转给定角度。
+此类旋转最常见的是围绕x、y和z坐标轴进行的旋转。我们将这些旋转记为$$ R_x(\theta),R_y(\theta)$$等。围绕任意
+轴$$（x, y, z）
+$$的旋转表示为$$ R_{(x,y,z)}(\theta) $$。
+
+旋转还具有一些基本属性：
+
+
+\begin{align*}
+R_a(0) &= I\\
+R_a(\theta_1)R_a(\theta_2) &= R_a(\theta_1+\theta_2) \\
+R_a(\theta_1)R_a(\theta_2) &= R_a(\theta_2)R_a(\theta_1) \\
+R^{-1}_{a}(\theta) &= R_a(-\theta)=R^T_a(\theta) 
+\end{align*}
+
+
+其中$$ R^T $$是矩阵R的转置。这个最后的性质——即R的逆矩阵等于其转置——源于R是正交矩阵的事实；其上方的 $$ 3 \times 3 $$
+分量彼此皆正交。值得庆幸的是，计算转置比求解完整的矩阵逆要容易得多。
+
+\begin{align*}
+R_x(\theta)=\begin{pmatrix}
+            1 & 0            & 0             & 0 \\
+            0 & \cos{\theta} & -\sin{\theta} & 0 \\
+            0 & \sin{\theta} & \cos{\theta}  & 0 \\
+            0 & 0            & 0             &1
+           \end{pmatrix}
+\end{align*}
+
+图2.11直观展示了该矩阵的工作原理。不难看出它保持x轴不变：
+
+$$ R_x(\theta)[1\ 0\ 0\ 0]^T=[1\ 0\ 0\ 0]^T $$
+
+该变换将y轴上的点(0, 1, 0)映射为$$ (0, \cos{\theta}, \sin{\theta}) $$，将z轴上的点映射为$$ (0, − \sin{\theta}, \cos{\theta})$$ 。y轴和z轴
+仍位于同一平面内，与x轴垂直，但被旋转了给定角度。空间中任意一点经此变换后，同样围绕x轴旋转，但始终保持
+在原有的yz平面内。
+
+RotateX()函数的实现非常简单。
+
+[[./images/TlTbgk.png]]
+
+同样地，对于围绕y轴和z轴的旋转，我们有
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 +≡
+      Transform RotateX(Float theta) {
+        Float sinTheta = std::sin(Radians(theta));
+        Float cosTheta = std::cos(Radians(theta));
+        Matrix4x4 m(1,         0,         0, 0,
+                    0,  cosTheta, -sinTheta, 0,
+                    0,  sinTheta,  cosTheta, 0,
+                    0,         0,         0, 1);
+        return Transform(m, Transpose(m));
+      }
+#+end_export
+
+
+\begin{align*}
+R_y(\theta)=\begin{pmatrix}
+            \cos{\theta} & 0 & \sin{\theta} & 0 \\
+            0            & 1 & 0            & 0 \\
+            -\sin{\theta} & 0 & \cos{\theta}  & 0 \\
+            0            & 0 & 0            & 1
+            \end{pmatrix}
+&\ 
+R_z(\theta)=\begin{pmatrix}
+             \cos{\theta} & -\sin{\theta} & 0 & 0 \\
+             \sin{\theta} & \cos{\theta}  & 0 & 0 \\
+             0            & 0             & 1 & 0 \\
+             0            & 0             & 0 & 1
+            \end{pmatrix}
+\end{align*}
+
+RotateY() 和 RotateZ() 的实现直接遵循上述逻辑，此处不再赘述。
+
+*** 绕任意轴旋转
+
+我们还提供了一种计算任意轴旋转变换的常规方法。该矩阵的常规推导基于以下步骤：计算将给定轴映射到固定轴
+（例如z轴）的旋转，在该轴上执行旋转，然后将固定轴旋转回原始轴。通过向量代数可以构建更优雅的推导过程。
+
+[[./images/QftEqR.png]]
+
+考虑一个归一化方向向量 a，它给出旋转轴，旋转角度为 θ，以及一个待旋转的向量 v（图 2.12）。首先，我们可
+以计算沿着轴 a 的向量 $$ v_c $$，该向量位于通过 v 的端点的平面内且与 a 平行。假设 v 和 a 形成一个角度 $$\alpha$$，我
+们有：
+
+$$ \mathbf{V}_c=a \lVert \mathbf{v} \rVert \cos{\alpha} = a(v \cdot a) $$
+
+我们现在计算该平面中的一对基向量 $$ v_1$$ 和 $$ v_2$$。显然，其中一个是
+
+$$ \mathbf{v}_1=\mathbf{v}-\mathbf{v}_{c'} $$
+
+另一个可通过向量叉积计算得出
+
+$$ \mathbf{v}_2=(\mathbf{v}_1 \times a) $$
+
+由于向量a已归一化，$$ V_1 $$和$$V_2$$具有相同长度，等于向量v与向量$$ V_c $$之间的距离。现在要计算围绕旋转平面中的向量$$
+V_c$$进行
+角度θ的旋转，根据先前的旋转公式可得：
+
+$$ \mathbf{v^'}=\mathbf{v}_c+\mathbf{v}_1\cos{\theta}+\mathbf{v}_2\sin{\theta} $$
+
+要将此转换为旋转矩阵，我们需将该公式应用于基向量(1, 0, 0)、(0, 1, 0)和(0, 0, 1)，从而获得矩阵各行的数
+值。所有计算结果均封装在以下函数中。与其他旋转矩阵相同，其逆矩阵等于转置矩阵。
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 +≡
+    Transform Rotate(Float theta, const Vector3f &axis) {
+      Vector3f a = Normalize(axis);
+      Float sinTheta = std::sin(Radians(theta));
+      Float cosTheta = std::cos(Radians(theta));
+      Matrix4x4 m;
+      〈Compute rotation of first basis vector 91〉
+      〈Compute rotations of second and third basis vectors〉
+      return Transform(m, Transpose(m));
+     }
+     〈Compute rotation of first basis vector〉 ≡
+        m.m[0][0] = a.x * a.x + (1 - a.x * a.x) * cosTheta;
+        m.m[0][1] = a.x * a.y * (1 - cosTheta) - a.z * sinTheta;
+        m.m[0][2] = a.x * a.z * (1 - cosTheta) + a.y * sinTheta;
+        m.m[0][3] = 0;
+#+end_export
+
+另外两个基向量的代码编写方法类似，此处不再赘述。
+
+*** 注视变换
+
+注视变换在场景中放置摄像机时尤为实用。调用方需指定摄像机的目标位置、摄像机注视的点，以及一个"向上"向
+量——该向量将摄像机沿着前两个参数所暗示的视线方向进行定向。所有这些值均以世界空间坐标给出。注视构造随后
+提供摄像机空间与世界空间之间的变换关系（图2.13）。
+
+[[./images/0XV2Tt.png]]
+
+为求得视角变换矩阵的元素，我们运用本节前文所述原理：变换矩阵的列向量给出了变换对坐标系基底的影响。
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 +≡
+     Transform LookAt(const Point3f &pos, const Point3f &look, const Vector3f &up) {
+       Matrix4x4 cameraToWorld;
+       〈Initialize fourth column of viewing matrix 92〉
+       〈Initialize first three columns of viewing matrix 92〉
+       return Transform(Inverse(cameraToWorld), cameraToWorld);
+     }
+#+end_export
+
+最简单的列是第四列，它给出了摄像机空间原点$$ [0\ 0\ 0\ 1]^T $$在世界空间中的映射点。这显然就是用户提供的摄像机位置。
+
+#+begin_export ascii
+  〈Initialize fourth column of viewing matrix〉 ≡
+    cameraToWorld.m[0][3] = pos.x;
+    cameraToWorld.m[1][3] = pos.y;
+    cameraToWorld.m[2][3] = pos.z;
+    cameraToWorld.m[3][3] = 1;
+#+end_export
+
+其余三列的计算难度并不大。首先，LookAt()函数计算从摄像机位置到注视点的归一化方向向量；这将得到z轴应映
+射到的向量坐标，从而确定矩阵的第三列。（在左手法则坐标系中，摄像机空间以视线方向沿+z轴方向定义。） 首
+列给出相机空间中+x轴映射的世界空间方向，通过用户提供的"上"方向向量与最新计算的视线方向向量进行叉积获得。
+最后，通过视线方向向量与变换后的x轴向量进行叉积重新计算"上"方向向量，从而确保y轴与z轴垂直，形成正交规
+范的视图坐标系。
+
+#+begin_export ascii
+  〈Initialize first three columns of viewing matrix〉 ≡
+     Vector3f dir = Normalize(look - pos);
+     Vector3f left = Normalize(Cross(Normalize(up), dir));
+     Vector3f newUp = Cross(dir, left);
+     cameraToWorld.m[0][0] = left.x;
+     cameraToWorld.m[1][0] = left.y;
+     cameraToWorld.m[2][0] = left.z;
+     cameraToWorld.m[3][0] = 0.;
+     cameraToWorld.m[0][1] = newUp.x;
+     cameraToWorld.m[1][1] = newUp.y;
+     cameraToWorld.m[2][1] = newUp.z;
+     cameraToWorld.m[3][1] = 0.;
+     cameraToWorld.m[0][2] = dir.x;
+     cameraToWorld.m[1][2] = dir.y;
+     cameraToWorld.m[2][2] = dir.z;
+     cameraToWorld.m[3][2] = 0.;
+#+end_export
+
+** 应用变换
+
+现在我们可以定义执行相应矩阵乘法以转换点和向量的例程。我们将重载函数应用运算符来描述这些转换；这使我们
+能够编写如下代码：
+
+#+begin_export ascii
+  Point3f p = ...;
+  Transform T = ...;
+  Point3f pNew = T(p);
+#+end_export
+
+*** 点
+
+点变换程序接收一个点(x, y,z)，并将其隐式表示为齐次列向量$$ [x\ y\ z\ 1]^T $$。随后通过将该向量与变换矩
+阵左乘来实现点变换。最后通过除以w系数将其转换回非齐次点表示。为提高效率，当w=1时（这在pbrt中使用的多数
+变换中很常见）该方法会跳过除以齐次权重w的步骤——仅第6章定义的射影变换需要执行此除法操作。
+
+#+begin_export ascii
+  〈Transform Inline Functions〉 ≡
+    template <typename T> inline Point3<T> Transform::operator()(const Point3<T> &p) const {
+      T x = p.x, y = p.y, z = p.z;
+      T xp = m.m[0][0]*x + m.m[0][1]*y + m.m[0][2]*z + m.m[0][3];
+      T yp = m.m[1][0]*x + m.m[1][1]*y + m.m[1][2]*z + m.m[1][3];
+      T zp = m.m[2][0]*x + m.m[2][1]*y + m.m[2][2]*z + m.m[2][3];
+      T wp = m.m[3][0]*x + m.m[3][1]*y + m.m[3][2]*z + m.m[3][3];
+      if (wp == 1)
+        return Point3<T>(xp, yp, zp);
+      else
+        return Point3<T>(xp, yp, zp) / wp;
+     }
+#+end_export
+
+*** 向量
+
+向量的变换可采用类似方法计算。然而，由于隐含的齐次w坐标为零，矩阵与行向量的乘法得以简化。
+
+#+begin_export ascii
+  〈Transform Inline Functions〉 +≡
+    template <typename T> inline Vector3<T> Transform::operator()(const Vector3<T> &v) const {
+      T x = v.x, y = v.y, z = v.z;
+      return Vector3<T>(m.m[0][0]*x + m.m[0][1]*y + m.m[0][2]*z,
+                        m.m[1][0]*x + m.m[1][1]*y + m.m[1][2]*z,
+                        m.m[2][0]*x + m.m[2][1]*y + m.m[2][2]*z);
+     }
+#+end_export
+
+*** 归一化
+
+法线向量与切向量不同，其变换方式如图2.14所示。虽然切向量能直接变换，但法线向量需要特殊处理。由于表面上
+的法线向量n与任意切向量t在构造上相互垂直，我们知道：
+
+[[./images/8SpctN.png]]
+
+$$ n \cdot t = n^Tt=0$$
+
+当我们用某个矩阵 M 变换曲面上的某一点时，变换后点的新切向量 t′ 为 Mt。变换后的法向量 n′ 应等于某个 4×4
+矩阵 S 的 Sn。为保持正交性要求，必须满足：
+
+
+\begin{align*}
+0 &=(n')^Tt' \\
+  &= (Sn)^TMt \\
+  &= (n)^TS^TMt.
+\end{align*}
+
+当 $$ S^T M = I$$（单位矩阵）时，该条件成立。因此 $$ S^T = M^{-1} $$，故 $$ S = (M^{-1})^T $$，由此可知法线必须
+通过变换矩阵的逆转置进行变换。这一细节正是变换保持其逆变换的主要原因之一。
+
+请注意，该方法在转换法线时并未显式计算逆矩阵的转置。它只是以不同顺序访问逆矩阵（可对比Vector3fs转换的
+代码实现）。
+
+#+begin_export ascii
+  〈Transform Inline Functions〉 +≡
+    template <typename T> inline Normal3<T> Transform::operator()(const Normal3<T> &n) const {
+      T x = n.x, y = n.y, z = n.z;
+      return Normal3<T>(mInv.m[0][0]*x + mInv.m[1][0]*y + mInv.m[2][0]*z,
+                        mInv.m[0][1]*x + mInv.m[1][1]*y + mInv.m[2][1]*z,
+                        mInv.m[0][2]*x + mInv.m[1][2]*y + mInv.m[2][2]*z);
+    }
+#+end_export
+
+*** 光线
+
+射线变换在概念上相当简单：只需转换其构成元素的起点和方向，同时复制其他数据成员即可。（pbrt还为
+RayDifferentials提供了类似的变换方法。）
+
+pbrt中用于管理浮点舍入误差的方法存在某些微妙之处，需要对转换后的射线原点进行微调。〈将射线原点偏移至误
+差边界边缘〉片段负责处理这些细节；该片段在第3.9.4节中定义，该节讨论了舍入误差以及pbrt处理该误差的机制。
+
+#+begin_export ascii
+  〈Transform Inline Functions〉 +≡
+    inline Ray Transform::operator()(const Ray &r) const {
+      Vector3f oError; Point3f o = (*this)(r.o, &oError);
+      Vector3f d = (*this)(r.d);
+     〈Offset ray origin to edge of error bounds and compute tMax 233〉
+      return Ray(o, d, tMax, r.time, r.medium);
+    }
+#+end_export
+
+*** 边界框
+
+变换轴向边界框的最简方法是：先变换其八个角顶点，再计算出能包含这些点的新的边界框。该方法的实现如下所示；
+本章的练习之一是实现一种更高效的计算技术。
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 +≡
+    Bounds3f Transform::operator()(const Bounds3f &b) const {
+      const Transform &M = *this;
+      Bounds3f ret(M(Point3f(b.pMin.x, b.pMin.y, b.pMin.z)));
+      ret = Union(ret, M(Point3f(b.pMax.x, b.pMin.y, b.pMin.z)));
+      ret = Union(ret, M(Point3f(b.pMin.x, b.pMax.y, b.pMin.z)));
+      ret = Union(ret, M(Point3f(b.pMin.x, b.pMin.y, b.pMax.z)));
+      ret = Union(ret, M(Point3f(b.pMin.x, b.pMax.y, b.pMax.z)));
+      ret = Union(ret, M(Point3f(b.pMax.x, b.pMax.y, b.pMin.z)));
+      ret = Union(ret, M(Point3f(b.pMax.x, b.pMin.y, b.pMax.z)));
+      ret = Union(ret, M(Point3f(b.pMax.x, b.pMax.y, b.pMax.z)));
+      return ret;
+    }
+#+end_export
+
+*** 变换的构成
+
+在阐明了表示各类变换的矩阵如何构建之后，我们现在可以考虑由一系列单独变换产生的聚合变换。最后，我们将看
+到用矩阵表示变换的真正价值。
+
+考虑一组变换序列 ABC。我们希望计算出新的变换 T，使得应用 T 得到的结果等同于按逆序应用 A、B 和 C 的结果；
+即 A(B(C(p))) = T(p)。该变换 T 可通过将变换矩阵 A、B 和 C 相乘来计算。在 pbrt 中，我们可以编写：
+
+#+begin_export ascii
+  Transform T = A * B * C;
+#+end_export
+
+那么我们可以像往常一样将变换 T 应用于三维点 p，即 Point3f pp = T(p)，而无需逐个应用每个变换：Point3f
+pp = A(B(C(p)))。
+
+我们使用C++的*运算符来计算将一个变换与另一个变换t2进行后乘后得到的新变换。在矩阵乘法中，结果矩阵的(i,
+j)元素是第一个矩阵第i行与第二个矩阵第j列的内积。
+
+所得变换的逆变换等于 t2.mInv 与 mInv 的乘积。这是矩阵单位元的结果。
+
+$$ (\mathbf{AB})^{-1}=\mathbf{B^{-1}}\mathbf{A^{-1}} $$
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 +≡
+     Transform Transform::operator*(const Transform &t2) const {
+       return Transform(Matrix4x4::Mul(m, t2.m),
+                        Matrix4x4::Mul(t2.mInv, mInv));
+     }
+#+end_export
+
+*** 变换与坐标系手性
+
+某些类型的变换会将左旋坐标系转换为右旋坐标系，反之亦然。部分运算需要判断源坐标系与目标坐标系的旋向是否
+不同。特别是那些需要确保曲面法线始终指向曲面"外部"的运算，若旋向发生改变，则可能需要在变换后翻转法线方
+向。
+
+幸运的是，判断变换是否改变手性很简单：只有当变换左上角3×3子矩阵的行列式为负时才会发生这种情况。
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 +≡
+    bool Transform::SwapsHandedness() const {
+      Float det =
+          m.m[0][0] * (m.m[1][1] * m.m[2][2] - m.m[1][2] * m.m[2][1])
+          m.m[0][1] * (m.m[1][0] * m.m[2][2] - m.m[1][2] * m.m[2][0]) +
+          m.m[0][2] * (m.m[1][0] * m.m[2][1] - m.m[1][1] * m.m[2][0]);
+     return det < 0; }
+#+end_export
+
+[[./images/MSPmfh.png]]
+
+** 动画平移
+
+pbrt支持场景中摄像机和几何基元采用关键帧矩阵动画。用户不仅能提供单次变换将对应对象置入场景，还可提供多
+个关键帧变换，每个变换均关联特定时间点。这使得摄像机能够移动，同时在模拟摄像机快门开启期间，场景中的对
+象也能保持运动状态。图2.15展示了通过pbrt关键帧矩阵动画实现的三球体运动效果。
+
+一般而言，关键帧矩阵之间的插值问题存在定义不足的情况。例如，若先执行179度的x轴旋转，随后执行181度的旋
+转，这究竟代表2度的微小旋转，还是-358度的大幅度旋转？再如，当两个矩阵中一个为单位矩阵，另一个为z轴180
+度旋转矩阵时，同样存在定义模糊的问题。从一种方向转换到另一种方向存在无限多种可能。
+
+关键帧矩阵插值是计算机动画领域的重要课题，目前已发展出多种不同的解决方案。值得庆幸的是，渲染器中的矩阵
+插值问题通常比动画系统中的更容易解决，原因有二：
+
+首先，在像pbrt这样的渲染器中，我们通常在相机快门开启时刻和关闭时刻各有一个关键帧矩阵；我们只需在单帧时
+间内对两者进行插值处理。而在动画系统中，矩阵通常以更低的时频提供，因此关键帧矩阵之间存在大量中间帧；由
+此，插值过程中的缺陷更容易暴露出来。
+
+[[./images/umUqSZ.png]]
+
+其次，在基于物理的渲染器中，我们需要对成对矩阵进行插值的时间跨度越长，虚拟相机快门的开启时间就越长，最
+终图像中的运动模糊现象就越明显；而增加的运动模糊往往能掩盖插值过程中的缺陷。
+
+对关键帧矩阵定义的变换进行插值的最直接方法——直接插值矩阵的各个分量——并非良策，因为这通常会导致意外且不
+理想的结果。例如，当变换涉及不同旋转时，即使存在刚体运动，插值矩阵仍可能对物体进行缩放——这显然不可取。
+（若两个矩阵间存在完整的180度旋转，物体在插值过程中甚至可能被缩小至消失！）
+
+图2.16展示了一个在帧内旋转90度的球体；直接插值矩阵元素（右侧）所得结果的精度低于本节实现的方法（中间）。
+
+在pbrt中用于变换插值的方法基于矩阵分解——对于任意给定的变换矩阵M，我们将它分解为缩放（S）、旋转（R）和
+平移（T）变换的组合。
+
+$$ \mathbf{M}=\mathbf{S}\mathbf{R}\mathbf{T} $$
+
+其中每个分量都独立进行插值运算，然后通过将三个插值矩阵相乘得到复合插值矩阵。
+
+平移和缩放的插值可通过其矩阵元素的线性插值轻松精确实现；而旋转插值则更为困难。在描述pbrt中的矩阵分解实
+现之前，我们将首先介绍四元数——这种优雅的旋转表示法能有效实现旋转插值。
+
+*** 四元数
+
+四元数最初由威廉·罗温·哈密顿爵士于1843年创立，作为复数的推广。他发现正如在二维空间（x, y）中，复数可定
+义为实部与虚部之和x + yi（其中i² = −1），同样可将其推广至四维空间，从而形成四元数。
+
+四元数是一个四元组，
+
+$$ \mathbf{q}=(x,y,z,w)=w+xi+yj+zk, $$
+
+其中 i, j 和 k 的定义如下：$$ i^2 = j^2 = k^2 = ijk = −1 $$。分量间其他重要关系为 ij = k 且 ji = −k。
+这表明四元数乘法通常不具备交换性。
+
+四元数可表示为四元组 $$ q = (q_x, q_y, q_z, q_w)$$ 或 $$ q = (q_{xyz}, q_w) $$，其中 $$ q_{xyz} $$是虚数三维向量，$$ q_w$$
+是实部。本节中我们将交替使用这两种表示形式。
+
+两个任意四元数的乘积表达式可通过将其定义展开为实部与虚部来求得：
+
+$$ qq\prime = (q_w+q_xi+q_yj+q_zk)(q\prime_w+q\prime_xi+q\prime_yj+q\prime_zk)$$
+
+
+通过收集上述列出的术语并运用组件间的恒等式（例如 $$ i^2 = -1 $$），可借助向量叉积与点积将结果简洁地表达如下：
+
+\begin{align*}
+(qq\prime) &= q_{xyz} \times q\prime_{xyz}+q_wq\prime_{xyz}+q\prime_wq_{xyz} \\
+(qq\prime)_w &= q_wq\prime_w - (q_{xyz}\cdot q\prime_{xyz})
+\end{align*}
+
+单位四元数（其分量满足 $$ x^2 + y^2 + z^2 + w^2 = 1$$ 的四元数）与 $$ \mathbb{R}^3 $$ 空间中的旋转空间之间存在一个
+有用的关系： 具体而言，以单位轴 $$ \hat{v}$$ 为中心、角度为 $$2\theta$$ 的旋转可映射为单位四元数 $$ (\hat{v} \sin \theta ,\cos \theta) $$，此
+时下列四元数乘积等价于将该旋转作用于齐次坐标形式的点 p：
+
+$$ p\prime =qpq^{-1} $$
+
+此外，多个旋转四元数的乘积会产生另一个四元数，其效果等同于依次应用这些旋转。
+
+pbrt 中四元数类的实现位于 core/quaternion.h 和 core/quaternion.cpp 文件中。默认构造函数初始化一个单位
+四元数。
+
+#+begin_export ascii
+  〈Quaternion Public Methods〉 ≡
+     Quaternion() : v(0, 0, 0), w(1) { }
+#+end_export
+
+我们使用Vector3f来表示四元数的xyz分量；这样做使我们能够在实现以下某些方法时利用Vector3f的各种方法。
+
+#+begin_export ascii
+  〈Quaternion Public Data〉 ≡
+    Vector3f v;
+    Float w;
+#+end_export
+
+四元数的加减运算按分量进行。这直接源于式(2.4)中的定义。例如，
+
+\begin{align*}
+q+q\prime &= w+xi+yj+zk+w^\prime+x^\prime+y^\prime+z^\prime k \\
+             &=(w+w^\prime)+(x+x^\prime)i+(y+y^\prime)j+(z+z^\prime)k
+             \end{align*}
+
+其他算术运算方法（减法、乘法以及与标量除法）的定义和实现方式类似，此处不再赘述。
+
+#+begin_export ascii
+  〈Quaternion Public Methods〉 +≡
+    Quaternion &operator+=(const Quaternion &q) {
+      v += q.v;
+      w += q.w;
+      return *this;
+    }
+#+end_export
+
+两个四元数的内积通过其Dot()方法实现，而四元数可通过除以其长度进行归一化。
+
+#+begin_export ascii
+  〈Quaternion Inline Functions〉 ≡
+     inline Float Dot(const Quaternion &q1, const Quaternion &q2) {
+       return Dot(q1.v, q2.v) + q1.w * q2.w;
+     }
+#+end_export
+
+#+begin_export ascii
+  〈Quaternion Inline Functions〉 +≡
+    inline Quaternion Normalize(const Quaternion &q) {
+      return q / std::sqrt(Dot(q, q));
+    }
+#+end_export
+
+能够计算出与四元数表示相同旋转的变换矩阵非常有用。特别是在AnimatedTransform类中使用四元数进行旋转插值
+后，我们需要将插值后的旋转转换回变换矩阵，以便计算最终的复合插值变换。
+
+要推导四元数的旋转矩阵，需回顾四元数对点的变换由 $$ p\prime=qpq^{-1} $$ 给出。我们需要一个矩阵 M 能实现相同的
+变换，使得 $$ p^\prime=Mp$$。若将四元数乘法 $$ qpq^{-1} $$ 展开为式(2.5)，运用四元数基底恒等式进行简化，合并项后
+用矩阵表示，可得出以下 3×3 矩阵能实现相同变换：
+
+
+\begin{align*}
+M=\begin{pmatrix}
+1-2(q_y^2+q^2_z) & 2(q_xq_y+q_zq_w) & 2(q_xq_z-q_yq_w) \\
+2(q_xq_y-q_zq_w) & 1-2(q^2_x+q^2_z)  & 2(q_yq_z+q_xq_w)\\
+2(q_xq_z+q_yq_w) & 2(q_yq_z-q_xq_w) & 1-2(q_x^2+q_y^2)
+\end{pmatrix}
+\end{align*}
+
+该计算在Quaternion::ToTransform()方法中实现。由于该方法直接实现了方程(2.6)，此处不再赘述其具体实现。
+
+#+begin_export ascii
+  〈Quaternion Public Methods〉 +≡
+    Transform ToTransform() const;
+#+end_export
+
+请注意，我们也可以利用单位四元数表示围绕单位轴$$ \hat{q}_{xyz} $$进行角度为2θ的旋转$$ (q_{xyz}sin \theta, cos
+\theta )$$这一特性
+来计算旋转矩阵。首先计算旋转角度$$ \theta = 2 arccos q_w$$，随后调用先前定义的Rotate()函数，
+传入旋转轴$$\hat{q}_{xyz}$$与旋转角度θ。但此方法效率显著降低，需多次调用三角函数，而本文实现的方法仅使用浮点加减
+乘运算。
+
+能够从旋转矩阵创建四元数同样具有实用价值。为此，Quaternion 类提供了一个接受 Transform 参数的构造函数。
+通过利用方程 (2.6) 中旋转矩阵元素与四元数分量之间的关系，即可计算出对应的四元数。例如，若将该矩阵与其
+转置矩阵相减，则结果矩阵的(0, 1)分量值为$$ -q4q_wq_z $$。因此，当已知特定旋转矩阵的数值时，可通过矩阵值与
+四元数分量间的此类关系建立方程组，进而求解四元数分量。
+
+本文中我们不会详细阐述推导过程或具体实现方案；有关该技术推导方法的更多信息（包括数值稳健性处理），请参
+阅Shoemake（1991）。
+
+#+begin_export ascii
+  〈Quaternion Public Methods〉 +≡
+     Quaternion(const Transform &t);
+#+end_export
+
+*** 四元数插值
+
+我们将定义的最后一个四元数函数 Slerp() 使用球面线性插值在两个四元数之间进行插值。球面线性插值能在球面
+上的大圆弧上实现恒定速度运动，因此具有两种适用于旋转插值的理想特性：
+
++ 插值旋转路径展现出扭矩最小化特性：连接两个旋转状态的路径是旋转空间中最短的可能路径。
++ 插值具有恒定角速度：在插值过程中，动画参数t的变化与最终旋转变化之间的关系保持恒定（换言之，插值速度
+  在整个插值范围内保持不变）。
+
+
+[[./images/5AlFxE.png]]
+
+
+请参阅本章末尾的“延伸阅读”部分，其中列举了更深入探讨优质插值旋转应具备哪些特征的参考文献。
+
+四元数的球面线性插值最初由Shoemake（1985）提出，其公式如下所示：其中给定两个四元数$$ q_1 $$和
+
+$$q_2$$
+，$$ t \in [0, 1]
+$$是用于在它们之间进行插值的参数值：
+
+
+$$ slerp(q_1, q_2 ,t)=\frac{q_1 sin((1-t)\theta)+q_2sin(t\theta)}{sin\theta} $$
+
+
+Blow（2004）提出了一种理解Slerp()的直观方法。具体而言，在给定待插值的两个四元数$$q_1$$和$$q_2$$时，设θ为它们之
+间的夹角。当参数值$$t \in [0, 1]$$时，我们需要在从$$q_1$$到$$q_2$$的路径上，找到使$$q_1$$与$$q^\prime$$之间夹角$$\theta^\prime = θt$$的中间四元
+数$$q^\prime$$。
+
+计算$$ q^\prime $$的简便方法是：首先在四元数空间中构造一个正交坐标系，其中一条轴为$$ q_1$$，另一条轴为与$$q_1$$正交的四元数，
+使得这两条轴构成一个张成$$q_1$$和$$q_2$$ 的基底。基于此坐标系，我们可以计算相对于$$q_1$$ 的旋转。（参见图2.17，该图
+在二维场景中阐释了该概念。） 正交向量 $$q\perp $$ 可通过将 $$q_1$$ 投影到 $$q_2$$ 上，再从 $$q_2$$ 中减去正交投影来获得；
+所得余量必然与 $$q_1$$ 正交：
+
+$$ q \perp = q_2-(q_1 \cdot  q_2)q_1 $$
+
+在给定坐标系下，沿动画路径的四元数由以下公式给出：
+
+$$ q\prime=q_1cos(\theta t)+q \perp sin(\theta t)$$
+
+Slerp()函数的实现会先检查两个四元数是否近乎平行，若满足此条件，则采用四元数分量的常规线性插值以避免数
+值不稳定性。否则，它将通过公式(2.7)计算正交四元数qperp，再利用公式(2.8)计算插值后的四元数。
+
+#+begin_export ascii
+  〈Quaternion Method Definitions〉 ≡
+  Quaternion Slerp(Float t, const Quaternion &q1, const Quaternion &q2) {
+    Float cosTheta = Dot(q1, q2);
+    if (cosTheta > .9995f)
+      return Normalize((1 - t) * q1 + t * q2);
+    else {
+      Float theta = std::acos(Clamp(cosTheta, -1, 1));
+      Float thetap = theta * t;
+      Quaternion qperp = Normalize(q2 - q1 * cosTheta);
+      return q1 * std::cos(thetap) + qperp * std::sin(thetap);
+      }
+    }
+#+end_export
+
+*** AnimatedTransform实现
+
+基于四元数基础设施的基石，我们现在可以实现AnimatedTransform类，该类在pbrt中实现了关键帧变换插值。其构
+造函数接受两个变换对象及其关联的时间值。
+
+如前所述，AnimatedTransform 将给定的复合变换矩阵分解为缩放、旋转和平移三个部分。该分解操作由
+AnimatedTransform::Decompose() 方法执行。
+
+#+begin_export ascii
+  〈AnimatedTransform Method Definitions〉 ≡
+  AnimatedTransform::AnimatedTransform(const Transform *startTransform,
+                Float startTime, const Transform *endTransform, Float endTime) :
+                startTransform(startTransform), endTransform(endTransform),
+                startTime(startTime), endTime(endTime), actuallyAnimated(*startTransform != *endTransform) {
+                  Decompose(startTransform->m, &T[0], &R[0], &S[0]);
+                  Decompose(endTransform->m, &T[1], &R[1], &S[1]);
+                  〈Flip R[1] if needed to select shortest path 106〉
+                  hasRotation = Dot(R[0], R[1]) < 0.9995f;
+                  〈Compute terms of motion derivative function〉
+   }
+
+
+   〈AnimatedTransform Private Data〉 ≡
+     const Transform *startTransform, *endTransform;
+     const Float startTime, endTime;
+     const bool actuallyAnimated; Vector3f T[2];
+     Quaternion R[2];
+     Matrix4x4 S[2];
+     bool hasRotation;
+#+end_export
+
+对于给定的变换复合矩阵，其构成过程中涉及的具体变换信息已丢失。例如，若已知平移与缩放的乘积矩阵，也可通
+过先缩放后平移（采用不同量值）得到等效矩阵。因此，我们需要为分解过程选择规范的变换序列。对于当前需求而
+言，具体选择并不重要。（但在动画系统中就至关重要——例如当需要分解复合变换以便通过修改单个组件实现编辑
+时。）
+
+本文仅讨论仿射变换，这是渲染系统中实现摄像机和几何基元动画所需的基础；透视变换通常与这类对象的动画无关。
+
+我们将使用的变换分解如下：
+
+$$ \mathbf{M}=\mathbf{TRS} $$
+
+其中 M 是给定的变换，T 是平移，R 是旋转，S 是缩放。S 实际上是一种广义缩放（Shoemake 和 Duff 称之为伸
+缩），它表示某个坐标系中的缩放比例，但未必是当前坐标系。无论如何，通过对其分量的线性插值仍可正确地进行
+插值。Decompose() 方法根据给定的 Matrix4x4 计算分解结果。
+
+#+begin_export ascii
+  〈AnimatedTransform Method Definitions〉 +≡
+  void AnimatedTransform::Decompose(const Matrix4x4 &m, Vector3f *T, Quaternion *Rquat, Matrix4x4 *S) {
+   〈Extract translation T from transformation matrix 104〉
+   〈Compute new transformation matrix M without translation 104〉
+   〈Extract rotation R from transformation matrix 105〉
+   〈Compute scale S using rotation and original matrix 105〉
+  }
+#+end_export
+
+提取转换结果T很简单；它可直接从4×4变换矩阵的相应元素中获取。
+
+#+begin_export ascii
+  〈Extract translation T from transformation matrix〉 ≡
+    T->x = m.m[0][3];
+    T->y = m.m[1][3];
+    T->z = m.m[2][3];
+#+end_export
+
+由于我们假设进行的是仿射变换（不含射影分量），在消除平移分量后，剩余的3×3上三角矩阵同时表示缩放与旋转
+操作。该矩阵被复制到新矩阵M中以供后续处理。
+
+#+begin_export ascii
+  〈Compute new transformation matrix M without translation〉 ≡
+    Matrix4x4 M = m;
+    for (int i = 0; i < 3; ++i)
+      M.m[i][3] = M.m[3][i] = 0.f;
+    M.m[3][3] = 1.f;
+#+end_export
+
+接下来，我们希望提取矩阵M的纯旋转分量。为此将采用极分解技术。可证明，通过将矩阵M与其逆转置矩阵进行连续
+求平均，即可实现将M分解为旋转分量R与缩放分量S的过程。
+
+$$ \mathbf{M}_{i+1}=\frac{1}{2}(\mathbf{M}_i+(\mathbf{M}_i^T)^{-1}) $$
+
+
+直至收敛，此时 $$M_i = R$$。（不难看出，若 M 是纯旋转矩阵，则将其与其逆转置矩阵取平均值不会改变其性质，
+因为其逆矩阵等于其转置矩阵。“延伸阅读”部分提供了更多文献，探讨该级数收敛至原始变换旋转分量的原因。）
+Shoemake与Duff（1992）证明所得矩阵是M的最接近正交矩阵——这是其理想特性。
+
+为求解该级数，我们反复应用式(2.10)，直至相邻项之间的差值变小或达到预设的迭代次数。实践中，该级数通常收
+敛迅速。
+
+#+begin_export ascii
+  〈Extract rotation R from transformation matrix〉 ≡
+    Float norm;
+    int count = 0;
+    Matrix4x4 R = M;
+    do {
+     〈Compute next matrix Rnext in series 105〉
+     〈Compute norm of difference between R and Rnext 105〉
+     R = Rnext;
+     } while (++count < 100 && norm > .0001);
+     *Rquat = Quaternion(R);
+     
+     〈Compute next matrix Rnext in series〉 ≡ 
+     Matrix4x4 Rnext;
+     Matrix4x4 Rit = Inverse(Transpose(R));
+     for (int i = 0; i < 4; ++i)
+       for (int j = 0; j < 4; ++j)
+         Rnext.m[i][j] = 0.5f * (R.m[i][j] + Rit.m[i][j]);
+
+     〈Compute norm of difference between R and Rnext〉 ≡ 
+     norm = 0;
+     for (int i = 0; i < 3; ++i) {
+       Float n = std::abs(R.m[i][0] - Rnext.m[i][0]) +
+                 std::abs(R.m[i][1] - Rnext.m[i][1]) +
+                 std::abs(R.m[i][2] - Rnext.m[i][2]);
+                 norm = std::max(norm, n);
+     }
+#+end_export
+
+从M中提取旋转信息后，剩下的就是缩放问题。我们需要求解满足M = RS的矩阵S。既然已知R和M，只需求
+解$$ S =
+R^{-1}M$$即可。
+
+#+begin_export ascii
+  〈Compute scale S using rotation and original matrix〉 ≡
+    *S = Matrix4x4::Mul(Inverse(R), M);
+#+end_export
+
+对于每个旋转矩阵，都存在两个单位四元数与其对应，二者仅符号相异。若我们提取的两个旋转的点积为负值，则二
+者之间的平滑过渡（slerp）将无法沿对应旋转间的最短路径进行。此时只需取其中一个（此处任意选取第二个）的
+负值，即可使路径切换为更短路径。
+
+#+begin_export ascii
+  〈Flip R[1] if needed to select shortest path〉 ≡
+    if (Dot(R[0], R[1]) < 0)
+      R[1] = -R[1];
+#+end_export
+
+Interpolate() 方法用于计算给定时间点的插值变换矩阵。该矩阵通过插值先前提取的平移、旋转和缩放参数获得，
+随后将这些参数相乘得到复合矩阵，该矩阵综合体现了三种变换共同作用的效果。
+
+#+begin_export ascii
+  〈AnimatedTransform Method Definitions〉 +≡
+    void AnimatedTransform::Interpolate(Float time, Transform *t) const {
+      〈Handle boundary conditions for matrix interpolation 106〉
+       Float dt = (time - startTime) / (endTime - startTime);
+       〈Interpolate translation at dt 106〉
+       〈Interpolate rotation at dt 107〉
+       〈Interpolate scale at dt 107〉
+       〈Compute interpolated matrix as product of interpolated components 107〉
+     }
+#+end_export
+
+如果给定的时间值超出AnimatedTransform中存储的两个变换的时间范围，则会返回起始时间或结束时间对应的变换
+（视情况而定）。AnimatedTransform构造函数还会检查存储的两个Transform是否相同；若相同，则无需进行插值计
+算。pbrt中所有支持动画的类始终为其变换存储AnimatedTransform对象，而非根据需要存储Transform或
+AnimatedTransform。此设计简化了实现逻辑，但也使得在此处检查该情况变得必要——避免对两个相等的变换执行不
+必要的插值计算。
+
+#+begin_export ascii
+  〈Handle boundary conditions for matrix interpolation〉 ≡ 
+    if (!actuallyAnimated || time <= startTime) {
+      *t = *startTransform;
+      return;
+    }
+    if (time >= endTime) {
+      *t = *endTransform;
+      return;
+    }
+#+end_export
+
+变量dt存储了从startTime到endTime区间内的偏移量；在startTime时为零，在endTime时为一。已知dt值后，位移的
+插值计算便变得简单。
+
+#+begin_export ascii
+  〈Interpolate translation at dt〉 ≡ 
+    Vector3f trans = (1 - dt) * T[0] + dt * T[1];
+#+end_export
+
+旋转角度通过Slerp()函数（第2.9.2节）在起始旋转与终止旋转之间进行插值计算。
+
+#+begin_export ascii
+  〈Interpolate rotation at dt〉 ≡
+     Quaternion rotate = Slerp(dt, R[0], R[1]);
+#+end_export
+
+最后，通过插值起始和结束缩放矩阵的各个元素来计算插值后的缩放矩阵。由于Matrix4x4构造函数会将矩阵初始化
+为单位矩阵，因此无需对缩放矩阵的其他元素进行初始化。
+
+#+begin_export ascii
+  〈Interpolate scale at dt〉 ≡
+    Matrix4x4 scale;
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j)
+        scale.m[i][j] = Lerp(dt, S[0].m[i][j], S[1].m[i][j]);
+#+end_export
+
+给定三个插值部分，其三个变换矩阵的乘积将得到最终结果。
+
+#+begin_export ascii
+  〈Compute interpolated matrix as product of interpolated components〉 ≡
+     *t = Translate(trans) * rotate.ToTransform() * Transform(scale);
+#+end_export
+
+AnimatedTransform 还提供了一系列方法，可直接应用插值变换：对于 Point3fs 和 Vector3fs，使用提供的 time
+参数；对于 Rays，则使用 Ray::time。当实际不存在动画时，这些方法比调用 AnimatedTransform::Interpolate()
+并使用返回的矩阵更高效，因为此时无需复制变换矩阵。
+
+#+begin_export ascii
+  〈AnimatedTransform Public Methods〉 ≡
+    Ray operator()(const Ray &r) const;
+    RayDifferential operator()(const RayDifferential &r) const;
+    Point3f operator()(Float time, const Point3f &p) const;
+    Vector3f operator()(Float time, const Vector3f &v) const;
+#+end_export
+
+*** 边界移动边界框
+
+对于经动画变换处理的Bounds3f对象，计算其在动画时段内所有运动轨迹的包围框具有重要意义。例如，若能限定动
+画几何基元的运动范围，即可通过射线与该边界框的交点判断射线是否可能与对象相交——这比耗费资源将基元边界框
+插值到射线时间点进行碰撞检测更为高效。AnimatedTransform::MotionBounds()方法即执行此计算：它接收一个边
+界框，并返回该动画变换在时间范围内运动轨迹的边界框。
+
+存在两种简单情况：首先，若关键帧矩阵相等，则可仅应用初始变换来计算完整边界。其次，若变换仅包含缩放和/
+或平移操作，则在起始时间和结束时间点包围变换后坐标的边界框，即限定了该点的全部运动范围。其原理可通过分
+析变换点p的位置随时间变化的函数来理解：我们将这个由两个矩阵、一个点和一个时间构成的函数记为
+$$a(\mathbf{M}_0, \mathbf{M}_1, p,t)$$。
+
+由于在此情况下分解的旋转分量是单位矩阵，因此根据我们的矩阵分解，我们得到：
+
+
+$$ a(\mathbf{M}_0, \mathbf{M}_1,p,t)=\mathbf{T}(t)\mathbf{S}(t)p$$
+
+其中平移和缩放均表示为时间的函数。为简化起见，假设S(t)为常规缩放，可推导出$$a(\mathbf{M}_0, \mathbf{M}_1, p, t)$$各分量
+的表达式。例如，x分量可表示为：
+
+\begin{align*}
+a(\mathbf{M}_0, \mathbf{M}_1,p,t)_x &=[(1-t)s^\prime_{0,0}]p_x+(1-t)d_{0,3}+td^\prime_{0,3} \\
+                                    &=[s_{0,0}p_x+d_{0,3}]+[-s_{0,0}p_x+s\prime_{0,0}p_x-d_{0,3}+d^\prime_{0,3}]t
+\end{align*}
+
+其中 $$s_{0,0}$$ 是 $$\mathbf{M}_0$$ 对应的尺度矩阵元素，$$s\prime_{0,0}$$ 是 $$\mathbf{M}_1$$ 的相同尺度矩阵元素，平移矩阵元素则以
+d 表示（此处选用 d 代表“delta”，因 t 已用于表示时间）。作为 t
+的线性函数，该函数的极值点位于起始时间与终止时间。其他坐标系及广义尺度情况可依此类推。
+
+#+begin_export ascii
+  〈AnimatedTransform Method Definitions〉 +≡
+  Bounds3f AnimatedTransform::MotionBounds(const Bounds3f &b) const {
+    if (!actuallyAnimated)
+      return (*startTransform)(b);
+    if (hasRotation == false)
+      return Union((*startTransform)(b), (*endTransform)(b));
+    〈Return motion bounds accounting for animated rotation 108〉
+  }
+#+end_export
+
+对于带动画旋转的一般情况，运动函数可能在时间范围的中间点存在极值。目前尚无简单方法定位这些点。许多渲染
+器通过在时间范围内进行大量采样来解决此问题：在每个采样点计算插值变换，并将所有对应变换后的边界框进行并
+集操作。本文将提出一种更具理论基础的方法，实现对这些运动边界的稳健计算。
+
+我们采用一种稍显简化的保守边界计算方法，该方法涉及分别计算边界框八个角点的运动轨迹，并求取这些边界的并
+集。
+
+#+begin_export ascii
+  〈Return motion bounds accounting for animated rotation〉 ≡
+    Bounds3f bounds;
+    for (int corner = 0; corner < 8; ++corner)
+      bounds = Union(bounds, BoundPointMotion(b.Corner(corner)));
+    return bounds;
+#+end_export
+
+对于每个边界框顶点p，我们需要在动画时间范围内求取函数a的极值。根据微积分原理，连续函数在某个定义域内的
+极值点要么位于定义域的边界点，要么位于函数一阶导数为零的点。因此，整体边界由运动起始点与终点的位置，以
+及所有极值点的位置的并集构成。
+
+[[./images/2VkNu4.png]]
+
+图2.18展示了某点一条有趣运动轨迹的运动函数及其导数的单坐标图。需注意，该函数在时间范围内的最大值出现在
+导数为零的点处。
+
+为限制单点运动，我们沿用无旋转情况的推导方法展开式（2.9）中T、R、S三个分量的时间函数，并求其乘积。得：
+
+$$a(\mathbf{M}_0, \mathbf{M}_1, p, t)=\mathbf{T}(t)\mathbf{R}(t)\mathbf{S}(t)p $$
+
+展开后的结果相当复杂，主要源于滑移变换（slerp）以及将所得四元数转换为矩阵的过程；处理此函数时必须使用
+计算机代数系统。
+
+导数$$ \partial a(\mathbf{M}_0, \mathbf{M}_1, p, t)/\partial t $$同样极为复杂——在完整的代数表达中，为给定的一对分解矩阵、点和时间计算
+其值需要超过2000次运算。然而，当给定特定变换矩阵和特定点时，a 的计算将大幅简化；我们将仅取 t 的特化函
+数记为 $$ a_{M,p}(t)$$。计算其导数仅需约 10 次浮点运算，并为每个坐标分别计算一次正弦与余弦值：
+
+$$ \frac{\mathrm{d}a_{M,p}(t)}{\mathrm{d}t} = c_1+(c_2+c_3t)cos(2\theta t)+(c_4+c_5t)sin(2\theta t) $$
+
+
+其中$$\theta $$是两个四元数点积的反正弦，而五个系数$$c_i$$是取决于两个矩阵和位置p的三维向量。这种特化处理效果良好，因
+为对于给定点，我们需要在多个时间点上评估该函数。
+
+我们现在有两个任务：首先，给定一对关键帧矩阵和一个点p，我们需要能够高效计算系数$$c_i$$的值。然后，基于由$$c_i$$
+和$$\theta$$定义的相对简单的函数，我们需要求解方程(2.12)的零点，这些零点可能代表运动极值点发生的时间。
+
+对于第一项任务，我们将首先将系数中依赖于关键帧矩阵的部分与依赖于点p的部分分离出来，前提是每对关键帧矩
+阵都会计算多个点的运动边界框（本例即属此情况）。值得庆幸的是，结果相当简单——$$c_i$$向量是点x、y、z分量的线
+性函数。
+
+$$c_i(p)=k_{i,c}+k_{i,x}p_{x}+k_{i,y}p_y+k_{i,z}p_z $$
+
+
+因此，给定 $$k_i$$ 系数以及我们希望对其运动进行限制的特定点 p，我们可以高效地计算方程 (2.12) 中导数函数的系
+数 $$c_i$$。DerivativeTerm 结构封装了这些系数以及该计算过程。
+
+#+begin_export ascii
+  〈AnimatedTransform Private Data〉 +≡
+    struct DerivativeTerm {
+      DerivativeTerm(Float c, Float x, Float y, Float z)
+        : kc(c), kx(x), ky(y), kz(z) { }
+      Float kc, kx, ky, kz; Float Eval(const Point3f &p) const {
+        return kc + kx * p.x + ky * p.y + kz * p.z;
+      }
+    };
+#+end_export
+
+属性 c1-c5 存储了与方程 (2.12) 中五个项相对应的导数信息。这三个数组元素对应于空间的三个维度。
+
+#+begin_export ascii
+  〈AnimatedTransform Private Data〉 +≡
+     DerivativeTerm c1[3], c2[3], c3[3], c4[3], c5[3];
+#+end_export
+
+AnimatedTransform 构造函数中的片段〈计算运动导数函数的各项〉（此处未包含）会通过自动生成的代码初始化这
+些项。鉴于这需要进行数千次浮点运算，因此一次性完成这项工作并将其成本分摊到多个边界框顶点上会很有帮助。
+若假设标准时间范围 [0, 1]，$$k_i$$ 系数的计算会更为简便；后续我们需要将运动函数零点的 t 值重新映射到实际快
+门时间范围。
+
+根据基于关键帧矩阵的系数 $$k_i$$，BoundPointMotion() 函数会计算出点 p 运动的鲁棒边界。
+
+#+begin_export ascii
+  〈AnimatedTransform Method Definitions〉 +≡
+  Bounds3f AnimatedTransform::BoundPointMotion(const Point3f &p) const {
+    Bounds3f bounds((*startTransform)(p), (*endTransform)(p));
+    Float cosTheta = Dot(R[0], R[1]);
+    Float theta = std::acos(Clamp(cosTheta, -1, 1));
+    for (int c = 0; c < 3; ++c) {
+      〈Find any motion derivative zeros for the component c 111〉
+      〈Expand bounding box for any motion derivative zeros found 111〉
+     }
+     return bounds;
+   }
+#+end_export
+
+稍后将介绍的 IntervalFindZeros() 函数，用于数值求解方程 (2.12) 的零点。可能存在多达四个零点。
+
+#+begin_export ascii
+  〈Find any motion derivative zeros for the component c〉 ≡ 110
+    Float zeros[4];
+    int nZeros = 0;
+    IntervalFindZeros(c1[c].Eval(p), c2[c].Eval(p), c3[c].Eval(p),
+                      c4[c].Eval(p), c5[c].Eval(p), theta,
+                      Interval(0., 1.), zeros, &nZeros);
+#+end_export
+
+零点是在 t ∈ [0, 1] 范围内找到的，因此我们需要在调用该方法对相应时间点的数据进行变换之前，先对该时间范
+围内的数据进行插值。另请注意，极值仅出现在 x、y 或 z 其中一个维度上，因此只需更新该维度的边界。为方便
+起见，这里我们直接使用 Union() 函数，该函数会考虑所有维度，尽管其中两个维度可以忽略。
+
+#+begin_export ascii
+  〈Expand bounding box for any motion derivative zeros found〉 ≡ 110
+    for (int i = 0; i < nZeros; ++i) {
+      Point3f pz = (*this)(Lerp(zeros[i], startTime, endTime), p);
+      bounds = Union(bounds, pz);
+    }
+#+end_export
+
+方程（2.12）中运动导数函数的零点无法通过代数方法求得；必须采用数值方法。幸运的是，该函数性质良好——它相
+当平滑，且零点数量有限。（回想一下图2.18中的曲线，那是一个异常复杂的代表性例子。）
+
+虽然我们可以使用二分法或牛顿法，但当函数仅短暂地穿过轴线时，可能会遗漏零点。因此，我们将采用区间算术——
+这是算术的扩展，能够揭示函数在特定值域内的行为特征，从而能够稳健地求出函数的零点。
+
+为了理解区间算术的基本概念，我们可以以函数 $$f(x) = 2x $$为例。如果有一个值域区间 $$[a, b] \in \mathbb{R}$$，那么我们可以
+看到，在这个区间上，函数 f 的值域是区间 $$[2a, 2b]$$。换句话说，$$f([a, b]) \subset [2a, 2b]$$。
+
+更一般地说，算术的所有基本运算都有相应的区间扩展，用来描述它们在区间上的作用。例如，给定两个区间 [a,
+b] 和 [c, d]，
+
+$$ [a,b]+[c,d] \subset [a+c, b+d] $$
+
+换句话说，如果我们将两个数值相加，其中一个在区间 [a, b] 内，另一个在区间 [c, d] 内，那么结果必然落在区
+间 [a + c, b + d] 内。
+
+区间算术具有一个重要特性，即它给出的区间是保守的。特别是，如果$$ f([a, b]) \subset [c, d]$$ 且 c > 0，那么我
+们可以确定 [a, b] 区间内的任何值都不会使 f 变为负值。接下来，我们将展示如何在区间上计算方程 (2.12)，并
+利用计算所得区间的保守性，高效地寻找具有零点交点的微小区间，以便在这些区间上可靠地应用常规求根方法。
+
+首先，我们将定义一个表示实数区间的 Interval 类。
+
+#+begin_export ascii
+  〈Interval Definitions〉 ≡
+     class Interval {
+       public:
+         〈Interval Public Methods 112〉
+       Float low, high;
+     };
+#+end_export
+
+一个区间可以用一个值来初始化，该值代表实数轴上的一个点；也可以用两个值来初始化，这两个值指定了一个宽度
+不为零的区间。
+
+#+begin_export ascii
+  〈Interval Public Methods〉 ≡ 112
+    Interval(Float v) : low(v), high(v) { }
+    Interval(Float v0, Float v1) : low(std::min(v0, v1)), high(std::max(v0, v1)) { }
+#+end_export
+
+该类还为基本算术运算提供了重载。请注意，对于减法运算，会将第二个区间的最大值从第一个区间的最小值中减去。
+
+#+begin_export ascii
+  〈Interval Public Methods〉 +≡ 112
+    Interval operator+(const Interval &i) const {
+      return Interval(low + i.low, high + i.high);
+    }
+    Interval operator-(const Interval &i) const {
+      return Interval(low - i.high, high - i.low);
+    }
+#+end_export
+
+对于乘法运算，每个区间哪一侧决定结果区间的最小值和最大值，取决于相应值的正负号。将各种可能性相乘并取其
+最小值和最大值，比逐一确定应采用哪些区间再进行乘法运算更为简便。
+
+#+begin_export ascii
+  〈Interval Public Methods〉 +≡ 112
+    Interval operator*(const Interval &i) const {
+      return Interval(std::min(std::min(low * i.low, high * i.low),
+                               std::min(low * i.high, high * i.high)),
+                               std::max(std::max(low * i.low, high * i.low),
+                               std::max(low * i.high, high * i.high)));
+    }
+#+end_export
+
+我们还实现了区间内的 Sin() 和 Cos() 函数。这些实现假设给定的区间位于 [0, 2π] 范围内，这与我们使用这些
+函数的情况一致。这里仅列出 Sin() 的实现；Cos() 的基本结构与此非常相似。
+
+#+begin_export ascii
+  〈Interval Definitions〉 +≡
+    inline Interval Sin(const Interval &i) {
+      Float sinLow = std::sin(i.low), sinHigh = std::sin(i.high);
+      if (sinLow > sinHigh) std::swap(sinLow, sinHigh);
+      if (i.low < Pi / 2 && i.high > Pi / 2)
+      sinHigh = 1.;
+      if (i.low < (3.f / 2.f) * Pi && i.high > (3.f / 2.f) * Pi) sinLow = -1.;
+      return Interval(sinLow, sinHigh);
+     }
+#+end_export
+
+基于区间处理机制，我们现在可以实现 IntervalFindZeros() 函数，该函数用于在给定区间 tInterval 内查找方程
+(2.12) 任何零交叉点的 t 值。
+
+#+begin_export ascii
+  〈Interval Definitions〉 +≡
+    void IntervalFindZeros(Float c1, Float c2, Float c3, Float c4,
+      Float c5, Float theta, Interval tInterval, Float *zeros,
+      int *zeroCount, int depth = 8) {
+        〈Evaluate motion derivative in interval form, return if no zeros 113〉
+         if (depth > 0) {
+           〈Split tInterval and check both resulting intervals 114〉
+         } else {
+           〈Use Newton’s method to refine zero 114〉
+         }
+     }
+#+end_export
+
+该函数首先计算 tInterval 上的零点区间。如果该区间不包含零点，则说明函数在 tInterval 上没有零点，此时函
+数可以返回。
+
+#+begin_export ascii
+  〈Evaluate motion derivative in interval form, return if no zeros〉 ≡ 113
+    Interval range = Interval(c1) +
+       (Interval(c2) + Interval(c3) * tInterval) *
+         Cos(Interval(2 * theta) * tInterval) +
+       (Interval(c4) + Interval(c5) * tInterval) *
+         Sin(Interval(2 * theta) * tInterval);
+     if (range.low > 0. || range.high < 0. || range.low == range.high)
+       return;
+#+end_export
+
+如果区间范围确实包含零点，那么区间 tInterval 中可能存在一个或多个零点；但也有可能实际上并不存在零点，
+因为区间边界虽然保守，但并非尽可能紧凑。该函数将 tInterval 分割为两部分，并递归地检查这两个子区间。缩
+小区间定义域的大小通常会缩小区间值域的范围，这可能使我们能够确定其中一个或两个新区间中不存在零点。
+
+#+begin_export ascii
+  〈Split tInterval and check both resulting intervals〉 ≡ 113
+    Float mid = (tInterval.low + tInterval.high) * 0.5f;
+    IntervalFindZeros(c1, c2, c3, c4, c5, theta,
+      Interval(tInterval.low, mid), zeros, zeroCount, depth - 1);
+    IntervalFindZeros(c1, c2, c3, c4, c5, theta,
+      Interval(mid, tInterval.high), zeros, zeroCount, depth - 1);
+#+end_export
+
+$$
+\frac{\mathrm{d}^2a_{M,p}(t)_x}{\mathrm{d}t^2}=c_{3,x}+2\theta(c_{4,x}+c_{5,x}t)cos(2\theta t)+c_{5,x}-2\theta(c_{2,x}+c_{3,x}t)sin(2\theta t)
+$$
+
+
+#+begin_export ascii
+  〈Use Newton’s method to refine zero〉 ≡ 113
+    Float tNewton = (tInterval.low + tInterval.high) * 0.5f;
+    for (int i = 0; i < 4; ++i) {
+      Float fNewton = c1 +
+        (c2 + c3 * tNewton) * std::cos(2.f * theta * tNewton) +
+        (c4 + c5 * tNewton) * std::sin(2.f * theta * tNewton);
+      Float fPrimeNewton =
+        (c3 + 2 * (c4 + c5 * tNewton) * theta) *
+          std::cos(2.f * tNewton * theta) +
+        (c5 - 2 * (c2 + c3 * tNewton) * theta) *
+          std::sin(2.f * tNewton * theta);
+       if (fNewton == 0 || fPrimeNewton == 0)
+         break;
+       tNewton = tNewton - fNewton / fPrimeNewton;
+      }
+      zeros[*zeroCount] = tNewton;
+      (*zeroCount)++;
+#+end_export
+
+请注意，如果在使用牛顿法时，函数在 tInterval 区间内有多个零点，那么在此处我们只能找到其中一个。不过，
+由于此时该区间的范围非常小，这种误差的影响应该微乎其微。无论如何，我们在实际应用中并未发现此问题会造成
+困扰。
+
+** 交互
+
+本章中的最后一个抽象类 SurfaceInteraction 表示二维曲面上某一点的局部信息。例如，第 3 章中的光线与形状
+交点计算例程会返回关于 SurfaceInteraction 中交点处局部微分几何的信息。随后，第10章中的纹理处理代码将根
+据由SurfaceInteraction表示的曲面上的某个点来计算材质属性。与其密切相关的MediumInteraction类用于表示光
+线在烟雾或云层等参与介质中发生散射的点；该类将在介绍完更多基础知识后，于第11.3节中定义。这些类的实现位
+于文件core/interaction.h和core/interaction.cpp中。
+
+SurfaceInteraction 和 MediumInteraction 都继承自一个通用的 Interaction 类，该类提供了一些通用的成员变
+量和方法。系统中的某些部分（尤其是光源的实现）是基于 Interaction 类进行操作的，因为对它们而言，表面交
+互与介质交互之间的差异并不重要。
+
+#+begin_export ascii
+  〈Interaction Declarations〉 ≡
+    struct Interaction {
+     〈Interaction Public Methods 115〉
+     〈Interaction Public Data 115〉
+     };
+#+end_export
+
+提供了多种交互构造函数；根据要构建的交互类型以及相关的信息，会接受相应的参数集。其中，这一种是最通用的。
+
+#+begin_export ascii
+  〈Interaction Public Methods〉 ≡ 115
+   Interaction(const Point3f &p, const Normal3f &n,
+          const Vector3f &pError,
+          const Vector3f &wo, Float time,
+          const MediumInterface &mediumInterface) : p(p), time(time), pError(pError), wo(wo), n(n), mediumInterface(mediumInterface) { }
+#+end_export
+
+所有交互都必须关联一个点 p 和一个时间。
+
+#+begin_export ascii
+  〈Interaction Public Data〉 ≡ 115
+   Point3f p;
+   Float time;
+#+end_export
+
+对于通过光线交点计算点 p 的交互，p 值中通常会存在一些浮点误差。pError 提供了该误差的保守上限；对于位于
+参与介质中的点，其值为 (0, 0, 0)。有关 pbrt 处理浮点误差的方法的更多信息，请参阅第 3.9 节；特别是第
+3.9.4 节，其中介绍了如何针对各种形状计算该上限。
+
+#+begin_export ascii
+  〈Interaction Public Data〉 +≡ 115
+    Vector3f pError;
+#+end_export
+
+对于表面上的交互操作，n 存储该点处的表面法线。
+
+#+begin_export ascii
+  〈Interaction Public Data〉 +≡ 115
+    Normal3f n;
+
+   〈Interaction Public Methods〉 +≡ 115
+     bool IsSurfaceInteraction() const {
+       return n != Normal3f();
+     }
+#+end_export
+
+交互还需记录其所在位置的散射介质（如有）；这由 MediumInterface 类的实例来处理，该类在第 11.3.1 节中进
+行了定义。
+
+#+begin_export ascii
+  〈Interaction Public Data〉 +≡ 115
+    MediumInterface mediumInterface;
+#+end_export
+
+*** 表面相互作用
+
+曲面上特定点（通常是通过光线与曲面相交而确定的位置）的几何属性由 SurfaceInteraction 表示。这种抽象使得
+系统的大部分功能能够处理曲面上的点，而无需考虑这些点所在的几何形状的具体类型；SurfaceInteraction 抽象
+提供了关于曲面点的充分信息，从而使 pbrt 其余部分的着色和几何运算能够以通用方式实现。
+
+#+begin_export ascii
+  〈SurfaceInteraction Declarations〉 ≡
+    class SurfaceInteraction : public Interaction {
+      public:
+      〈SurfaceInteraction Public Methods〉
+      〈SurfaceInteraction Public Data 116〉
+    };
+#+end_export
+
+除了来自 Interaction 基类的点 p 和曲面法向量 n 之外，SurfaceInteraction 还存储了来自曲面参数化的 (u,
+v) 坐标，以及该点的参数化偏导数 ∂p/∂u 和 ∂p/∂v。这些值的示意图请参见图 2.19。此外，拥有指向该点所在
+Shape 的指针（Shape 类将在下一章介绍）以及曲面法向量的偏导数也是很有用的。
+
+#+begin_export ascii
+ 〈SurfaceInteraction Public Data〉 ≡ 116
+   Point2f uv;
+   Vector3f dpdu, dpdv;
+   Normal3f dndu, dndv;
+   const Shape *shape = nullptr;
+#+end_export
+
+这种表示法隐含地假设了几何体具有参数化描述——即对于某个 (u, v) 值域，曲面上的点由某个函数 f 给出，使得
+p = f(u, v)。尽管这并非适用于所有形状，但 pbrt 支持的所有形状都至少具有局部参数化描述，因此我们将坚持
+使用参数化表示法，因为这一假设在其他方面很有帮助（例如，第 10 章中纹理的抗锯齿处理）。
+
+[[./images/Nv5a6n.png]]
+
+SurfaceInteraction 构造函数接受用于设置所有这些值的参数。它通过求取偏导数的叉积来计算法向量。
+
+#+begin_export ascii
+ 〈SurfaceInteraction Method Definitions〉 ≡
+   SurfaceInteraction::SurfaceInteraction(const Point3f &p,
+       const Vector3f &pError, const Point2f &uv,
+       const Vector3f &wo, const Vector3f &dpdu,
+       const Vector3f &dpdv, const Normal3f &dndu,
+       const Normal3f &dndv, Float time, const Shape *shape)
+     : Interaction(p, Normal3f(Normalize(Cross(dpdu, dpdv))), pError, wo, time, nullptr),
+     uv(uv), dpdu(dpdu), dpdv(dpdv), dndu(dndu), dndv(dndv),
+     shape(shape) {
+       〈Initialize shading geometry from true geometry 118〉
+       〈Adjust normal based on orientation and handedness 119〉
+     }
+#+end_export
+
+SurfaceInteraction 存储了曲面法线的第二个实例以及各种偏导数，用于表示这些量可能受到扰动的值——这些值可
+能是通过凹凸贴图生成的，或是通过三角形对顶点法线进行插值得到的。系统中的某些部分使用这种着色几何，而其
+他部分则需要处理原始量。
+
+#+begin_export ascii
+  〈SurfaceInteraction Public Data〉 +≡ 116
+    struct {
+      Normal3f n;
+      Vector3f dpdu, dpdv;
+      Normal3f dndu, dndv;
+    } shading;
+#+end_export
+
+着色几何体的值会在构造函数中初始化，以匹配原始表面几何体。如果存在着色几何体，通常要等到
+SurfaceInteraction 构造函数运行一段时间后才会进行计算。稍后将定义的 SetShadingGeometry() 方法用于更新
+着色几何体。
+
+#+begin_export ascii
+  〈Initialize shading geometry from true geometry〉 ≡ 117
+    shading.n = n;
+    shading.dpdu = dpdu;
+    shading.dpdv = dpdv;
+    shading.dndu = dndu;
+    shading.dndv = dndv;
+#+end_export
+
+法线在 pbrt 中具有特殊含义，它假设对于封闭形状，法线的方向应指向形状的外侧。对于用作面光源的几何体，光
+仅从法线所指的一侧发出；另一侧则为黑色。由于法线具有这一特殊含义，pbrt 提供了一种机制，允许用户反转法
+线的方向，使其指向相反方向。pbrt 输入文件中的 ReverseOrientation 指令会将法线翻转，使其指向相反的、非
+默认方向。因此，有必要检查给定的 Shape 是否设置了相应的标志，如果是，则在此处切换法线的方向。
+
+\begin{align*}
+S(1,1,-1)\frac{\partial p}{\partial u} \times S(1,1,-1)\frac{\partial p}{\partial v} &= S(-1,-1,1)\frac{\partial p}{\partial u} \times \frac{\partial p}{\partial v} \\
+ &= S(-1,-1,1) n \\
+ &\neq S(1,1,-1)n
+ \end{align*}
+
+
+ 因此，如果变换改变了坐标系的旋向，则必须反转法线方向，因为使用叉积计算法线方向时并不会考虑这种反转。
+
+ 如果这两个条件中仅满足其中一个（而非两个都满足），则“正常”的方向会被反转；如果两个条件都满足，它们的
+ 效果将相互抵消。异或运算正是用于检测这一条件。
+
+ #+begin_export ascii
+  〈Adjust normal based on orientation and handedness〉 ≡ 117
+    if (shape && (shape->reverseOrientation ^ shape->transformSwapsHandedness)) {
+      n *= -1; shading.n *= -1;
+    }
+ #+end_export
+
+计算出着色坐标系后，将通过 SurfaceInteraction 的 SetShadingGeometry() 方法对其进行更新。
+
+#+begin_export ascii
+  〈SurfaceInteraction Method Definitions〉 +≡
+   void SurfaceInteraction::SetShadingGeometry(const Vector3f &dpdus,
+               const Vector3f &dpdvs, const Normal3f &dndus,
+               const Normal3f &dndvs, bool orientationIsAuthoritative) {
+         〈Compute shading.n for SurfaceInteraction 119〉
+         〈Initialize shading partial derivative values 119〉
+    }
+#+end_export
+
+在执行与之前相同的叉积运算（并可能翻转法线的方向）以计算初始着色法线后，该实现会根据需要翻转着色法线或
+真实几何法线，以确保这两条法线位于同一半球内。由于着色法线通常代表几何法线的相对较小扰动，因此它们应始
+终位于同一半球内。根据具体情况，几何法线或着色法线可能更准确地指向曲面的正确“外部”，因此调用方会传递一
+个布尔值，用于确定在需要时应翻转哪一个法线。
+
+#+begin_export ascii
+  〈Compute shading.n for SurfaceInteraction〉 ≡ 119
+    shading.n = Normalize((Normal3f)Cross(dpdus, dpdvs));
+    if (shape && (shape->reverseOrientation ^ shape->transformSwapsHandedness))
+      shading.n = -shading.n; if (orientationIsAuthoritative)
+      n = Faceforward(n, shading.n);
+    else
+      shading.n = Faceforward(shading.n, n);
+#+end_export
+
+#+begin_export ascii
+  〈Initialize shading partial derivative values〉 ≡ 119
+    shading.dpdu = dpdus;
+    shading.dpdv = dpdvs;
+    shading.dndu = dndus;
+    shading.dndv = dndvs;
+#+end_export
+
+我们将为 Transform 类添加一个方法，用于转换 SurfaceInteractions 对象。大多数成员会根据具体情况直接转换
+或复制，但鉴于 pbrt 在计算交点时采用的方法用于限制浮点误差，因此对 p 和 pError 成员变量的转换需要特别
+注意。处理此问题的代码片段 〈Transform p and pError in SurfaceInteraction〉 定义在第 3.9 节中，该节讨
+论了浮点舍入误差。
+
+#+begin_export ascii
+  〈Transform Method Definitions〉 +≡
+    SurfaceInteraction Transform::operator()(const SurfaceInteraction &si) const {
+      SurfaceInteraction ret;
+      〈Transform p and pError in SurfaceInteraction 229〉
+      〈Transform remaining members of SurfaceInteraction〉
+      return ret; }
+#+end_export
+
+** 延伸阅读
+
+DeRose、Goldman 及其合作者主张采用一种优雅的“无坐标”方法来描述图形中的向量几何，该方法淡化了位置和方向
+恰好由特定坐标系中的 (x, y, z) 坐标表示这一事实，而是让点和向量本身记录其所采用的坐标系（Goldman 1985；
+德罗斯 1989；曼恩、利特克和德罗斯 1997）。这使得软件层能够确保像将一个坐标系中的向量与另一个坐标系中的
+点相加这类常见错误，通过先将其转换到一个共同的坐标系中来透明地处理。尽管我们在 pbrt 中并未采用这种方法，
+但在计算机图形学中处理坐标系时，理解并牢记该方法背后的原理仍具有重要意义。
+
+施耐德和埃伯利的《计算机图形学的几何工具》受无坐标方法的影响，对本章的主题进行了更为深入的探讨
+（Schneider and Eberly 2003）。该书还收录了大量适用于图形处理的实用几何算法。关于本章主题的经典且更传
+统的入门读物是罗杰斯和亚当斯合著的《计算机图形学的数学要素》（1990）。需要注意的是，他们的书中采用行向
+量表示法来表示点和向量，这意味着若在他们的框架下表达，我们的矩阵将被转置；此外，他们通过矩阵乘以点和向
+量（pM）来实现变换，而非像我们那样采用矩阵乘以点（Mp）。本章仅简要提及了齐次坐标，尽管它们是射影几何的
+基础，也是许多优雅算法的基础。斯托尔菲的著作是该主题的绝佳入门读物（Stolfi 1991）。
+
+关于线性代数和向量几何的优秀书籍有很多。我们发现Lang（1986）和Buck（1978）的著作是这两个领域中很好的参
+考资料。此外，Akenine-Möller等人所著的《实时渲染》（2008）一书也提供了基于图形学的扎实的线性代数入门介
+绍。
+
+在Wallis（1990）和Turkowski（1990b）发表相关论文后，图形学界才首次广泛理解了法向量变换的细微之处。
+
+Shoemake（1985）将四元数引入图形学领域，并展示了其在旋转动画中的实用性。Shoemake 和 Duff（1992）描述了
+利用极坐标矩阵分解实现变换动画的方法； 海厄姆（1986）开发了一种算法，通过将矩阵与其逆转置矩阵依次相加，
+从而从复合旋转缩放矩阵中提取旋转分量。舒梅克在《图形学瑰宝》（1991、1994、1994）中的章节，分别详细阐述
+了矩阵到四元数的转换推导过程以及极坐标矩阵分解的实现方法。
+
+在本章的论述中，我们遵循了Blow（2004）对球面线性插值的推导。Bloom等人（2004）探讨了计算机图形学中用于
+动画的旋转插值的理想特性，以及哪些方法能够实现这些特性。关于基于用多项式近似相关三角函数的更高效的
+Slerp() 函数实现，请参见 Eberly（2011）。有关旋转插值的更复杂方法，请参见 Ramamoorthi 和 Barr（1997）
+以及 Buss 和 Fillmore（2001）。Akenine-Möller 和 Hughes（1999）提出了一种高效计算矩阵的技术，该矩阵用
+于将一个向量旋转为另一个向量。
+
+区间算术是渲染过程中常被用到的工具；关于该主题的精彩导论，请参阅摩尔（Moore）的著作（1966）。
 
 
 
