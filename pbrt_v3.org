@@ -4286,11 +4286,1410 @@ Slerp() 函数实现，请参见 Eberly（2011）。有关旋转插值的更复�
 
 
 
+* 图形
+
+* 基本图形与相交加速
+
+* 颜色与辐射测量学
+
+为了准确描述光在图像计算中的表示和采样方式，我们首先必须了解一些辐射测量学的背景知识——即研究电磁辐射在
+环境中的传播。在渲染领域，特别值得关注的是波长（λ）介于约380 nm至780 nm之间的电磁辐射波长（λ），这些波
+长构成了人类可见光。¹ 波长较短的（λ ≈400 nm）对应蓝色调，中等波长的（λ ≈550 nm）对应绿色调，而波长较长
+的（λ ≈650 nm）则对应红色调。
+
+在本章中，我们将介绍四个描述电磁辐射的关键物理量：通量、强度、辐照度和辐射度。这些辐射量各自由其光谱功
+率分布（SPD）来描述——即一个描述各波长处光强分布的波长分布函数。在 pbrt 中，使用第 5.1 节中定义的
+Spectrum 类来表示 SPD。
+
+** 谱表示
+
+现实世界中物体的光谱功率分布（SPD）可能相当复杂；图5.1展示了荧光灯发光的光谱分布曲线以及柠檬皮反射率的
+光谱分布曲线。使用光谱功率分布进行计算的渲染器需要一种紧凑、高效且精确的方法来表示此类函数。实际上，在
+这些特性之间需要进行一定的权衡。
+
+可以基于寻找能够表示SPD的良好基函数这一问题，构建一个用于研究这些问题的通用框架。基函数背后的思想是将
+可能的SPD函数构成的无限维空间映射到一个低维系数空间 $c_i \in \mathbb{R}$。例如，一个简单的基函数是常数函数B(λ)=1。任
+意一个SPD在此基下将由一个系数c表示，该系数等于其平均值，因此其近似表达式为cB(λ)=c。这显然是一个很差的
+近似，因为大多数SPD的复杂程度远超该单一基函数所能准确表示的范围。
+
+[[./images/vWUwrV.png]]
+
+
+在计算机图形学中，人们已经研究了许多不同的基函数用于谱表示；“进一步阅读”一节列举了关于该主题的若干论文
+和更多资源。不同的基函数集会在关键操作的复杂度上带来截然不同的权衡，例如将任意光谱分布（SPD）转换为一
+组系数（将其投影到基函数上）、计算由两个以基函数表示的SPD的乘积所产生的光谱分布的系数等。在本章中，我
+们将介绍两种可用于 pbrt 中光谱的表示方法：RGBSpectrum，它遵循计算机图形学中典型的做法，即用代表红、绿、
+蓝三色混合的系数来表示 SPD；以及 SampledSpectrum，它将 SPD 表示为覆盖一定波长范围的一组点采样。
+
+***  Spectrum 类型
+
+在整个 pbrt 项目中，我们一直谨慎地将所有涉及 SPD 的计算都以Spectrum 类型的形式实现，并使用一组特定的内
+置运算符（加法、乘法等）。Spectrum 类型隐藏了所用特定谱表示法的细节，因此更改系统的这一细节只需修改
+Spectrum的实现；其他代码可以保持不变。Spectrum 类型的实现位于文件 core/spectrum.h 和 core/spectrum.cpp
+中。
+
+在 pbrt 中，用于“光谱类型”（Spectrum type）的光谱表示方式的选择是通过 core/pbrt.h 文件中的 typedef 定
+义来实现的。默认情况下，pbrt 使用效率更高但精度较低的 RGB 表示法。
+
+#+begin_export ascii
+⟨Global Forward Declarations⟩≡
+  typedef RGBSpectrum Spectrum;
+  // typedef SampledSpectrum Spectrum;
+#+end_export
+
+我们并未将系统设计成可在运行时决定使用哪种 Spectrum 实现；若要切换到另一种表示形式，则必须重新编译整个
+系统。这种设计的一个优点是，许多不同的 Spectrum 方法可以实现为短函数，这些函数可以被编译器内联，而不是
+作为独立函数，必须通过相对较慢的虚拟方法调用机制来调用。内联此类常用的短函数可以显著提高性能。第二个优
+点在于，系统中用于存储 Spectrum 类型实例的结构体可以直接存储这些实例，而无需根据运行时选择的谱表示法进
+行动态分配。
+
+*** [#A] CoefficientSpectrum 的实现
+
+本章实现的这两种表示方式均基于存储固定数量的SPD采样点。因此，我们将首先定义CoefficientSpectrum模板类，
+该类将光谱表示为由模板参数nSpectrumSamples 指定的特定样本数。RGBSpectrum 和 SampledSpectrum 均通过继承
+自 CoefficientSpectrum 来实现其部分功能
+
+#+begin_export ascii
+⟨Spectrum Declarations⟩≡
+  template <int nSpectrumSamples> class CoefficientSpectrum {
+  public:
+      ⟨CoefficientSpectrum Public Methods 316⟩
+      ⟨CoefficientSpectrum Public Data 318⟩
+  protected:
+      ⟨CoefficientSpectrum Protected Data 316⟩
+  };
+#+end_export
+
+提供了一个 CoefficientSpectrum 构造函数；它会将频谱初始化为在所有波长上均取恒定值。
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Methods⟩≡ 316
+  CoefficientSpectrum(Float v = 0.f) {
+    for(inti=0;i<nSpectrumSamples; ++i)
+      c[i] = v;
+  }
+#+end_export
+
+#+begin_export ascii
+⟨CoefficientSpectrum Protected Data⟩≡ 316
+  Float c[nSpectrumSamples];
+#+end_export
+
+需要对 Spectrum 对象进行各种算术运算；CoefficientSpectrum 中的实现都很简单明了。首先，我们定义了用于对
+谱分布对进行加法的运算。对于采样表示，很容易证明，两个 SPD 的和的每个采样值都等于相应采样值的和。
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Methods⟩+≡ 316
+  CoefficientSpectrum &operator+=(const CoefficientSpectrum &s2) {
+    for(inti=0;i<nSpectrumSamples; ++i)
+      c[i] += s2.c[i];
+    return *this;
+  }
+#+end_export
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Methods⟩+≡ 316
+  CoefficientSpectrum operator+(const CoefficientSpectrum &s2) const {
+    CoefficientSpectrum ret = *this;
+    for(inti=0;i<nSpectrumSamples; ++i)
+      ret.c[i] += s2.c[i];
+    return ret;
+  }
+#+end_export
+
+同样，减法、乘法、除法和一元取反也是按组件逐个定义的。这些方法与前面已经介绍过的非常相似，因此我们在此
+不再赘述。pbrt 还提供了相等和不等测试，此处也不作赘述。
+
+通常，了解一个光谱是否代表一个在各处值均为零的SPD（光谱功率分布）会很有帮助。例如，如果一个表面的反射
+率为零，光传输算法就可以避免投射反射光线的计算开销，因为这些光线包含的贡献值最终会被乘以零，因此无需进
+行追踪。
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Methods⟩+≡ 316
+  bool IsBlack() const {
+     for(inti=0;i<nSpectrumSamples; ++i)
+       if (c[i] != 0.) return false;
+     return true;
+  }
+#+end_export
+
+Spectrum 的实现（以及相应的 CoefficientSpectrum 实现）还必须提供一些稍显冷僻的方法的实现，包括对 SPD
+求平方根或将其所表示的函数提升到指定幂的方法。例如，这些方法对于第 8 章中Fresnel 类执行的某些计算是必
+需的。Sqrt() 的实现对每个分量求平方根，从而得到 SPD 的平方根。Pow() 和Exp() 的实现原理类似，此处不再赘
+述。
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Methods⟩+≡ 316
+  friend CoefficientSpectrum Sqrt(const CoefficientSpectrum &s) {
+    CoefficientSpectrum ret;
+    for(inti=0;i<nSpectrumSamples; ++i)
+      ret.c[i] = std::sqrt(s.c[i]);
+    return ret;
+  }
+#+end_export
+
+能够对两个SPD进行线性插值通常很有用，其中参数t
+
+
+#+begin_export ascii
+⟨Spectrum Inline Functions⟩≡
+  inline Spectrum Lerp(Float t, const Spectrum &s1, const Spectrum &s2) {
+    return (1 - t) * s1+t*s2;
+  }
+#+end_export
+
+图像处理管道中的某些环节需要对谱值进行限制，以确保其所表示的函数处于某个允许范围内。
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Methods⟩+≡ 316
+  CoefficientSpectrum Clamp(Float low = 0, Float high = Infinity) const {
+    CoefficientSpectrum ret;
+    for(inti=0;i<nSpectrumSamples; ++i)
+      ret.c[i] = ::Clamp(c[i], low, high);
+    return ret;
+ }
+#+end_export
+
+最后，我们提供了一个调试例程，用于检查SPD的样本值中是否存在非数值（NaN浮点值）。这种情况可能是由于意外
+除以0而导致的；系统中的Assert()语句均使用此方法，以便在问题发生处附近捕获此类情况。
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Methods⟩+≡ 316
+  bool HasNaNs() const {
+    for(inti=0;i<nSpectrumSamples; ++i)
+      if (std::isnan(c[i])) return true;
+    return false;
+  }
+#+end_export
+
+pbrt 中的大部分光谱计算都可以使用我们迄今为止定义的基本运算来实现。然而，在某些情况下，需要能够对代表
+SPD 的光谱采样集进行迭代——例如，执行基于光谱采样的表查找，或者在波长范围内求解分段函数。pbrt 中需要此
+功能的类包括用于次表面散射的 TabulatedBSSRDF 类，以及 HomogeneousMedium 和 GridDensityMedium 类。
+
+针对这些用途，CoefficientSpectrum 提供了一个公共常量 nSamples，该常量表示用于表示 SPD 的采样点数量，并
+提供了一个 operator[] 方法来访问各个采样点的值。
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Data⟩≡ 316
+  static const int nSamples = nSpectrumSamples;
+#+end_export
+
+#+begin_export ascii
+⟨CoefficientSpectrum Public Methods⟩+≡ 316
+  Float &operator[](int i) {
+    return c[i];
+  }
+#+end_export
+
+请注意，该采样访问器的存在隐含了一个假设，即谱表示是一组系数，这些系数对一组固定的基函数进行线性缩放。
+例如，如果某个 Spectrum 实现将 SPD 表示为高斯函数的和，其中系数 $c_i$ 交替地对高斯函数进行缩放并设定其宽
+度，
+
+$$S(\lambda)=\sum^{N}_{i}c_{2i}e^{-c_{2i+1}}$$
+
+那么，当前使用该访问器的代码就需要进行修改，也许需要转而对已转换为一组线性系数的SPD版本进行操作。虽然
+这种对频谱抽象的“破例”并不理想，但它简化了当前系统的其他部分，而且如果添加了频谱表示形式，在该假设不成
+立的情况下，清理起来也不太困难。
+
+** SampledSpectrum 类
+
+SampledSpectrum 利用 CoefficientSpectrum 基础设施来表示一个 SPD，该 SPD 在起始波长和结束波长之间具有均
+匀间隔的采样点。波长范围覆盖 400 nm 至 700 nm——这是可见光谱中人类视觉系统最敏感的范围。采样点数量为 60
+个，通常已足以准确表示用于渲染的复杂 SPD。（有关 SPD 采样率要求的背景信息，请参阅“进一步阅读”部分。）
+因此，第一个采样点代表波长范围 [400, 405)，第二个代表 [405, 410)，以此类推。这些数值可根据需要在此轻松
+更改。
+
+#+begin_export ascii
+⟨Spectrum Utility Declarations⟩≡
+  static const int sampledLambdaStart = 400;
+  static const int sampledLambdaEnd = 700;
+  static const int nSpectralSamples = 60;
+#+end_export
+
+#+begin_export ascii
+⟨Spectrum Declarations⟩+≡
+  class SampledSpectrum : public CoefficientSpectrum<nSpectralSamples> {
+    public:
+      ⟨SampledSpectrum Public Methods 319⟩
+    private:
+      ⟨SampledSpectrum Private Data 324⟩
+  };
+#+end_export
+
+通过继承自 CoefficientSpectrum 类，SampledSpectrum 自动具备了前面定义的所有基本光谱算术运算。剩下的主
+要方法是那些用于根据光谱数据初始化该类，以及将它所表示的 SPD转换为其他光谱表示形式（如 RGB）的方法。用
+于通过常量 SPD 初始化该类的构造函数非常简单。
+
+#+begin_export ascii
+⟨SampledSpectrum Public Methods⟩≡ 319
+  SampledSpectrum(Float v = 0.f) : CoefficientSpectrum(v) { }
+#+end_export
+
+我们通常会收到以 $(\lambda_i, v_i)$ 样本集形式呈现的光谱数据，其中第 i 个样本在波长 $\lambda_i$ 处具有某个值 $v_i$。一般而言，
+这些样本的间距可能不规则，且其数量可能多于或少于 SampledSpectrum 中存储的样本数。（请参见pbrt 发行版中
+的 scenes/spds 目录，其中包含多种可用于 pbrt 的 SPD 数据，其中许多都具有不规则的采样间距。）
+
+FromSampled() 方法接受在给定波长lambda 下的 SPD 采样值 v 数组，并利用这些值定义一个分段线性函数来表示
+SPD。对于SampledSpectrum 中的每个 SPD 采样值，它使用下文定义的AverageSpectrumSamples() 辅助函数，计算
+该分段线性函数在每个 SPD 采样值所对应的波长范围内的平均值
+
+#+begin_export ascii
+⟨SampledSpectrum Public Methods⟩+≡ 319
+  static SampledSpectrum FromSampled(const Float *lambda,
+    const Float *v, int n) {
+    ⟨Sort samples if unordered, use sorted for returned spectrum 320⟩
+    SampledSpectrum r;
+    for(inti=0;i<nSpectralSamples; ++i) {
+      ⟨Compute average value of given SPD over ith sample’s range 320⟩
+    }
+    return r;
+  }
+#+end_export
+
+AverageSpectrumSamples() 函数要求 $(\lambda_i, v_i)$ 值按波长排序。SpectrumSamplesSorted() 函数会检查它们是否已
+按波长排序；若未排序，则由 SortSpectrumSamples() 对其进行排序。请注意，我们会为已排序的采样值分配新的
+存储空间，而不会修改调用方传入的值；一般而言，这样做可能会导致该函数的用户遇到意料之外的行为（用户本不
+应需要担心其具体实现的这些要求）。由于这两个函数的实现都很简单，因此我们在此不列出它们的具体实现代码。
+
+#+begin_export ascii
+⟨Sort samples if unordered, use sorted for returned spectrum⟩≡
+  if (!SpectrumSamplesSorted(lambda, v, n)) {
+    std::vector<Float> slambda(&lambda[0], &lambda[n]);
+    std::vector<Float> sv(&v[0], &v[n]);
+    SortSpectrumSamples(&slambda[0], &sv[0], n);
+    return FromSampled(&slambda[0], &sv[0], n);
+  }
+#+end_export
+
+为了计算第 i 个光谱采样点的值，我们先计算该采样点所对应的波长范围——从 lambda0 到 lambda1——然后使用
+AverageSpectrum Samples() 函数，计算给定分段线性光谱密度函数（SPD）在该范围内的平均值。这是一种一维采
+样与重建的实例，相关内容将在第 7 章中进行更详细的讨论。
+
+#+begin_export ascii
+⟨Compute average value of given SPD over ith sample’s range⟩≡
+  Float lambda0 = Lerp(Float(i) / Float(nSpectralSamples),
+                       sampledLambdaStart, sampledLambdaEnd);
+  Float lambda1 = Lerp(Float(i + 1) / Float(nSpectralSamples),
+                       sampledLambdaStart, sampledLambdaEnd);
+  r.c[i] = AverageSpectrumSamples(lambda, v, n, lambda0, lambda1);
+#+end_export
+
+图 5.2 展示了 AverageSpectrumSamples() 函数采用的基本方法：它遍历所有部分或完全位于波长范围
+lambdaStart 至 lambdaEnd 内的采样点之间的线性段。对于每个此类线性段，它计算该线性段范围内的平均值，根
+据该线性段所覆盖的波长范围对平均值进行归一化，并累加这些值的总和。最终的平均值即为该和除以总波长范围。
+
+[[./images/tsqWYl.png]]
+
+#+begin_export ascii
+⟨Spectrum Method Definitions⟩≡
+  Float AverageSpectrumSamples(const Float *lambda, const Float *vals,
+          int n, Float lambdaStart, Float lambdaEnd) {
+    ⟨Handle cases with out-of-bounds range or single sample only 321⟩
+    Float sum = 0;
+    ⟨Add contributions of constant segments before/after samples 321⟩
+    ⟨Advance to first relevant wavelength segment 322⟩
+    ⟨Loop over wavelength sample segments and add contributions 322⟩
+    return sum / (lambdaEnd - lambdaStart);
+  }
+#+end_export
+
+该函数首先检查并处理以下边界情况：待求平均的波长范围超出给定波长范围，或者仅有一个样本的情况——后者中平
+均值的计算非常简单。我们假设在给定采样范围之外，光谱功率分布（SPD）的值保持恒定（即两个端点的值）；如
+果对于特定数据集而言，此假设不合理，则提供的数据应在端点处明确指定为（例如）0。
+
+#+begin_export ascii
+⟨Handle cases with out-of-bounds range or single sample only⟩≡
+  if (lambdaEnd <= lambda[0]) return vals[0];
+  if (lambdaStart >= lambda[n - 1]) return vals[n - 1];
+  if (n == 1) return vals[0];
+#+end_export
+
+处理完这些情况后，下一步是检查用于求平均的波长范围中是否有一部分超出了第一个和/或最后一个样本值。如果
+是这样，我们就累加常数区段的贡献，并按超出范围的波长范围进行缩放。
+
+#+begin_export ascii
+⟨Add contributions of constant segments before/after samples⟩≡
+  if (lambdaStart < lambda[0])
+    sum += vals[0] * (lambda[0] - lambdaStart);
+  if (lambdaEnd > lambda[n-1])
+    sum += vals[n - 1] * (lambdaEnd - lambda[n - 1]);
+#+end_export
+
+现在，我们将索引向 i 方向推进，此时插值范围的起始波长与从 $\lambda_i$ 到 $\lambda_{i+1}$ 的区间发生重叠。更高效的实现方
+式应在此处使用二分搜索而非线性搜索。2 不过，该代码目前仅在场景初始化时被调用，因此缺乏这些优化目前不会
+影响渲染性能。
+
+#+begin_export ascii
+⟨Advance to first relevant wavelength segment⟩≡
+  inti=0;
+  while (lambdaStart > lambda[i + 1]) ++i;
+#+end_export
+
+下面的循环遍历了与平均范围重叠的每个线性区间。对于每个区间，它通过计算函数在 segLambda Start 和
+segLambdaEnd 这两个点处的值，来求出 segLambda Start 到 segLambdaEnd 波长范围内的平均值。这些值则由
+interpol() 函数计算得出，该 lambda 函数会在给定波长下对两个端点之间进行线性插值。
+
+下面的 std::min() 和 std::max() 调用用于计算该区间内需进行平均计算的波长范围；请注意，它们会自动处理
+lambdaStart、lambdaEnd 或两者均位于当前区间内的情况。
+
+#+begin_export ascii
+⟨Loop over wavelength sample segments and add contributions⟩≡
+  auto interp = [lambda, vals](Float w, int i) {
+    return Lerp((w - lambda[i]) / (lambda[i + 1] - lambda[i]),
+               vals[i], vals[i + 1]);
+  };
+  for(;i+1<n&&lambdaEnd >= lambda[i]; ++i) {
+    Float segLambdaStart = std::max(lambdaStart, lambda[i]);
+    Float segLambdaEnd = std::min(lambdaEnd, lambda[i + 1]);
+    sum += 0.5 * (interp(segLambdaStart, i) + interp(segLambdaEnd, i)) *
+       (segLambdaEnd - segLambdaStart);
+  }
+#+end_export
+
+*** XYZ颜色
+
+人类视觉系统的一个显著特性使得仅需三个浮点数就能表示人类所感知到的颜色。色彩知觉的三刺激理论指出，对于
+人类观察者而言，所有可见光谱响应函数（SPD）均可通过三个值—— $x_\lambda,y_\lambda$ 和$z_\lambda$——得到准确表征。对于给定的光
+谱响应函数 S(λ)，这些值可通过将其与光谱匹配曲线 X(λ)、Y(λ) 和 Z(λ) 的乘积进行积分来计算：
+
+$$ x_\lambda=\frac{1}{\intY(\lambda)d\lambda}\int_\lambda S(\lambda)X(\lambda)d\lambda $$
+$$ y_\lambda=\frac{1}{\intY(\lambda)d\lambda}\int_\lambda S(\lambda)Y(\lambda)d\lambda $$
+$$ x_\lambda=\frac{1}{\intY(\lambda)d\lambda}\int_\lambda S(\lambda)Z(\lambda)d\lambda $$
+
+
+这些曲线是由国际照明委员会（CIE）标准机构在对人类受试者进行一系列实验后确定的，并绘制在图5.3中。人们认
+为，这些匹配曲线总体上与人类视网膜中三种感色锥细胞的响应相似。值得注意的是，光谱功率分布（SPD）即使分
+布存在显著差异，其 $ x_\lambda,y_\lambda $ 和 $z_\lambda$ 值也可能非常接近。对人眼观察者而言，此类光谱功率分布
+在视觉上实际上看起来是相同的。此类光谱对被称为同色异谱。
+
+[[./images/lXSaH3.png]]
+
+这让我们注意到关于光谱功率分布表示的一个微妙之处。大多数色彩空间都试图对人眼可见的颜色进行建模，因此仅
+使用三个系数，利用了色彩感知的三刺激值理论。尽管XYZ 系统在表示供人眼观察的特定光谱功率分布（SPD）方面
+效果良好，但它并不是用于光谱计算的特别理想的基函数集。例如，尽管XYZ值能够很好地单独描述柠檬皮或荧光灯
+的感知颜色（回顾图5.1），但它们各自XYZ值的乘积所得到的XYZ颜色，很可能与通过将它们更精确的光谱功率分布
+（SPD）表示相乘，再计算XYZ值所得到的XYZ值存在明显差异。
+
+pbrt 提供了标准 X(λ)、Y(λ) 和 Z(λ) 响应曲线的数值，这些曲线在 360 nm 至 830 nm 范围内以 1 nm 为间隔进
+行采样。下文数组中第 i 个样本的波长由 CIE_lambda 的第 i 个元素给出；通过这种方式明确表示样本的波长，便
+于将 XYZ 样本传递给AverageSpectrumSamples() 等函数，这些函数将此类波长数组作为参数。
+
+#+begin_export ascii
+⟨Spectral Data Declarations⟩≡
+  static const int nCIESamples = 471;
+  extern const Float CIE_X[nCIESamples];
+  extern const Float CIE_Y[nCIESamples];
+  extern const Float CIE_Z[nCIESamples];
+  extern const Float CIE_lambda[nCIESamples];
+#+end_export
+
+SampledSpectrum 使用这些样本来计算其光谱表示中的 XYZ 匹配曲线（即其自身的 SampledSpectrum 表示）。
+
+#+begin_export ascii
+⟨SampledSpectrum Private Data⟩≡ 319
+  static SampledSpectrum X, Y, Z;
+#+end_export
+
+SampledSpectrum 的 XYZ 匹配曲线是在 SampledSpectrum:: Init() 方法中计算的，该方法由第 B.2 节中定义的
+pbrtInit() 函数在系统启动时调用。
+
+#+begin_export ascii
+⟨SampledSpectrum Public Methods⟩+≡ 319
+  static void Init() {
+    ⟨Compute XYZ matching functions for SampledSpectrum 324⟩
+    ⟨Compute RGB to spectrum functions for SampledSpectrum⟩
+  }
+#+end_export
+
+#+begin_export ascii
+⟨General pbrt Initialization⟩≡ 1109
+  SampledSpectrum::Init();
+#+end_export
+
+考虑到 SampledSpectrum 的波长范围和样本数量，计算每个样本的匹配函数值只需计算该样本的波长范围，并调用
+AverageSpectrumSamples() 子程序即可。
+
+#+begin_export ascii
+⟨Compute XYZ matching functions for SampledSpectrum⟩≡
+  for(inti=0;i<nSpectralSamples; ++i) {
+    Float wl0 = Lerp(Float(i) / Float(nSpectralSamples),
+                     sampledLambdaStart, sampledLambdaEnd);
+    Float wl1 = Lerp(Float(i + 1) / Float(nSpectralSamples),
+                     sampledLambdaStart, sampledLambdaEnd);
+    X.c[i] = AverageSpectrumSamples(CIE_lambda, CIE_X, nCIESamples,
+                                    wl0, wl1);
+    Y.c[i] = AverageSpectrumSamples(CIE_lambda, CIE_Y, nCIESamples,
+                                    wl0, wl1);
+    Z.c[i] = AverageSpectrumSamples(CIE_lambda, CIE_Z, nCIESamples,
+                                    wl0, wl1);
+  }
+#+end_export
+
+pbrt 中的所有光谱（Spectrum）实现都必须提供一个方法，将它们的光谱功率分布（SPD）转换为 $(x_\lambda, y_\lambda, z_\lambda)$ 系
+数。例如，在更新图像中的像素的过程中会调用此方法。当向胶片提供一个表示沿光线从摄像机传来的光线的“光谱”
+时，胶片会将该光谱密度（SPD）转换为 XYZ 系数，作为最终将其转换为用于存储和/或显示的 RGB 值过程中的第一
+步。
+
+为了计算 XYZ 系数，SampledSpectrum 采用黎曼和对式(5.1)中的积分进行计算：
+
+$$ x_\lambda \approx \frac{1}{\int Y(\lambda)d\lambda} \frac{\lambda_{end}-\lambda_{start}}{N} \sum_{i=0}^{N-1}X_ic_i$$
+
+
+#+begin_export ascii
+⟨SampledSpectrum Public Methods⟩+≡ 319
+  void ToXYZ(Float xyz[3]) const {
+    xyz[0] = xyz[1] = xyz[2] = 0.f;
+    for(inti=0;i<nSpectralSamples; ++i) {
+      xyz[0] += X.c[i] * c[i];
+      xyz[1] += Y.c[i] * c[i];
+      xyz[2] += Z.c[i] * c[i];
+  }
+  Float scale = Float(sampledLambdaEnd - sampledLambdaStart) /
+      Float(CIE_Y_integral * nSpectralSamples);
+    xyz[0] *= scale;
+    xyz[1] *= scale;
+    xyz[2] *= scale;
+  }
+#+end_export
+
+积分 $\int Y(\lamdba)d(\lambda)$ 的值常用于此类计算中；因此，通过常量 CIE_Y_integral 直接获取该值会非常有用。
+
+#+begin_export ascii
+⟨Spectral Data Declarations⟩+≡
+  static const Float CIE_Y_integral = 106.856895;
+#+end_export
+
+XYZ 色彩的 y 系数与亮度密切相关，亮度衡量的是颜色被感知到的亮度。关于亮度的详细说明，请参见第 5.4.3 节。
+我们在另一个方法中提供了一种单独计算 y 的方法，因为通常只需光谱的亮度值。（例如，第14–16章中的某些光传
+输算法将亮度用作衡量场景中光传输路径相对重要性的指标。）
+
+#+begin_export ascii
+⟨SampledSpectrum Public Methods⟩+≡ 319
+  Float y() const {
+    Float yy = 0.f;
+    for(inti=0;i<nSpectralSamples; ++i)
+      yy += Y.c[i] * c[i];
+    return yy * Float(sampledLambdaEnd - sampledLambdaStart) /
+      Float(CIE_Y_integral * nSpectralSamples);
+  }
+#+end_export
+
+*** RGB颜色
+
+当我们在显示器上显示一种RGB颜色时，实际显示的光谱基本上由三条光谱响应曲线的加权和决定，这三条曲线分别
+对应红、绿、蓝三原色，由显示器的荧光粉、LED或LCD元件，以及等离子单元所发射。3 图5.4绘制了LED显示器和
+LCD显示器所发射的红、绿、蓝光谱分布；请注意，它们之间存在显著差异。图5.5则展示了在这些显示器上显示RGB
+颜色(0.6, 0.3, 0.2)时所产生的光谱功率分布（SPD）。不出所料，所得的光谱功率分布也大不相同。这个例子说明，
+使用用户提供的RGB值来描述特定颜色，实际上只有在了解用户选择这些RGB值时所使用的显示器特性的情况下，才具
+有实际意义。
+
+[[./images/tdHJW6.png]]
+
+
+
+给定一个光谱响应分布（SPD）的 $(x_\lambda, y_\lambda, z_\lambda)$ 表示形式，只要选定一组特定的 SPD 来定义目标显示器的红、
+绿、蓝三原色，我们就可以将其转换为相应的 RGB系数。给定特定显示器的光谱响应曲线 R(λ)、G(λ) 和 B(λ)，可
+以通过将这些响应曲线与 SPD S(λ) 进行积分来计算 RGB 系数：
+
+[[./images/9jACCe.png]]
+
+\begin{align*}
+r &= \int R(\lambda)S(\lambda)d\lambda= \int R(\lambda)(x_\lambdaX(\lambda)+y_\lambdaY(\lambda)+z_\lambda Z(\lambda))d\lambda \\
+ &= x_\lambda \int R(\lambda)X(\lambda)d\lambda+y_\lambda \int R(\lambda)Y(\lambda)d\lambda+z_\lambda \int R(\lambda)Z(\lambda)d\lambda
+\end{align*}
+
+
+对于给定的响应曲线，可以预先计算 R(λ)X(λ) 乘积等的积分，从而能够将完整的转换表示为一个矩阵：
+
+\begin{equation*}
+\begin{bmatrix}
+r \\
+g \\
+b
+\end{bmatrix}=
+\begin{pmatrix}
+\int R(\lambda)X(\lambda)d\lambda & \int R(\lambda)Y(\lambda)d\lambda & \int R(\lambda)Z(\lambda)d\lambda \\
+\int G(\lambda)X(\lambda)d\lambda & \int G(\lambda)Y(\lambda)d\lambda & \int G(\lambda)Z(\lambda)d\lambda \\
+\int B(\lambda)X(\lambda)d\lambda & \int B(\lambda)Y(\lambda)d\lambda & \int B(\lambda)Z(\lambda)d\lambda \\
+\end{pmatrix}
+\begin{bmatrix}
+x_\lambda \\
+y_\lambda \\
+z_\lambda
+\end{bmatrix}
+\end{equation*}
+
+
+pbrt 中实现的转换例程基于一套标准的 RGB光谱，该光谱是为高清电视而定义的
+
+#+begin_export ascii
+⟨Spectrum Utility Declarations⟩+≡
+  inline void XYZToRGB(const Float xyz[3], Float rgb[3]) {
+    rgb[0] = 3.240479f*xyz[0] - 1.537150f*xyz[1] - 0.498535f*xyz[2];
+    rgb[1] = -0.969256f*xyz[0] + 1.875991f*xyz[1] + 0.041556f*xyz[2];
+    rgb[2] = 0.055648f*xyz[0] - 0.204043f*xyz[1] + 1.057311f*xyz[2];
+  }
+#+end_export
+
+该矩阵的逆矩阵提供了将以特定一组RGB响应曲线为基准表示的给定RGB值转换为 $(x_\lambda,y_\lambda,z_\lambda)$ 系数的系数。
+
+#+begin_export ascii
+⟨Spectrum Utility Declarations⟩+≡
+  inline void RGBToXYZ(const Float rgb[3], Float xyz[3]) {
+    xyz[0] = 0.412453f*rgb[0] + 0.357580f*rgb[1] + 0.180423f*rgb[2];
+    xyz[1] = 0.212671f*rgb[0] + 0.715160f*rgb[1] + 0.072169f*rgb[2];
+    xyz[2] = 0.019334f*rgb[0] + 0.119193f*rgb[1] + 0.950227f*rgb[2];
+  }
+#+end_export
+
+利用这些函数，SampledSpectrum 可以通过先转换为 XYZ，再使用 XYZToRGB() 辅助函数来转换为 RGB 系数。
+
+#+begin_export ascii
+⟨SampledSpectrum Public Methods⟩+≡ 319
+  void ToRGB(Float rgb[3]) const {
+    Float xyz[3];
+    ToXYZ(xyz);
+    XYZToRGB(xyz, rgb);
+  }
+#+end_export
+
+还可以使用 ToRGB() 方法轻松创建一个 RGBSpectrum 对象。
+
+#+begin_export ascii
+⟨SampledSpectrum Public Methods⟩+≡ 319
+  RGBSpectrum ToRGBSpectrum() const;
+#+end_export
+
+反向操作，即将RGB或XYZ值转换为SPD则没那么简单：该问题存在严重的约束不足。回顾一下，有无限多种不同的SPD
+具有相同的 $(x_\lambda, y_\lambda,z_\lambda)$（因此也是相同的RGB）系数。因此，给定一个RGB或 $(x_\lambda,y_\lambda, z_\lambda)$ 值，可以为其
+选择的可能SPD有无限多种。我们希望转换函数具备以下若干理想标准：
+
++ 如果所有 RGB 系数的值都相同，则得到的 SPD 应为常量。
++ 一般而言，计算得到的SPD最好是平滑的。大多数现实世界中的物体具有相对平滑的光谱。（光谱出现尖峰的主要
+  来源是光源，特别是荧光灯。幸运的是，与反射率相比，光源的实际光谱数据更容易获得。）
+
+平滑度要求是导致将SPD构建为显示器R(λ)、G(λ)和B(λ) SPD的加权和并非理想解决方案的原因之一：如图5.4所示，
+这些函数通常不规则且呈尖峰状，因此它们的加权和将无法形成非常平滑的SPD。尽管所得结果将是给定 RGB 值的同
+色异谱，但它很可能无法准确反映实际物体的 SPD。
+
+在此，我们实现了一种由 Smits (1999)所提出的一种将RGB转换为SPD的方法，该方法旨在实现上述目标。该方法基
+于以下观察：一个良好的起点是分别计算红、绿、蓝三色的SPD，这些SPD应具有平滑特性，且当使用给定的RGB系数
+计算它们的加权和，然后将其转换回RGB时，所得结果应接近原始的RGB系数。他通过数值优化过程找到了这样的光谱。
+
+斯密茨指出，这种基本方法还可以进行两项改进。首先，与其用计算得到的红、绿、蓝三色SPD的和来表示恒定光谱
+（因为这些SPD的和并非完全恒定），不如用恒定的SPD来表示恒定光谱。其次，像黄色（由红、绿混合而成）这类由
+两种原色混合而成的颜色，最好通过其各自预先计算的平滑SPD来表示，而不是通过相应两种原色的SPD之和来表示。
+
+以下数组存储了符合这些条件的 SPD，其样本的波长存储在 RGB2SpectLambda[] 中（这些数据由 Karl vom Berge
+生成）。
+
+#+begin_export ascii
+⟨Spectral Data Declarations⟩+≡
+  static const int nRGB2SpectSamples = 32;
+  extern const Float RGB2SpectLambda[nRGB2SpectSamples];
+  extern const Float RGBRefl2SpectWhite[nRGB2SpectSamples];
+  extern const Float RGBRefl2SpectCyan[nRGB2SpectSamples];
+  extern const Float RGBRefl2SpectMagenta[nRGB2SpectSamples];
+  extern const Float RGBRefl2SpectYellow[nRGB2SpectSamples];
+  extern const Float RGBRefl2SpectRed[nRGB2SpectSamples];
+  extern const Float RGBRefl2SpectGreen[nRGB2SpectSamples];
+  extern const Float RGBRefl2SpectBlue[nRGB2SpectSamples];
+#+end_export
+
+如果给定的RGB颜色描述的是来自光源的照明，那么使用代表性照明光源的光谱功率分布来定义“白色”，并据此计算
+转换表，将比使用恒定光谱（如上文用于反射率的表格所采用的方法）获得更好的结果。RGBIllum2Spect数组采用
+D65光谱功率分布，该分布已由国际照明委员会（CIE）标准化，用于表示正午阳光。（关于D65光源的详细讨论见第
+12.1.2节。）
+
+#+begin_export ascii
+⟨Spectral Data Declarations⟩+≡
+  extern const Float RGBIllum2SpectWhite[nRGB2SpectSamples];
+  extern const Float RGBIllum2SpectCyan[nRGB2SpectSamples];
+  extern const Float RGBIllum2SpectMagenta[nRGB2SpectSamples];
+  extern const Float RGBIllum2SpectYellow[nRGB2SpectSamples];
+  extern const Float RGBIllum2SpectRed[nRGB2SpectSamples];
+  extern const Float RGBIllum2SpectGreen[nRGB2SpectSamples];
+  extern const Float RGBIllum2SpectBlue[nRGB2SpectSamples];
+#+end_export
+
+片段⟨为 SampledSpectrum 计算 RGB 到光谱的函数⟩（该片段由SampledSpectrum::Init() 调用）未包含在此处；它
+通过使用 AverageSpectrumSamples() 函数对 RGBRefl2Spect 和 RGBIllum2Spect 分布进行重采样，来初始化以下
+SampledSpectrum 值。
+
+#+begin_export ascii
+⟨SampledSpectrum Private Data⟩+≡ 319
+  static SampledSpectrum rgbRefl2SpectWhite, rgbRefl2SpectCyan;
+  static SampledSpectrum rgbRefl2SpectMagenta, rgbRefl2SpectYellow;
+  static SampledSpectrum rgbRefl2SpectRed, rgbRefl2SpectGreen;
+  static SampledSpectrum rgbRefl2SpectBlue;
+#+end_export
+
+SampledSpectrum::FromRGB() 方法将给定的 RGB 值转换为完整的光谱功率分布（SPD）。除了 RGB 值外，该方法还
+接受一个枚举值，用于指示该 RGB 值代表的是表面反射率还是光源；转换时将使用相应的rgbIllum2Spect 或
+rgbRefl2Spect 值。
+
+#+begin_export ascii
+⟨Spectrum Utility Declarations⟩+≡
+  enum class SpectrumType { Reflectance, Illuminant };
+#+end_export
+
+#+begin_export ascii
+⟨Spectrum Method Definitions⟩+≡
+  SampledSpectrum SampledSpectrum::FromRGB(const Float rgb[3],
+                                           SpectrumType type) {
+    SampledSpectrum r;
+   if (type == SpectrumType::Reflectance) {
+     ⟨Convert reflectance spectrum to RGB 330⟩
+    } else {
+      ⟨Convert illuminant spectrum to RGB⟩
+    }
+    return r.Clamp();
+  }
+#+end_export
+
+下面我们将介绍反射率的转换过程。光源的计算方法与此相同，只是使用了不同的转换值。首先，该实现会确定是红
+色、绿色还是蓝色通道的数值最小。
+
+#+begin_export ascii
+⟨Convert reflectance spectrum to RGB⟩≡
+  if (rgb[0] <= rgb[1] && rgb[0] <= rgb[2]) {
+    ⟨Compute reflectance SampledSpectrum with rgb[0] as minimum 331⟩
+  } else if (rgb[1] <= rgb[0] && rgb[1] <= rgb[2]) {
+    ⟨Compute reflectance SampledSpectrum with rgb[1] as minimum⟩
+  } else {
+    ⟨Compute reflectance SampledSpectrum with rgb[2] as minimum⟩
+  }
+#+end_export
+
+以下是红色分量最小时的情况的代码。（绿色和蓝色的情况与此类似，本书中未作赘述。） 如果红色分量最小，我
+们知道绿色和蓝色的数值都大于红色。因此，我们可以开始转换最终要返回的SPD，将其赋值为红色分量与
+rgbRefl2SpectWhite中白色光谱的乘积。完成这一步后，剩余待处理的RGB值为(0, g−r, b−r)。代码随后确定剩余的
+两个分量中哪个最小。将该值乘以青色（绿色和蓝色）光谱，再将其加到结果中，最终得到 (0, g−b,0) 或 (0, 0,
+b−g)。根据绿色或蓝色通道是否为非零值，将绿色或蓝色的 SPD 按余数进行缩放，转换即告完成。
+
+#+begin_export ascii
+⟨Compute reflectance SampledSpectrum with rgb[0] as minimum⟩≡
+  r += rgb[0] * rgbRefl2SpectWhite;
+  if (rgb[1] <= rgb[2]) {
+    r += (rgb[1] - rgb[0]) * rgbRefl2SpectCyan;
+    r += (rgb[2] - rgb[1]) * rgbRefl2SpectBlue;
+  } else {
+    r += (rgb[2] - rgb[0]) * rgbRefl2SpectCyan;
+    r += (rgb[1] - rgb[2]) * rgbRefl2SpectGreen;
+  }
+#+end_export
+
+既然已经掌握了从RGB转换的方法，那么从XYZ颜色转换也就很简单了。我们首先将XYZ转换为RGB，然后使用
+FromRGB()方法。
+
+#+begin_export ascii
+⟨SampledSpectrum Public Methods⟩+≡ 319
+  static SampledSpectrum FromXYZ(const Float xyz[3],
+          SpectrumType type = SpectrumType::Reflectance) {
+    Float rgb[3];
+    XYZToRGB(xyz, rgb);
+    return FromRGB(rgb, type);
+  }
+#+end_export
+
+最后，我们提供了一个构造函数，用于将 RGBSpectrum 类的实例进行转换，同样利用了上述基础架构。
+
+#+begin_export ascii
+⟨Spectrum Method Definitions⟩+≡
+  SampledSpectrum::SampledSpectrum(const RGBSpectrum &r, SpectrumType t) {
+    Float rgb[3];
+    r.ToRGB(rgb);
+    *this = SampledSpectrum::FromRGB(rgb, t);
+  }
+#+end_export
+
+** RGBSpectrum 实现
+
+此处的 RGBSpectrum 实现通过红、绿、蓝三色分量的加权和来表示 SPD。需要注意的是，这种表示法定义不明确：
+对于两台不同的计算机显示器，即使它们显示相同的RGB值，也不会发出相同的SPD。因此，要使一组RGB值能够指定
+一个实际的SPD，我们必须知道这些RGB值所基于的显示器原色；而这一信息通常不会随RGB值一同提供。
+
+尽管如此，RGB 表示法依然非常方便：几乎所有的 3D 建模和设计工具都使用 RGB 颜色，而且大多数 3D 内容都是
+通过 RGB 来定义的。此外，它在计算和存储方面都很高效，只需三个浮点数值即可表示。我们实现的 RGBSpectrum
+继承自 CoefficientSpectrum，指定存储三个分量。因此，之前定义的所有算术运算均可自动用于 RGBSpectrum。
+
+#+begin_export ascii
+⟨Spectrum Declarations⟩+≡
+  class RGBSpectrum : public CoefficientSpectrum<3> {
+    public:
+      ⟨RGBSpectrum Public Methods 332⟩
+  };
+#+end_export
+
+#+begin_export ascii
+⟨RGBSpectrum Public Methods⟩≡ 332
+  RGBSpectrum(Float v = 0.f) : CoefficientSpectrum<3>(v) { }
+  RGBSpectrum(const CoefficientSpectrum<3> &v)
+    : CoefficientSpectrum<3>(v) { }
+#+end_export
+
+除了基本的算术运算符之外，RGBSpectrum 还需要提供用于在 XYZ 和 RGB 表示法之间进行转换的方法。对于
+RGBSpectrum 而言，这些方法非常简单。请注意，FromRGB() 方法接受一个 SpectrumType 参数，就像本方法中
+SampledSpectrum 实例那样。尽管此处未使用该参数，但这两个类的 FromRGB() 方法必须具有匹配的签名，以便系
+统其余部分能够一致地调用它们，无论使用哪种光谱表示法。
+
+#+begin_export ascii
+⟨RGBSpectrum Public Methods⟩+≡ 332
+  static RGBSpectrum FromRGB(const Float rgb[3],
+    SpectrumType type = SpectrumType::Reflectance) {
+    RGBSpectrum s;
+    s.c[0] = rgb[0];
+    s.c[1] = rgb[1];
+    s.c[2] = rgb[2];
+    return s;
+  }
+#+end_export
+
+同样，光谱表示必须能够转换为RGB值。对于RGBSpectrum，实现可以避开“具体使用哪些RGB原色来表示光谱分布”这
+个问题，直接返回RGB系数，前提是这些原色与当前用于表示该颜色的原色相同。
+
+#+begin_export ascii
+⟨RGBSpectrum Public Methods⟩+≡ 332
+  void ToRGB(Float *rgb) const {
+    rgb[0] = c[0];
+    rgb[1] = c[1];
+    rgb[2] = c[2];
+  }
+#+end_export
+
+所有光谱表示都必须能够将自身转换为一个 RGBSpectrum对象。这一点在这里同样非常简单。
+
+#+begin_export ascii
+⟨RGBSpectrum Public Methods⟩+≡ 332
+  const RGBSpectrum &ToRGBSpectrum() const {
+    return *this;
+  }
+#+end_export
+
+RGBSpectrum::ToXYZ()、RGBSpectrum::FromXYZ() 和RGBSpectrum::y() 方法的实现基于上文定义的 RGBToXYZ() 和
+XYZToRGB() 函数，此处不再赘述。
+
+为了从任意采样光谱密度（SPD）生成RGB光谱，FromSampled()函数会将该光谱先转换为XYZ格式，再转换为RGB格式。
+它利用InterpolateSpectrumSamples()辅助函数，在CIE匹配函数存在值的每个波长处，以1 nm为步长对分段线性采
+样光谱进行插值计算。随后，它利用该值计算黎曼和，以近似求得XYZ积分。
+
+#+begin_export ascii
+⟨RGBSpectrum Public Methods⟩+≡ 332
+  static RGBSpectrum FromSampled(const Float *lambda, const Float *v,
+                                 int n) {
+    ⟨Sort samples if unordered, use sorted for returned spectrum 320⟩
+    Float xyz[3]={0,0,0};
+    for(inti=0;i<nCIESamples; ++i) {
+      Float val = InterpolateSpectrumSamples(lambda, v, n,
+                                             CIE_lambda[i]);
+      xyz[0] += val * CIE_X[i];
+      xyz[1] += val * CIE_Y[i];
+      xyz[2] += val * CIE_Z[i];
+    }
+    Float scale = Float(CIE_lambda[nCIESamples-1] - CIE_lambda[0]) /
+    Float(CIE_Y_integral * nCIESamples);
+    xyz[0] *= scale;
+    xyz[1] *= scale;
+    xyz[2] *= scale;
+    return FromXYZ(xyz);
+  }
+#+end_export
+
+InterpolateSpectrumSamples() 函数接受一组可能为非均匀采样的波长和 SPD 值 $(\lambda_i, v_i)$，并返回给定波长 λ
+处的 SPD 值，方法是在包含 λ 的两个采样值之间进行线性插值。附录 A 中定义的 FindInterval()函数通过已排序
+的波长数组 lambda 进行二分搜索，以找到包含 l 的区间。
+
+#+begin_export ascii
+⟨Spectrum Method Definitions⟩+≡
+  Float InterpolateSpectrumSamples(const Float *lambda, const Float *vals,
+                                   int n, Float l) {
+    if (l <= lambda[0]) return vals[0];
+    if (l >= lambda[n - 1]) return vals[n - 1];
+    int offset = FindInterval(n,
+      [&](int index) { return lambda[index] <= l; });
+    Floatt=(l-lambda[offset]) / (lambda[offset+1] - lambda[offset]);
+    return Lerp(t, vals[offset], vals[offset + 1]);
+  }
+#+end_export
+
+** 辐射测量学
+
+辐射计量学提供了一套用于描述光传播和反射的理论框架与数学工具。它构成了本书后续部分将要使用的渲染算法推
+导的基础。有趣的是，辐射计量学最初并非基于光的物理学原理从第一性原理推导而来，而是建立在光作为穿梭于空
+间中的粒子这一抽象概念之上。因此，诸如光的偏振等效应并不能自然地纳入这一框架，尽管后来人们已经建立了辐
+射计量学与麦克斯韦方程组之间的联系，从而为辐射计量学奠定了坚实的物理学基础。
+
+辐射传输是对辐射能传递现象的研究。它基于辐射测量学原理，并在几何光学层面进行，在此层面，光的宏观性质足
+以描述光与远大于光波长的物体之间的相互作用。将光波光学模型中的现象纳入其中并不罕见，但这些结果需要用辐
+射传输的基本抽象概念来表达。4 通过这种方式，可以描述光与尺寸大致等于光波长的物体之间的相互作用，从而对
+色散和干涉等效应进行建模。在更细微的层面，需要借助量子力学来描述光与原子的相互作用。幸运的是，在解决计
+算机图形学中的渲染问题时，无需直接模拟量子力学原理，因此避免了这种方法带来的难以处理的问题。
+
+在 pbrt 中，我们将假设几何光学是描述光和光散射的合适模型。这导致了关于光的行为的一些基本假设，这些假设
+将在整个系统中被隐式地采用：
+
++ 线性：光学系统中两个输入的综合效应始终等于每个输入单独作用时效应之和。
++ 能量守恒：当光从一个表面或参与散射的介质中散射时，散射过程产生的能量绝不会超过其初始能量。
++ 不考虑偏振：我们将忽略电磁场的偏振；因此，光的唯一相关性质是其按波长（或等效地，按频率）的分布。
++ 无荧光或磷光：某一波长下光的行为与其他波长或时间点下光的行为完全无关。与偏振一样，将这些效应纳入考虑
+  并不太难，但它们对该系统的实际价值相对较小。
++ 稳态：假设环境中的光已达到平衡状态，因此其辐射度分布随时间不会发生变化。在现实场景中，这一过程几乎是
+  瞬间完成的，因此实际上并不构成限制。需要注意的是，磷光现象也违反了稳态假设。
+
+采用几何光学模型最大的弊端在于，难以对衍射和干涉效应进行合理处理。正如普赖森多夫（Preisendorfer，1965）
+所指出的，这是一个难以解决的问题，因为例如，在存在这些效应的情况下，两个区域的总通量并不一定等于每个单
+独区域接收功率之和（第24页）。
+
+*** 基本量
+
+渲染中有四个核心的辐射量：通量、辐照度/辐射通量密度、强度和辐射度。它们均可通过依次对时间、面积和方向
+取极限，从能量（以焦耳为单位）推导出来。所有这些辐射量通常都与波长有关。在本章的剩余部分中，我们将不会
+明确指出这种依赖关系，但必须牢记这一特性的重要性。
+
+*能量*
+
+我们的出发点是能量，其单位为焦耳（J）。光源会发射光子，每个光子都有特定的波长，并携带特定数量的能量。
+所有基本的辐射量实际上都是测量光子的不同方式。波长为 λ 的光子携带的能量为
+
+$$ Q=\frac{hc}{\lambda}$$
+
+
+
+其中 c 是光速，为 299,472,458 米/秒，h 是普朗克常数，h ≈6.626 × 10−34 米² 千克/秒。
+
+*Flux*
+
+能量测量是在一定时间范围内进行的，尽管在渲染中通常采用的稳态假设下，我们主要关注的是某个瞬间的光照测量。
+辐射通量，也称为功率，是指单位时间内通过某个表面或空间区域的总能量。辐射通量可通过求取单位时间内的单位
+能量变化量的极限来计算：
+
+
+$$\phi =\lim_{\Delta t \rightarrow 0}\frac{\Delta Q}{\Delta t}=\frac{dQ}{dt}$$
+
+其单位是焦耳/秒（J/s），或者更常见的是瓦特（W）。
+
+例如，假设有一盏灯在1小时内发出了Q=200,000 J的能量，如果在这1小时内各时刻发出的能量始终相等，那么我们
+可以算出该光源的通量为
+
+$$\phi=200000J/3600s \approx 55.6 W$$
+
+反之，若已知通量随时间的变化关系，我们可以通过对一定时间范围进行积分来计算总能量：
+
+$$Q=\int^{t_1}_{t_0} \phi (t)dt $$
+
+请注意，我们在此使用的记法略显非正式：原因之一在于，由于光子实际上是离散的量子，因此对微小时间取极限至
+零的做法并没有实际意义。但在渲染应用中，由于光子的数量相对于我们关注的测量量而言极为庞大，这一细节在实
+际应用中并不构成问题。
+
+[[./images/Y8LF6Z.png]]
+
+请注意，我们在此使用的记法略显非正式：原因之一在于，由于光子实际上是离散的量子，因此对微小时间取极限至
+零的做法并没有实际意义。但在渲染应用中，由于光子的数量相对于我们关注的测量量而言极为庞大，这一细节在实
+际应用中并不构成问题。
+
+*辐照度与辐射通量*
+
+任何通量的测量都需要一个用于测量单位时间内光子数的面积。给定一个有限面积 A，我们可以将该面积上的平均功
+率密度定义为 $E=\phi /A$。该量要么是辐照度（E），即到达某表面的通量面密度；要么是辐射通量密度（M），
+即离开某表面的通量面密度。这些量的单位均为 W/m²。（“辐照度”一词有时也被用来指代从表面射出的通量，但为
+了清晰起见，我们将对这两种情况使用不同的术语。）
+
+对于图5.6中的点光源示例，外球面上某一点的辐照度小于内球面上某一点的辐照度，因为外球面的表面积更大。特
+别是，如果点光源向各个方向发射相同强度的光，那么对于这种配置下半径为r的球体，
+
+$$E=\frac{\phi}{4\pi r^2}$$
+
+
+这一事实解释了为什么某一点从光源接收到的能量会随与光源距离的平方成反比而减小。
+
+更一般地说，我们可以通过求点 p 处单位微小面积上的微小功率的极限，来定义辐照度和辐射通量：
+
+[[./images/QzP5Pd.png]]
+
+$$E(p)= \lim_{\Delta \rightarrow 0}\frac{\Delta \phi (p)}{\Delta }=\frac{d\phi (p)}{dA}$$
+
+我们还可以对某个区域的辐照度进行积分，从而求得功率：
+
+$$\phi=\int_A E(p)dA$$
+
+
+辐照度方程还可以帮助我们理解朗伯定律的由来，该定律指出，到达一个表面的光能与光线方向和表面法线之间夹角
+的余弦值成正比（图5.7）。考虑一个面积为 A、光通量为$\phi$ 的光源，该光源正在照射一个表面。如果光线直接向下
+照射该表面（如图左侧所示），则表面上接收光线区域 $A_1$ 的面积等于 A。此时，$A_1$ 区域内任意一点的辐照度为
+
+$$E_1=\frac{\phi}{A}$$
+
+然而，如果光线与表面成一定角度，则表面上接收光线的面积会更大。如果A较小，那么接收通量的面积 $A_2$ 大致为
+A/cos θ。因此，对于位于 $A_2$ 内部的点，辐照度为
+
+$$E_2=\frac{\phi cos \theta}{A}$$
+
+*立体角与光强*
+
+为了定义强度，我们首先需要定义立体角的概念。立体角只是将平面上的二维角扩展到球面上的角。平面角是指某个
+物体相对于某个位置所对的总角（图5.8）。考虑围绕点 p 的单位圆；如果我们将阴影部分的物体投影到该圆上，其
+投影将覆盖圆上的一段长度 s。s 的弧长（即角度 θ）就是该物体所对的平面角。平面角以弧度为单位进行测量。
+
+[[./images/RO935z.png]]
+
+[[./images/xqlUQc.png]]
+
+立体角将二维单位圆扩展为三维单位球（图5.9）。总面积s 即为该物体所对的立体角。立体角的单位是球
+radian（sr）。整个球体所对的立体角为 4π sr，半球体所对的立体角为 2π sr。
+
+以点 p 为中心的单位球面上的一组点可用于描述以 p 为起点的向量。我们通常用符号 ω 来表示这些方向，并且按
+照约定，ω 是一个归一化向量。
+
+现在考虑一个发射光子的微小光源。如果我们将该光源置于单位球体中心，就可以计算出发射功率的角密度。光强，
+用 I 表示，即为该量；其单位为 W/sr。在整个方向球面上，我们有
+
+$$ I=\frac{\phi}{4\pi}$$
+
+但更普遍地说，我们感兴趣的是求取方向微分锥的极限：
+
+$$I=\lim_{\Delta w \rightarrow 0}\frac{\Delta \phi}{\Delta w}=\frac{d\phi}{dw} $$
+
+
+和往常一样，我们可以通过对强度进行积分来求得功率：给定作为方向函数的强度 I(ω)，我们可以对有限个方向 $\Omega$
+进行积分，从而得到强度：
+
+
+$$\phi=\int_{\Omega}I(\omega)d\omega$$
+
+光强描述了光的定向分布，但它仅对点光源才有意义。
+
+*光彩*
+
+最后一个，也是最重要的辐射物理量是辐射度（L）。辐照度和辐射通量分别给出了点 p 处的每单位面积的微小功率，
+但它们并未区分功率的方向分布。辐射度则更进一步，通过立体角来衡量辐照度或辐射通量。其定义为
+
+$$ L(p, \omega)=\lim_{\Delta \rightarrow 0} \frac{\Delta E_{\omega}(p)}{\Delta \omega}=\frac{d E_\omega(p)}{d\omega}$$
+
+
+其中我们用 $E_\omega$ 表示垂直于方向 $\omega$ 的表面上的辐照度。换言之，辐射度并非相对于入射到表面 p 所在面的辐照度
+来测量的。实际上，这种测量区域的改变旨在从辐射度定义中的朗伯定律中消除 $cos \theta$ 项。
+
+辐射通量密度是指单位面积、单位立体角内的通量密度。就通量而言，其定义为
+
+$$ L=\frac{d\phi}{d\omega dA^\perp}$$
+
+
+其中 $dA^\perp$ 是 dA 在一个与 $\omega$ 垂直的假想表面上的投影面积（图 5.10）。因此，它是该表面上入射光测量值的极
+限值，当感兴趣的入射方向锥角 $d\omega$ 变得非常小时，且表面上感兴趣的局部区域 dA 也变得非常小时。
+
+在所有这些辐射量中，本书后续部分将最常使用的是辐射度。其直观原因在于，从某种意义上说，它是所有辐射量中
+最基本的；如果已知辐射度，那么所有其他值都可以通过对辐射度在面积和方向上的积分来计算。辐射度的另一个优
+点是，它沿穿过真空的射线方向保持恒定。因此，它是进行光线追踪计算时的自然量。
+
+*** 入射与出射辐射函数
+
+当光与场景中的表面发生相互作用时，辐射度函数 L 通常在表面边界处不连续。在完全不透明的表面（例如镜子）
+这一最极端的情况下，表面上方和下方附近区域的辐射度函数可能完全无关。
+
+[[./images/eHa2Jz.png]]
+
+因此，在不连续点处取单侧极限以区分其正上方和正下方辐射函数的做法是合理的
+
+$$ L^+(p,\omega)=\lim_{t \rightarrow 0^+}L(p+tn_p, \omega)$$
+
+$$L^-(p,\omega)=\lim_{t  \rightarrow 0^-}L(p+tn_p,\omega)$$
+
+
+其中 $n_p$ 是点 p 处的法向量。然而，在全文中始终追踪单侧极限会显得不必要地繁琐。
+
+我们倾向于通过区分到达该点的辐射度（例如，由光源照射所致）与离开该点的辐射度（例如，由表面反射所致）来
+消除这种歧义。
+
+
+考虑物体表面上的一个点 p。到达该点的辐射度分布可以用一个关于位置和方向的函数来数学描述。该函数记为 $L_i(p,
+\omega)$（图 5.11）。描述该点处从表面反射出的辐射度的函数记为 $L_o(p, \omega)$。请注意，在这两种情况下，方
+向向量 $\omega$ 均指向远离 p 的方向，但需注意，有些作者采用的符号体系中，$L_i$ 项中的 $\omega$ 方向被反转，使其指向p。
+
+这些更直观的入射辐射度和出射辐射度函数与式（5.3）中的单侧极限之间存在一个简单的关系：
+
+[[./images/OcLg5y.png]]
+
+$$ L_i(p, \omega)=\begin{cases}
+                   L^+(p, -\omega), \omega \cdot n_p > 0 \\
+                   L^-(p, -\omega), \omega \cdot n_p < 0
+                  \end{cases}$$
+
+$$L_o(p, \omega)=\begin{cases}
+                L^+(p, \omega) , \omega \cdot n_p > 0 \\
+                L^-(p, \omega) , \omega \cdot  n_p <0  
+               \end{cases}$$
+
+
+在本书中，我们将利用入射辐射通量函数和出射辐射通量函数的概念来消除边界处辐射通量函数的歧义。
+
+另一个需要注意的性质是：在空间中不存在曲面的点处（即在自由空间中），L 是连续的，因此 $L^+=L^-$，这意味着
+
+$$L_o(p,\omega)=L_i(p, -\omega)=L(p, \omega)$$
+
+
+换句话说，$L_i$ 和 $L_o$ 的区别仅在于方向相反。
+
+*** 亮度与光度学
+
+所有辐射测量量（如通量、辐射度等）都有相应的光度测量量。光度学是研究可见电磁辐射在人眼视觉系统中的感知
+现象的学科。每个光谱辐射量都可以通过沿光谱响应曲线 V(λ) 进行积分，将其转换为相应的光度量；该曲线描述了
+人眼对不同波长的相对灵敏度。
+
+亮度衡量的是光谱功率分布在人类观察者眼中看起来有多亮。例如，亮度解释了为什么一种在绿色波长范围内具有特
+定能量量的光谱功率分布（SPD），在人类眼中会比另一种在蓝色波长范围内具有相同能量量的光谱功率分布（SPD）
+显得更亮。
+
+[[./images/wjXF19.png]]
+
+我们将亮度记为 Y；它与光谱辐射度 L(λ) 之间的关系为
+
+$$Y=\int_\lambda L(\lambda)V(\lambda)d\lambda$$
+
+
+亮度与光谱响应曲线 V(λ) 与 XYZ 颜色表示法密切相关（第 5.2.1 节）。国际照明委员会（CIE）的 Y(λ) 三刺激
+曲线被设定为与 V(λ) 成正比，因此
+
+
+$$ Y=683\int_\lambda L(\lambda)Y(\lambda)d\lambda$$
+
+亮度的单位是坎德拉每平方米（cd/m²），其中坎德拉是辐射强度的光度学等效量。表5.1中列出了一些具有代表性的
+亮度值。
+
+本章中介绍的所有其他辐射量都有相应的光度量；这些量汇总在表5.2中
+
+[[./images/IqpIYP.png]]
+
+** 辐射量积分的应用
+
+在渲染过程中，最常见的任务之一是计算辐射量的积分。在本节中，我们将介绍一些能简化此任务的技巧。为了说明
+这些技术的使用方法，我们将以计算某一点处的辐照度为例。在点 p（其法线为 n）处，由一组方向上的辐射度所产
+生的辐照度为
+
+$$ E(p,n)=\int_\Omega L_i(p,\omega)|cos \theta| d \omega$$
+
+其中 $L_i(p, \omega)$ 是入射辐射度函数（图 5.12），该积分中的 cos θ 项源于辐射度定义中的 $dA^\perp$ 项。θ 表示ω
+与表面法线 n 之间的夹角。辐照度通常是在以给定表面法线 n 为中心的半球 $\mathcal{H}^2(n)$ 方向范围内计算的。
+
+*** 投影立体角上的积分
+
+在辐射量积分中，各种余弦项往往会分散对积分所表达内容的注意力。通过使用投影立体角而非立体角来测量被积分
+物体所对的面积，可以避免这个问题。物体所对的投影立体角的确定方法是：先将该物体投影到单位球面上（与计算
+立体角的方法相同），然后将所得形状投影到与表面法线垂直的单位圆盘上（图5.13）。以余弦加权立体角为方向的
+半球积分可以改写为以投影立体角为方向的积分。
+
+投影立体角的大小与立体角的大小之间的关系为
+
+$$ d\omega^\perp=|cos \theta | d\omega$$
+
+
+[[./images/8T96Cr.png]]
+
+
+因此，半球上的辐照度-辐射度积分可以更简便地表示为
+
+$$E(p,n)=\int_{\mathcal{H}^2(n)}L_i(p,\omega)d\omega^\perp$$
+
+
+在本书的剩余部分中，我们将用立体角（而非投影立体角）来表示各方向上的积分。不过，其他参考资料中可能会使
+用投影立体角，因此，务必清楚被积函数的实际度量单位。
+
+正如我们通过入射辐射通量求得辐照度一样，我们也可以通过对物体表面积 A 进行积分，来计算物体在法线周围半
+球范围内发出的总通量：
+
+\begin{align*}
+\phi &= \int_A\int_{\mathcal{H}^2(n)}L_i(p,\omega)d\omega^\perp dA \\
+     &= \int_A\int_{\mathcal{H}^2(n)}L_o(p,\omega)d\omega^\perp dA
+\end{align*}
+
+
+*** 球坐标上的积分
+
+将立体角上的积分转化为球坐标(θ, φ) 上的积分通常比较方便。回顾一下，一个 (x, y, z) 方向向量也可以用球面
+角表示（图 5.14）：
+
+\begin{align*}
+x &= sin \theta cos \phi \\
+y &= sin \theta sin \phi \\
+z &= cos \theta 
+\end{align*}
+
+
+[[./images/91zegQ.png]]
+
+[[./images/q2XNr3.png]]
+
+为了将固有角上的积分转换为(θ, φ)上的积分，我们需要能够表达一组方向dω的微小面积与(θ, φ)对的微小面积之间
+的关系（图5.15）。微小面积dω是其边长的微小长度sin θ dφ和dθ的乘积。因此，
+
+由此可见，半球上的辐照度积分，即公式（5.4）中的
+
+$$E(p,n)=\int^{2\pi}_{0}\int^{\pi /2}_{0}L_i(p, \theta, \phi) cos\theta sin \theta \mathrm{d}\theta \mathrm{d} \phi $$
+
+如果来自各个方向的辐射强度相同，该方程可简化为 $$ E=\pi L_i$$。
+
+为方便起见，我们将定义两个函数，用于将 θ 和 φ 的值转换为 (x, y, z)方向向量。第一个函数直接应用了前面的
+方程。请注意，这些函数接收的是 θ 的正弦和余弦值，而不是 θ 本身。这是因为调用方通常已经获得了 θ 的正弦
+和余弦值。然而，对于 φ 而言，情况通常并非如此，因此 φ 直接按原样传入。
+
+#+begin_export ascii
+⟨Geometry Inline Functions⟩+≡
+  inline Vector3f SphericalDirection(Float sinTheta,
+           Float cosTheta, Float phi) {
+    return Vector3f(sinTheta * std::cos(phi),
+                    sinTheta * std::sin(phi),
+                    cosTheta);
+  }
+#+end_export
+
+第二个函数接受三个基向量，分别表示 x、y 和 z 轴，并返回相对于由它们定义的坐标系中的相应方向向量：
+
+#+begin_export ascii
+⟨Geometry Inline Functions⟩+≡
+  inline Vector3f SphericalDirection(Float sinTheta, Float cosTheta,
+         Float phi, const Vector3f &x, const Vector3f &y,
+         const Vector3f &z) {
+    return sinTheta * std::cos(phi)*x+
+           sinTheta * std::sin(phi)*y+cosTheta * z;
+  }
+#+end_export
+
+将方向(x, y, z)转换为球面角的方法如下：
+
+\begin{align*}
+\theta &= arccos z \\
+\phi &= arctan \frac{y}{x}
+\end{align*}
+
+以下是相应的函数。请注意，SphericalTheta() 假设向量v 在传入之前已经过归一化；该限制仅是为了避免因浮点
+舍入误差导致 |v.z| 略大于 1 时，std::acos() 产生的错误。
+
+#+begin_export ascii
+⟨Geometry Inline Functions⟩+≡
+  inline Float SphericalTheta(const Vector3f &v) {
+    return std::acos(Clamp(v.z, -1, 1));
+  }
+#+end_export
+
+#+begin_export ascii
+⟨Geometry Inline Functions⟩+≡
+  inline Float SphericalPhi(const Vector3f &v) {
+    Float p = std::atan2(v.y, v.x);
+    return (p < 0) ? (p+2*Pi):p;
+  }
+#+end_export
+
+[[./images/xP3Ppc.png]]
+
+*** 区域上的积分
+
+还有一种可以简化计算的积分变换，即将沿方向的积分转化为对面积的积分。再次考虑式（5.4）中的辐照度积分，
+并设想有一个出射辐射度恒定的四边形，我们希望计算点 p 处的辐射度。若将该值作为方向积分来计算并不简单，
+因为对于给定的特定方向，要确定该四边形在该方向上是否可见并非易事。而将辐射度作为四边形面积上的积分来计
+算则要容易得多。
+
+微小面积与微小立体角（从点 p 观察）之间的关系为
+
+$$ \mathrm{d}\omega=\frac{\mathrm{d}A cos \theta}{r^2}$$
+
+其中 θ 是 dA 的表面法线与指向 p 的向量之间的夹角，r 是从 p 到 dA 的距离（图 5.16）。我们在此不推导这一
+结果，但可以直观地理解：如果 dA 与点 p 的距离为 1，且其方向恰好与 dω 垂直，则 dω = dA，θ = 0，且式
+（5.6）成立。随着 dA 逐渐远离点 p，或者随着其旋转而不再与 dω 的方向对齐，r² 和 cos θ 项会相应地相互抵
+消，从而减小 dω。
+
+因此，我们可以将四边形光源的辐照度积分表示为
+
+$$E(p,n)=\int_A L cos \theta_i \frac{cos\theta_o \mathrm{d}A}{r^2}$$
+
+[[./images/hFJgMW.png]]
+
+其中 L 是四边形表面发出的辐射度，$$\theta_i$$ 是点 p 处的表面法线与从点 p 到光线上的点 p′ 的方向之
+间的夹角，$\theta_o$是光线上点 p′ 处的表面法线与从点 p′ 到点 p 的方向之间的夹角（图 5.17）。
+
+** 表面反射
+
+当光线入射到一个表面时，该表面会散射光线，并将其中一部分反射回环境中。要建立该反射的模型，需要描述两个
+主要效应：反射光的光谱分布及其方向分布。例如，柠檬皮主要吸收蓝光波段的光，但会反射大部分红光和绿光波段
+的光（回顾图5.1中的柠檬皮反射率光谱分布）。因此，当柠檬皮被白光照射时，其颜色呈现为黄色。无论从哪个方
+向观察，柠檬皮的颜色都基本相同，尽管在某些方向上，可以看到高光——即比黄色更偏白、更明亮的区域。相比之下，
+从镜面某一点反射出的光几乎完全取决于观察方向。在镜面上的固定点处，随着观察角度的变化，镜中反射出的物体
+也会相应地发生变化。
+
+半透明表面的反射现象更为复杂；从皮肤和树叶到蜡和液体等各种材料都会发生亚表面光传输现象，即光线从表面某
+一点进入后，会在距离该点一定距离处射出。（例如，试想一下，当用手电筒照进嘴里时，脸颊会亮起来，这是因为
+进入脸颊内侧的光线穿透皮肤后从面部射出。）
+
+有两种抽象模型可用于描述这些光反射机制：BRDF 和 BSSRDF，分别在第 5.6.1 节和第 5.6.2 节中进行了说明。
+BRDF描述了某一点处的表面反射，忽略了亚表面光传输的影响；对于该传输机制影响不显著的材料，这种简化引入的
+误差很小，并使渲染算法的实现效率大大提高。BSSRDF是对BRDF的推广，描述了半透明材料光反射的更普遍情况。
+
+*** BRDF
+
+双向反射分布函数（BRDF）提供了一种描述表面反射现象的数学框架。考虑图5.18所示的情形：我们希望知道，当入
+射辐射通量 $L_i(p, \omega_i)$ 沿方向 $\omega_i$ 入射时，有多少辐射通量 $L_o(p, \omega_o)$ 会沿方向 $\omega_o$ 离开表面并朝向观
+察者。
+
+如果将方向 $\omega_i$ 视为方向的微分锥，则点 p 处的微分辐照度为
+
+$$ dE(p, \omega_i)=L_i(p, \omega_i) cos \theta_i \mathrm{d}\omega_i$$
+
+由于该辐照度，将有相应的辐射通量差值沿方向 $\omega_o$ 被反射。根据几何光学中的线性假设，反射的辐射通量差值与
+辐照度成正比。
+
+$$ \mathrm{d}L_o(p, \omega_o) \propto \mathrm{d}E(p, \omega_i)$$ 
+
+[[./images/PjkH9S.png]]
+
+比例常数定义了该表面在特定方向对$\omega_i$ 和 $\omega_o$ 下的 BRDF：
+
+$$ f_r(p, \omega_o, \omega_i)=\frac{\mathrm{d}L_o(p,\omega_o)}{\mathrm{d}E(p,\omega_i)}=\frac{\mathrm{d}L_o(p, \omega_o)}{L_i(p,\omega_i)cos \theta_i \mathrm{d}\omega_i}$$
+
+基于物理的BRDF具有两个重要特性
+
+1. 互易性：对于任意一对方向 $\omega_i$ 和 $\omega_o$，$f_r(p, \omega_i, \omega_o) = f_r(p, \omega_o, \omega_i)$。
+2. 能量守恒：反射光的总能量小于或等于入射光的能量。对于所有方向 ωo，
+
+
+$$ \int_{\mathcal{H}^2(n)} \f_r(p, \omega_o, \omega^\prime)cos \theta^\prime \mathrm{d}\omega^\prime \leq 1 $$
+
+描述透射光分布的表面双向透射分布函数（BTDF）可采用与BRDF类似的方式进行定义。BTDF通常用$f_t(p, \omega_o,\omega_i)$
+表示，其中 $\omega_i$ 和 $\omega_o$位于p周围的相反半球内。值得注意的是，BTDF并不遵循上述定义的互易性；我们将在第8.2
+节和第16.1.3节中详细讨论这一问题。
+
+为便于在方程中表示，我们将BRDF和BTDF合称为 $f(p, \omega_o, \omega_i)$；我们将此称为双向散射分布函数（BSDF）。第8
+章专门介绍了多种适用于渲染的BSDF。
+
+根据BSDF的定义，我们有
+
+$$ \mathrm{d}L_o(p, \omega_o)=f(p, \omega_o, \omega_i)L_i(p, \omega_i)|cos \theta_i|\mathrm{d}\omega_i$$
+
+这里在 $cos \theta_i$ 项中添加了绝对值。之所以这样做，是因为在 pbrt 中，表面法线不会被重新定向以位于与 $\omega_i$ 同
+一侧（许多其他渲染系统会这样做，尽管我们认为保留它们由 Shape 给定的自然方向更为实用）。这样做使得在系
+统其他地方更易于一致地应用诸如“假设曲面法线指向曲面外部”之类的约定。因此，对这类 $cos \theta$ 项应用绝对值，
+可确保实际计算出的结果正是所需的量。
+
+我们可以对p点周围入射方向球面进行该方程的积分，以计算由p点处来自各个方向的入射光照所产生的、沿 $\omega_o$ 方
+向的出射辐射通量：
+
+$$ L_o(p, \omega_o)=\int_{\mathcal{S}^2}f(p, \omega_o, \omega_i)L_i(p, \omega_i)|cos \theta_i|\mathrm{d}\omega_i$$
+
+这是渲染中的一条基本方程；它描述了基于表面的散射特性，光在某一点的入射分布如何转化为出射分布。当球面
+$\mathcal{S}^2$ 作为积分域时（如本例所示），该方程通常被称为散射方程；而当仅对上半球 $\mathcal{H}^2(n)$进行积分时，则称为反
+射方程。第14章和第16章中积分例程的关键任务之一，就是计算场景中表面各点处的该积分值。
+
+[[./images/jM3OZc.png]]
+
+
+*** BSSRDF
+
+双向散射表面反射率分布函数（BSSRDF）是一种用于描述具有显著亚表面光传输现象的材料散射行为的数学模型。它
+是一个分布函数 $S(p_o, \omega_o, p_i, \omega_i)$ ，描述了在点 $p_o$ 处沿方向 $\omega_o$ 的出射微分辐射度与来自方向 $\omega_i$ 的入
+射微分通量在点 $p_i$ 处的比值（图 5.19）：
+
+
+$$ S(p_o, \omega_o, p_i, \omega_i)=\frac{\mathrm{d}L_o(p_o, \omega_o)}{\mathrm{d}\phi (p_i, \omega_i)}$$
+
+
+BSSRDF 散射方程的推广需要对表面积和入射方向进行积分，从而将二维散射方程（5.9）转化为四维积分。由于需要
+对另外两个维度进行积分，因此在渲染算法中的应用复杂度大大增加。
+
+$$L_o(p_o, \omega_o)=\int_A \int_{\mathcal{H}^2(n)} S(p_o, \omega_o, p_i, \omega_i)L_i(p_i, \omega_i)|cos \theta_i | \mathrm{d}\omega_i \mathrm{d}A $$
+
+随着点 $p_i$ 和 $p_o$ 之间的距离增大，S 的值通常会减小。这一事实在实现次表面散射算法时会起到很大的帮助。
+
+表面下的光传输遵循与参与介质中体积光传输相同的原理，并由第15.1节中介绍的传输方程描述。因此，亚表面散射
+基于与云层和烟雾中的光散射相同的效应，只是尺度更小。
+
+** 延伸阅读
+
+迈耶（Meyer）是最早深入研究图形学中光谱表示法的研究者之一（Meyer 和 Greenberg，1980；Meyer 等，1986）。
+霍尔（Hall，1989）总结了截至 1989 年的光谱表示法最新研究进展，而格拉斯纳（Glassner）的《《数字图像合成
+原理》（1995）则涵盖了该主题截至20世纪90年代中期的研究进展。霍尔（1999）、约翰逊和费尔柴尔德（1999）以
+及德夫林等人（2002）的综述文章是关于该主题的优质参考资料。
+
+博尔赫斯（1991）分析了三刺激值表示法在用于光谱计算时引入的误差。皮尔西（1993）开发了一种基于场景依赖方
+式选择基函数的技术：通过考察场景中光源和反射物体的光谱功率分布（SPD），利用特征向量分析找到了少数几个
+能够准确表示场景光谱功率分布的光谱基函数。鲁热龙和佩罗什（1997）将场景中的所有光谱功率分布（SPD）投影
+到一个分层基上（哈尔小波），并证明这种自适应表示法可用于将误差控制在预期的误差界限内。Ward 和
+Eydelberg-Vileshin（2002）开发了一种方法，通过在渲染前仔细调整提供给系统的颜色值，从而改善了常规纯RGB
+渲染系统的光谱渲染结果。
+
+Sun等人（2001）研究了另一种谱表示方法，他们将SPD分解为一个平滑的基底SPD和一组尖峰。每个部分采用不同的
+表示方式，使用对分布中各部分均表现良好的基函数。Drew 和 Finlayson（2003）应用了一种“锐利”基，该基具有
+自适应性，且其特性在于：计算该基中两个函数的乘积时，无需像许多其他基表示法那样进行完整的矩阵乘法。
+
+在使用点采样表示法（如 SampledSpectrum）时，很难确定需要多少个采样点才能获得准确的结果。Lehtonen 等
+（2006）研究了这一问题，并确定对于实际应用中的光谱分光计（SPD），5 纳米的采样间距已足够。
+
+埃文斯和麦库尔（1999）提出了分层波长簇来表示SPDs：其思路是，每次光谱计算都使用少量固定数量的采样点，这
+些采样点位于具有代表性的波长处，并根据光源的光谱分布进行选择。后续计算采用不同的波长，这样既能确保单次
+计算相对高效（因基于少量采样点），又能在大量计算的综合结果中，充分覆盖整体波长范围。与此方法相关的是，
+在每次计算中仅针对单一波长计算结果，然后将结果进行平均：这是 Walter 等（1997）和 Morley 等（2006）采用
+的方法。
+
+Radziszewski 等（2009）提出了一种技术，该技术根据单一波长生成光传播路径，同时利用高效的SIMD指令追踪这
+些路径在多个附加波长下的贡献。通过多重重要性采样将这些贡献进行组合，从而在模拟粗糙折射边界处的色散时降
+低了方差。Wilkie 等（2014）使用等间距点，并展示了该方法如何同样适用于光子映射和参与介质的渲染。
+
+Glassner（1989b）曾发表过一篇关于将RGB值（例如用户从显示屏上选取的值）转换为SPD时所面临的约束不足问题
+的文章。Smits（1999）开发了一种改进方法，即我们在第5.2.2节中实现的方法。关于该领域的最新研究，请参见
+Meng等人（2015）的相关研究，其中包含对准确进行此类转换所涉及的复杂性的深入讨论。
+
+麦克卢尼（McCluney）关于辐射测量的著作是该主题的一本极佳入门读物（McCluney 1994）。普赖森多夫
+（Preisendorfer，1965）也以通俗易懂的方式阐述了辐射测量，并深入探讨了辐射测量与光物理学之间的关系。尼
+科德穆斯等人（1977）对BRDF、BSSRDF以及由此可推导出的各种物理量进行了精确定义。关于辐射测量的早期经典入
+门著作，可参见穆恩和斯宾塞（1936、1948）以及格申（1939）的著作。最后，兰伯特于18世纪中叶发表的关于光度
+学的开创性早期著作已被迪劳拉译为英文（兰伯特 1760）。
+
+正确实现辐射度计算可能颇具挑战：只要漏算了一个余弦项，计算结果就会与预期完全不同。调试此类问题往往非常
+耗时。Ou 和 Pellacini（2010）展示了如何利用 C++ 的类型系统，为这类计算中的每个项关联单位，从而确保，例
+如，当试图将一个辐射度值与另一个表示辐照度的值相加时，会触发编译时错误。
 
 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+* 相机模型
+
+* 采样与重建
+
+* 反射模型
+
+* 材料
+
+* 质感
+
+* 体积散射
+
+* 光源
+
+* 蒙特卡洛积分法
+
+* 光线传输 I：表面反射
+
+* 光线传输 II：体积渲染
+
+* 光线传输 III：双向方法
+
+* 回顾与展望
 
 
 
