@@ -5669,6 +5669,1439 @@ Meng等人（2015）的相关研究，其中包含对准确进行此类转换所
 
 * 相机模型
 
+在第 1 章中，我们介绍了计算机图形学中常用的针孔相机模型。该模型虽然易于描述和模拟，但忽略了真实相机中
+透镜对通过其的光线产生的重要影响。例如，使用针孔相机渲染的所有物体都处于清晰对焦状态——而这种情况在真实
+的透镜系统中是不可能实现的。此类图像往往看起来像是计算机生成的。更普遍地说，从透镜系统射出的辐射度分布
+与进入时的分布大不相同；对透镜的这一效应进行建模，对于准确模拟成像过程的辐射测量至关重要。
+
+相机镜头系统还会产生各种像差，从而影响其成像效果；例如，暗角现象会导致图像边缘变暗，这是因为到达胶片或
+传感器边缘的光线比到达中心区域的光线要少。镜头还可能产生枕形或桶形畸变，导致直线在成像时呈现为曲线。尽
+管镜头设计师在设计中致力于最大限度地减少像差，但像差仍会对图像产生显著影响。
+
+与第3章中的“形状”类似，pbrt中的摄像机由一个抽象基类表示。本章将介绍Camera类及其两个关键方法：Camera::
+GenerateRay() 和 Camera::GenerateRayDifferential()。第一个方法计算与胶片平面上某个采样位置相对应的世界
+空间光线。通过根据不同的成像模型以不同方式生成这些光线，pbrt 中的摄像机可以为同一个 3D 场景生成多种类
+型的图像。第二个方法不仅生成该光线，还会计算光线所采样的图像区域的相关信息；例如，这些信息将用于第 10
+章中的抗锯齿计算。在第 16.1.1 节中，将介绍几个额外的 Camera 方法，以支持双向光传输算法。
+
+在本章中，我们将展示几个 Camera 接口的实现，首先实现带有一些泛化处理的理想针孔模型，最后介绍一个相当逼
+真的模型，该模型模拟了光线穿过一组玻璃透镜元件以形成图像的过程，这与现实中的相机类似。
+
+** 相机模型
+
+抽象类 Camera 作为基类，用于存储通用的相机选项，并定义了所有相机实现都必须提供的接口。该类在文件
+core/camera.h和 core/camera.cpp 中定义。
+
+#+begin_export ascii
+⟨Camera Declarations⟩≡
+  class Camera {
+  public:
+    ⟨Camera Interface 356⟩
+    ⟨Camera Public Data 356⟩
+  };
+#+end_export
+
+基类 Camera 的构造函数接受多个适用于所有摄像机类型的参数。其中最重要的参数之一是将摄像机放置在场景中的
+变换，该变换存储在 CameraToWorld 成员变量中。Camera 类存储的是AnimatedTransform（而非普通的 Transform），
+以便摄像机本身能够随时间推移而移动。
+
+现实中的相机有一个快门，它会短暂打开，使胶片曝光。这种非零曝光时间会导致运动模糊：在曝光期间相对于相机
+运动的物体会出现模糊。因此，所有相机都会记录快门开启和关闭的时间，并负责生成带有相应采样时间的光线以采
+样场景。只要在快门开启时间与快门关闭时间之间对光线时间进行适当的分布，就可以计算出具有运动模糊效果的图
+像。
+
+相机还包含一个指向 Film 类实例的指针，用于表示最终图像（Film 类在第 7.9 节中有描述），以及一个指向
+Medium 实例的指针，用于表示相机所处的散射介质（Medium 类在第 11.3 节中有描述）。
+
+相机实现必须将设置这些值的参数传递给 Camera构造函数。这里我们仅展示该构造函数的原型，因为其实现只是将
+参数复制到相应的成员变量中。
+
+#+begin_export ascii
+⟨Camera Interface⟩≡ 356
+  Camera(const AnimatedTransform &CameraToWorld, Float shutterOpen,
+         Float shutterClose, Film *film, const Medium *medium);
+#+end_export
+
+#+begin_export ascii
+⟨Camera Public Data⟩≡ 356
+  AnimatedTransform CameraToWorld;
+  const Float shutterOpen, shutterClose;
+  Film *film;
+  const Medium *medium;
+#+end_export
+
+相机子类需要实现的第一个方法是 Camera::GenerateRay()，该方法应计算与给定采样点相对应的光线。返回的光线
+方向分量必须经过归一化处理——系统中的许多其他部分都将依赖于这一行为。
+
+#+begin_export ascii
+⟨Camera Interface⟩+≡ 356
+  virtual Float GenerateRay(const CameraSample &sample,
+                          Ray *ray) const = 0;
+#+end_export
+
+CameraSample 结构体包含指定相机光线所需的所有采样值。其 pFilm 成员指定了生成的光线将辐射传递到的胶片上
+的点。光线穿过的镜头上的点位于 pLens 中（对于包含镜头概念的相机而言），而 CameraSample::time 给出了光
+线应采样场景的时间；实现应使用该值在快门打开–快门关闭的时间范围内进行线性插值。（仔细选择这些不同的采
+样值可以大大提高最终图像的质量；这是第 7 章的大部分内容所探讨的主题。）
+
+GenerateRay() 还会返回一个浮点数值，该数值决定了沿生成的光线到达胶片平面的辐射度对最终图像的贡献程度。
+简单的摄像机模型可以直接返回值 1，但像第 6.4 节中那样模拟真实物理透镜系统的摄像机，则会根据透镜的光学
+特性，将该值设置为表示光线穿过透镜时所携带的光量。（关于该权重的具体计算和使用方法，请参见第 6.4.7 节
+和第 13.6.6 节。）
+
+#+begin_export ascii
+⟨Camera Declarations⟩+≡
+  struct CameraSample {
+    Point2f pFilm;
+    Point2f pLens;
+    Float time;
+  };
+#+end_export
+
+GenerateRayDifferential() 方法与 GenerateRay() 类似，会计算一条主光线，但还会计算在胶片平面上沿 x 和 y
+方向偏移一个像素的像素所对应的光线。这些关于相机光线随胶片上位置变化的信息，有助于让系统的其他部分了解
+特定相机光线采样所代表的胶片面积有多大，这对抗锯齿纹理贴图查找特别有用。
+
+#+begin_export ascii
+⟨Camera Method Definitions⟩≡
+  Float Camera::GenerateRayDifferential(const CameraSample &sample,
+       RayDifferential *rd) const {
+    Float wt = GenerateRay(sample, rd);
+    ⟨Find camera ray after shifting one pixel in the x direction 358⟩
+    ⟨Find camera ray after shifting one pixel in the y direction⟩
+    rd->hasDifferentials = true;
+    return wt;
+  }
+#+end_export
+
+要找到在 x 方向上偏移一个像素后的光线，只需初始化一个新的 CameraSample，并将调用 GenerateRay() 返回的
+相应值复制到 Ray Differential 结构中即可。片段 ⟨在 y 方向上偏移一个像素后查找光线⟩ 的实现原理与此类似，
+此处不再赘述。
+
+#+begin_export ascii
+⟨Find camera ray after shifting one pixel in the x direction⟩≡
+  CameraSample sshift = sample;
+  sshift.pFilm.x++;
+  Ray rx;
+  Float wtx = GenerateRay(sshift, &rx);
+  if (wtx == 0) return 0;
+  rd->rxOrigin = rx.o;
+  rd->rxDirection = rx.d;
+#+end_export
+
+
+*** 摄像机坐标系
+
+我们已经使用了两个重要的建模坐标系：物体坐标系和世界坐标系。现在我们将引入另一个坐标系——摄像机坐标系，
+其原点位于摄像机位置。我们有：
+
++ 对象空间：这是用于定义几何基元的坐标系。例如，pbrt 中的球体被定义为以其对象空间的原点为中心。
++ 世界坐标系：虽然每个基元可能都有自己的对象坐标系，但场景中的所有对象都是相对于单一的世界坐标系进行定
+  位的。每个基元都有一个对象-到世界坐标系的变换，该变换决定了它在世界坐标系中的位置。世界坐标系是定义
+  所有其他坐标系所依据的标准坐标系。
++ 摄像机空间：摄像机被放置在场景中的某个世界空间点上，具有特定的视向和姿态。该摄像机定义了一个新的坐标
+  系，其原点位于摄像机的位置。该坐标系的 z 轴映射到视向，y 轴映射到向上方向。这是一个便于判断哪些物体
+  可能被摄像机看到的实用坐标系。例如，如果某个物体的摄像机空间包围盒完全位于z = 0 平面之后（且摄像机的
+  视场角不超过 180 度），则该物体将不会被摄像机看到。
+
+
+** 投影相机模型
+
+3D计算机图形学中的一个基本问题是3D视图问题：如何将3D场景投影到2D图像上以供显示。大多数经典方法都可以用
+一个 4×4 的投影变换矩阵来表示。因此，我们将引入一个投影矩阵相机类 ProjectiveCamera，并在此基础上定义两
+个相机模型。其中一个实现正交投影，另一个实现透视投影——这两种投影都是经典且被广泛使用的。
+
+#+begin_export ascii
+⟨Camera Declarations⟩+≡
+  class ProjectiveCamera : public Camera {
+    public:
+      ⟨ProjectiveCamera Public Methods 360⟩
+    protected:
+      ⟨ProjectiveCamera Protected Data 360⟩
+  };
+#+end_export
+
+[[./images/txZqHk.png]]
+
+还有三个坐标系（如图6.1所示）对于定义和讨论投影相机非常有用：
+
++ 屏幕空间：屏幕空间定义在胶片平面上。摄像机将摄像机空间中的物体投影到胶片平面上；位于屏幕窗口内的部分
+  在生成的图像中可见。屏幕空间中的深度 z 值范围为 0 到1，分别对应近裁剪平面和远裁剪平面上的点。请注意，
+  尽管这被称为“屏幕”空间，但它仍然是一个三维坐标系，因为 z 值具有实际意义。
++ 归一化设备坐标（NDC）空间：这是用于渲染实际图像的坐标系。在 x 和 y 轴上，该空间的取值范围为 (0, 0)
+  到 (1, 1)，其中 (0, 0) 表示图像的左上角。深度值与屏幕空间中的深度值相同，通过线性变换可将屏幕空间转
+  换为 NDC 空间。
++ 栅格空间：这与NDC空间几乎相同，只是x和y坐标的取值范围为(0, 0)到(resolution.x, resolution.y)。
+
+射影相机使用 4×4 矩阵在所有这些空间之间进行变换，但具有特殊成像特性的相机未必能用矩阵来表示所有这些变
+换。
+
+除了 Camera 基类要求的参数外，ProjectiveCamera还接受投影变换矩阵、图像在屏幕空间中的范围，以及与景深相
+关的其他参数。景深（将在本节末尾进行说明和实现）模拟了真实镜头系统中失焦物体出现的模糊效果。
+
+#+begin_export ascii
+⟨ProjectiveCamera Public Methods⟩≡ 358
+  ProjectiveCamera(const AnimatedTransform &CameraToWorld,
+      const Transform &CameraToScreen, const Bounds2f &screenWindow,
+      Float shutterOpen, Float shutterClose, Float lensr, Float focald,
+      Film *film, const Medium *medium)
+    : Camera(CameraToWorld, shutterOpen, shutterClose, film, medium),
+      CameraToScreen(CameraToScreen) {
+    ⟨Initialize depth of field parameters 374⟩
+    ⟨Compute projective camera transformations 360⟩
+  }
+#+end_export
+
+ProjectiveCamera 的实现会将投影变换传递给此处所示的基类构造函数。该变换实现了从摄像机到屏幕的投影；基
+于此，构造函数可以轻松计算出所需的另一个变换，从而实现从光栅空间到摄像机空间的完整转换。
+
+#+begin_export ascii
+⟨Compute projective camera transformations⟩≡ 360
+  ⟨Compute projective camera screen transformations 360⟩
+    RasterToCamera = Inverse(CameraToScreen) * RasterToScreen;
+#+end_export
+
+#+begin_export ascii
+⟨ProjectiveCamera Protected Data⟩≡ 358
+  Transform CameraToScreen, RasterToCamera;
+#+end_export
+
+在构造函数中需要计算的唯一非平凡变换是屏幕到栅格的投影。在下面的代码中，请注意变换的组合：从下往上阅读，
+我们首先从屏幕空间中的一个点开始，进行平移使屏幕的左上角位于原点，然后按屏幕宽度和高度的倒数进行缩放，
+从而得到一个 x 和 y 坐标在 0 到 1 之间的点（这些是 NDC 坐标）。最后，我们按栅格分辨率进行缩放，从而最
+终覆盖从 (0, 0) 到整体栅格分辨率范围的整个栅格区域。这里一个重要的细节是，该变换会使 y 坐标发生反转；
+这是必要的，因为 y 值的增大在屏幕坐标系中表示图像向上移动，但在栅格坐标系中却表示向下移动。
+
+#+begin_export ascii
+⟨Compute projective camera screen transformations⟩≡
+  ScreenToRaster = Scale(film->fullResolution.x,
+                          film->fullResolution.y, 1) *
+     Scale(1 / (screenWindow.pMax.x - screenWindow.pMin.x),
+           1 / (screenWindow.pMin.y - screenWindow.pMax.y), 1) *
+     Translate(Vector3f(-screenWindow.pMin.x, -screenWindow.pMax.y, 0));
+  RasterToScreen = Inverse(ScreenToRaster);
+#+end_export
+
+#+begin_export ascii
+⟨ProjectiveCamera Protected Data⟩+≡ 358
+  Transform ScreenToRaster, RasterToScreen;
+#+end_export
+
+[[./images/8WrhID.png]]
+
+*** 正射相机
+
+#begin_export ascii
+⟨OrthographicCamera Declarations⟩≡
+  class OrthographicCamera : public ProjectiveCamera {
+    public:
+      ⟨OrthographicCamera Public Methods 361⟩
+    private:
+      ⟨OrthographicCamera Private Data 363⟩
+  };
+#end_export ascii 
+
+正交摄像机在文件 cameras/orthographic.h 和 cameras/ orthographic.cpp 中进行了定义，其原理基于正交投影
+变换。正交变换会将场景中的矩形区域投影到定义该区域的矩形体的前面上。它不会产生透视缩短效应——即物体在图
+像平面上随着距离增加而变小——但它能保持平行线的平行性，并保留物体之间的相对距离。图 6.2 展示了该矩形体
+积如何定义场景的可见区域。图 6.3 对比了使用正交投影进行渲染的结果与下一节中定义的透视投影的结果。
+
+正交相机构造函数通过 Orthographic() 函数生成正交变换矩阵，该函数将在稍后定义。
+
+#+begin_export ascii
+⟨OrthographicCamera Public Methods⟩≡ 361
+  OrthographicCamera(const AnimatedTransform &CameraToWorld,
+       const Bounds2f &screenWindow, Float shutterOpen,
+       Float shutterClose, Float lensRadius, Float focalDistance,
+       Film *film, const Medium *medium)
+   : ProjectiveCamera(CameraToWorld, Orthographic(0, 1),
+                      screenWindow, shutterOpen, shutterClose,
+                      lensRadius, focalDistance, film, medium) {
+   ⟨Compute differential changes in origin for orthographic camera rays 363⟩
+  }
+#+end_export
+
+[[./images/oIFd97.png]]
+
+正交视图变换保持 x 和 y 坐标不变，但将近平面的 z 值映射为 0，将远平面的 z 值映射为 1。为此，首先沿 z
+轴平移场景，使近平面与 z = 0 对齐。然后，沿 z 轴缩放场景，使远平面映射到 z = 1。将这两个变换组合起来即
+可得到整体变换。（对于 pbrt 这样的光线追踪器，我们希望近平面位于 0 处，以便光线从穿过摄像机位置的平面
+出发；远平面的偏移量则并不重要。）
+
+#+begin_export ascii
+⟨Transform Method Definitions⟩+≡
+  Transform Orthographic(Float zNear, Float zFar) {
+    return Scale(1, 1, 1 / (zFar - zNear)) *
+           Translate(Vector3f(0, 0, -zNear));
+  }
+#+end_export
+
+得益于正投影的简单性，在 GenerateRayDifferential() 方法中很容易直接计算x 和 y 方向上的微分光线。这些微
+分光线的方向将与主光线相同（正如正投影摄像机生成的所有光线那样），且所有光线的原点偏移量也将保持一致。
+因此，此处的构造函数预先计算了由于胶片平面上 x 和 y 方向单像素位移，光线原点在相机空间坐标系中会发生多
+少偏移。
+
+#+begin_export ascii
+⟨Compute differential changes in origin for orthographic camera rays⟩≡
+  dxCamera = RasterToCamera(Vector3f(1, 0, 0));
+  dyCamera = RasterToCamera(Vector3f(0, 1, 0));
+#+end_export
+
+#+begin_export ascii
+⟨OrthographicCamera Private Data⟩≡ 361
+  Vector3f dxCamera, dyCamera;
+#+end_export
+
+现在，我们可以逐步分析这段代码，了解如何将栅格空间中的一个采样点转换为一条摄像机光线。该过程如图6.4所
+示。首先，将栅格空间中的采样位置转换为摄像机空间中的一个点，从而得到位于近平面上的一个点，该点即为摄像
+机光线的起点。由于摄像机空间的视向沿z轴向下，因此摄像机空间中的光线方向为(0, 0, 1)。
+
+如果此场景已启用景深效果，则会修改光线的起点和方向，以模拟景深效果。关于景深的效果将在本节后文进行说明。
+光线的时间值通过在快门开启和快门关闭时间之间，利用 CameraSample::time 偏移量（其取值范围为 [0, 1)）进
+行线性插值来设定。最后，该光线在返回之前会被转换到世界坐标系中。
+
+[[./images/uWjJK8.png]]
+
+#+begin_export ascii
+⟨OrthographicCamera Definitions⟩≡
+  Float OrthographicCamera::GenerateRay(const CameraSample &sample,
+           Ray *ray) const {
+    ⟨Compute raster and camera sample positions 364⟩
+    *ray = Ray(pCamera, Vector3f(0, 0, 1));
+    ⟨Modify ray for depth of field 374⟩
+    ray->time = Lerp(sample.time, shutterOpen, shutterClose);
+    ray->medium = medium;
+    *ray = CameraToWorld(*ray);
+    return 1;
+  }
+#+end_export
+
+一旦所有变换矩阵都设置完毕，就可以轻松地将栅格空间的采样点变换到相机空间。
+
+#+begin_export ascii
+⟨Compute raster and camera sample positions⟩≡
+  Point3f pFilm = Point3f(sample.pFilm.x, sample.pFilm.y, 0);
+  Point3f pCamera = RasterToCamera(pFilm);
+#+end_export
+
+GenerateRayDifferential() 的实现会执行相同的计算来生成主摄像机光线。差分光线的起点是通过在
+OrthographicCamera 构造函数中计算出的偏移量确定的，随后将完整的差分光线变换到世界坐标系中。
+
+#+begin_export ascii
+⟨OrthographicCamera Definitions⟩+≡
+  Float OrthographicCamera::GenerateRayDifferential(
+          const CameraSample &sample, RayDifferential *ray) const {
+    ⟨Compute main orthographic viewing ray⟩
+    ⟨Compute ray differentials for OrthographicCamera 364⟩
+    ray->time = Lerp(sample.time, shutterOpen, shutterClose);
+    ray->hasDifferentials = true;
+    ray->medium = medium;
+    *ray = CameraToWorld(*ray);
+    return 1;
+  }
+#+end_export
+
+*** 透视摄像机
+
+透视投影与正交投影的相似之处在于，它将三维空间投影到二维影像平面上。然而，它包含透视缩短效应：远处的物
+体在投影中显得比距离较近的同等大小物体更小。与正交投影不同，透视投影无法保持距离或角度，且平行线在投影
+中不再保持平行。透视投影与人眼或相机镜头生成三维世界图像的方式相当接近。透视相机在文件
+cameras/perspective.h 和cameras/perspective.cpp 中实现。
+
+#+begin_export ascii
+⟨PerspectiveCamera Declarations⟩≡
+  class PerspectiveCamera : public ProjectiveCamera {
+    public:
+      ⟨PerspectiveCamera Public Methods 367⟩
+    private:
+      ⟨PerspectiveCamera Private Data 367⟩
+  };
+#+end_export
+
+#+begin_export ascii
+⟨PerspectiveCamera Method Definitions⟩≡
+  PerspectiveCamera::PerspectiveCamera(
+         const AnimatedTransform &CameraToWorld,
+         const Bounds2f &screenWindow, Float shutterOpen,
+         Float shutterClose, Float lensRadius, Float focalDistance,
+         Float fov, Film *film, const Medium *medium)
+     : ProjectiveCamera(CameraToWorld, Perspective(fov, 1e-2f, 1000.f),
+                        screenWindow, shutterOpen, shutterClose,
+                        lensRadius, focalDistance, film, medium) {
+    ⟨Compute differential changes in origin for perspective camera rays 367⟩
+    ⟨Compute image plane bounds at z =1 for PerspectiveCamera 951⟩
+  }
+#+end_export
+
+透视投影描述了场景的透视视图。场景中的点被投影到一个垂直于 z 轴的视平面上。Perspective() 函数负责计算
+此变换；它接受视场角 fov 以及到近 z 平面和远 z 平面的距离。经过透视投影后，位于近z 平面的点被映射为 z
+= 0，而位于远 z 平面的点被映射为 z = 1（图 6.5）。对于基于光栅化的渲染系统，仔细设置这些平面的位置非常
+重要；它们决定了场景中被渲染的 z 范围，但如果设置时它们的数值之间存在过大数量级的差异，可能会导致数值
+精度误差。对于像 pbrt 这样的光线追踪器，可以像这里一样任意设置它们。
+
+#+begin_export ascii
+⟨Transform Method Definitions⟩+≡
+  Transform Perspective(Float fov, Float n, Float f) {
+    ⟨Performprojectivedivideforperspectiveprojection 366⟩
+    ⟨Scale canonical perspective view to specified field of view 367⟩
+  }
+#+end_export
+
+[[./images/F2ok0o.png]]
+将这一转换过程分为两个步骤来理解最为简单：
+
+
+1. 相机空间中的点 p 被投影到视图平面上。通过一些代数运算可以得知，在视图平面上的投影 x′ 和 y′ 坐标可通
+   过将 x 和 y 除以该点的 z 坐标值来计算。投影 z 深度会被重新映射，使得近平面的 z 值为 0，远平面的 z
+   值为 1。我们想要进行的计算是
+
+   \begin{align*}
+   x^\prime &= x/z \\
+   y^\prime &= y/z \\
+   z^\prime &= \frac{f(z-n)}{z(f-n)} 
+   \end{align*}
+
+   利用齐次坐标，所有这些计算都可以用一个 4×4 矩阵来表示：
+
+   \begin{bmatrix}
+   1 & 0 & 0 & 0 \\
+   0 & 1 & 0 & 0 \\
+   0 & 0 \frac{f}{f-n} & -\frac{fn}{f-n} \\
+   0 & 0 & 1 & 0 
+   \end{bmatrix}
+
+   #+begin_export ascii
+   ⟨Performprojectivedivideforperspectiveprojection⟩≡ 365
+    Matrix4x4 persp(1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0,0,f/(f-n),-f*n / (f - n),
+                    0, 0, 1, 0);
+   #+end_export
+
+2. 通过缩放投影平面上的(x, y) 值，将用户指定的角视场 (fov) 纳入考虑，使得视场内的点投影到视图平面上的
+   [−1, 1] 范围内的坐标上。对于正方形图像，x 和 y在屏幕空间中均位于 [−1, 1] 范围内。否则，图像较窄的一
+   侧映射到 [−1, 1] 区间，较宽的一侧则映射到比例上更大的区间。用户指定的视角（fov）通过缩放投影平面上
+   的 (x, y) 值来实现，使得视场内的点投影到视图平面上的 [−1, 1] 区间内。对于正方形图像，x 和 y在屏幕空
+   间中均位于 [−1, 1] 之间。否则，图像较窄的一侧映射到 [−1, 1] 范围内，而较宽的一侧则映射到比例上更大
+   的屏幕空间值范围。回顾一下，正切值等于直角三角形中对边与邻边的比值。这里邻边的长度为 1，因此对边的
+   长度为 tan(fov/2)。通过该长度的倒数进行缩放，即可将视场映射到 [−1, 1] 范围内。
+
+
+#+begin_export ascii
+⟨Scale canonical perspective view to specified field of view⟩≡
+  Float invTanAng=1/std::tan(Radians(fov) / 2);
+  return Scale(invTanAng, invTanAng, 1) * Transform(persp);
+#+end_export
+
+与 OrthographicCamera 类似，关于PerspectiveCamera 生成的相机光线在移动胶片平面上的像素时如何变化的信息，
+可以在构造函数中预先计算。在此，我们计算了相机空间中近透视平面上位置的变化，该变化与像素位置的偏移相关。
+
+#+begin_export ascii
+⟨Compute differential changes in origin for perspective camera rays⟩≡
+  dxCamera = (RasterToCamera(Point3f(1, 0, 0)) -
+              RasterToCamera(Point3f(0, 0, 0)));
+  dyCamera = (RasterToCamera(Point3f(0, 1, 0)) -
+              RasterToCamera(Point3f(0, 0, 0)));
+#+end_export
+
+#+begin_export ascii
+⟨PerspectiveCamera Private Data⟩≡ 365
+  Vector3f dxCamera, dyCamera;
+#+end_export
+
+在透视投影中，所有光线均起源于摄像机空间的原点 (0, 0, 0)。光线的方向由从原点到近平面上的点 pCamera 的
+向量给出，该点对应于给定的 CameraSample 的 pFilm 位置。换言之，光线的向量方向在各分量上等于该点的坐标，
+因此与其进行无用的减法运算来计算方向，我们不如直接根据点 pCamera 来初始化方向。
+
+#+begin_export ascii
+⟨PerspectiveCamera Method Definitions⟩+≡
+  Float PerspectiveCamera::GenerateRay(const CameraSample &sample,
+           Ray *ray) const {
+    ⟨Compute raster and camera sample positions 364⟩
+    *ray = Ray(Point3f(0, 0, 0), Normalize(Vector3f(pCamera)));
+    ⟨Modify ray for depth of field 374⟩
+    ray->time = Lerp(sample.time, shutterOpen, shutterClose);
+    ray->medium = medium;
+    *ray = CameraToWorld(*ray);
+    return 1;
+  }
+#+end_export
+
+GenerateRayDifferential() 方法的实现与 GenerateRay() 基本一致，只是额外增加了一个用于计算微分光线的分
+片。
+
+#+begin_export ascii
+⟨PerspectiveCamera Public Methods⟩≡ 365
+  Float GenerateRayDifferential(const CameraSample &sample,
+                                RayDifferential *ray) const;
+#+end_export
+
+#+begin_export ascii
+⟨Compute offset rays for PerspectiveCamera ray differentials⟩≡
+  if (lensRadius > 0) {
+    ⟨Compute PerspectiveCamera ray differentials accounting for lens⟩
+  } else {
+    ray->rxOrigin = ray->ryOrigin = ray->o;
+    ray->rxDirection = Normalize(Vector3f(pCamera) + dxCamera);
+    ray->ryDirection = Normalize(Vector3f(pCamera) + dyCamera);
+  }
+#+end_export
+
+*** 薄透镜模型与景深
+
+一种仅允许通过单一点的光线到达胶片的理想针孔相机在物理上无法实现；虽然可以制造出具有极小光圈、行为接近
+这种理想的相机，但小光圈会导致到达胶片传感器的光线相对较少。使用小光圈时，需要较长的曝光时间才能捕获足
+够的光子以准确记录图像，而这又可能导致在相机快门开启期间，场景中的物体因移动而产生模糊。
+
+真正的相机拥有镜头系统，能够将光线通过一个有限大小的光圈聚焦到胶片平面上。相机设计师（以及使用可调节光
+圈相机的摄影师）面临一个权衡：光圈越大，到达胶片的光线就越多，所需的曝光时间也就越短。然而，镜头只能对
+焦于单一平面（焦平面），场景中距离该平面越远的物体，就越模糊。光圈越大，这种效果就越明显：位于与镜头系
+统对焦平面不同深度处的物体，会变得越来越模糊。
+
+第 6.4 节中的相机模型对实际相机中的透镜系统进行了相当精确的模拟。对于迄今为止介绍的简单相机模型，我们
+可以应用光学中的一种经典近似——薄透镜近似，来利用传统的计算机图形学投影模型模拟有限光圈的影响。薄透镜近
+似法将光学系统建模为一个具有球面轮廓的单透镜，其中透镜的厚度相对于其曲率半径而言很小。（更通用的厚透镜
+近似法——该方法不假设透镜厚度可忽略不计——将在第6.4.3节中介绍。）
+
+在薄透镜近似条件下，通过透镜的平行入射光线会聚焦在透镜后方的一个点上，该点称为焦点。焦点位于透镜后方的
+距离 f 即为透镜的焦距。如果将胶片平面放置在距透镜后方与焦距相等的距离处，那么无限远处的物体将处于焦平
+面上，因为它们在胶片上成像于同一点。
+
+图 6.6 展示了基本设置。这里我们遵循了典型的镜头坐标系约定，即将镜头置于与 z 轴垂直的位置，镜头位于 z =
+0处，而场景沿 −z 方向延伸。（请注意，这与我们用于摄像机空间的坐标系不同，后者中的视线方向为+z。）镜头
+场景侧的距离用未带撇号的变量 z 表示，而镜头胶片侧的（正 z 方向）距离则用带撇号的变量 z′表示。
+
+[[./images/O2s0YW.png]]
+
+[[./images/gNxlKd.png]]
+
+对于位于距离焦距为 f 的薄透镜深度 z 处的场景中的点，高斯透镜方程将物体到透镜的距离与透镜到该点像的距离
+联系起来：
+
+$$ \frac{1}{z^\prime}-\frac{1}{z}=\frac{1}{f} $$
+
+
+请注意，当 $z = - \infty$ 时，我们得到 $f^\prime = f$，这与预期一致。
+
+我们可以利用高斯透镜方程求解透镜与胶片之间的距离，该距离使焦平面位于某个z位置，即焦距（图6.7）：
+
+$z^\prime =\frac{fz}{f+z}$
+
+一个不位于焦平面上的点，在胶片平面上成像的不是单点，而是一个圆盘。该圆盘的边界称为“模糊圆”。模糊圈的大
+小受光线通过的光圈直径、焦距以及物体与镜头之间距离的影响。图6.8和图6.9通过一个包含一系列龙模型复制品的
+场景，展示了这种称为景深的效果。图6.8(a)采用无限小光圈渲染，因此不存在任何景深效应。图6.8(b)和图6.9显
+示了随着镜头光圈尺寸增大，图像模糊程度的增加。请注意，从右数起的第二条龙在所有图像中始终处于焦点内，因
+为焦平面被设置在其所在的深度处。图 6.10 展示了利用景深渲染的风景场景。请注意，这种效果如何将观者的视线
+引向图像中央处于焦点内的草丛。
+
+[[./images/sclFE2.png]]
+
+实际上，物体不必正好位于焦平面上也能呈现出清晰的成像；只要像差圆的大小大致小于胶片或传感器上的一个像素，
+物体看起来就是对焦清晰的。物体距离镜头一定范围内的区域，其成像看起来都是清晰的，这一范围被称为镜头的景
+深。
+
+高斯透镜方程还允许我们计算混淆圈的大小；对于焦距为 f 且在距离 $z_f$ 处成焦的透镜，像平面位于 $z^\prime f$ 处。给
+定深度为 z 的另一个点，高斯透镜方程可求得透镜将该点聚焦到的距离 $z^\prime$。该点位于胶片平面前方或后方；图
+6.11(a) 展示了该点位于后方的情形。
+
+[[./images/aSLzaX.png]]
+
+[[./images/8XhMiY.png]]
+
+[[./images/7WQyE2.png]]
+
+
+模糊圈的直径由z′与透镜之间形成的锥体与胶片平面的交线决定。如果已知透镜直径$d_l$，则可利用相似三角形求得模
+糊圈直径$d_c$（图6.11(b)）：
+
+$$ \frac{d_l}{z^\prime}=\frac{d_c}{|z^\prime-z^\prime_f|} $$
+
+解出直流分量，我们得到
+
+
+$$d_c=\left|\frac{d_l(z^\prime-z^\prime_f)}{z^\prime}\right| $$
+
+
+将高斯透镜方程应用于以景深表示该结果，我们可以得出：
+
+$$ d_c=\left| \frac{d_l f(z-z_f)}{z(f+z_f)} \right| $$
+
+请注意，模糊圈的直径与镜头的直径成正比。镜头的直径通常用镜头的光圈值 n 来表示，该值将直径表示为焦距的
+分数，即 $d_l = f/n$。
+
+图6.12给出了焦距为50毫米、光圈为25毫米的透镜在 $z_f = 1$ m处对焦时该函数的曲线图。需要注意的是，焦平面周围
+的景深模糊呈非对称分布，且位于焦平面前方的物体的景深模糊增长速度远快于位于焦平面后方的物体。
+
+在光线追踪器中对薄透镜建模非常简单：只需选择透镜上的一个点，并找到从该点出发的合适光线，使得位于焦平面
+上的物体在胶片上成像清晰（图6.13）。
+
+[[./images/TjGVm2.png]]
+
+[[./images/TmeAWS.png]]
+
+[[./images/IevnNO.png]]
+
+因此，投影相机需要两个额外的参数来控制景深：一个用于设定镜头光圈的大小，另一个用于设定焦距。
+
+#+begin_export ascii
+⟨ProjectiveCamera Protected Data⟩+≡ 358
+  Float lensRadius, focalDistance;
+#+end_export
+
+#+begin_export ascii
+⟨Initialize depth of field parameters⟩≡
+  lensRadius = lensr;
+  focalDistance = focald;
+#+end_export
+
+为了充分采样镜头以获得平滑的景深，通常需要为每个图像像素追踪多条光线。图6.14展示了图6.10中的风景场景，
+每个像素仅采样4次（图6.10中每个像素采样128次）。
+
+#+begin_export ascii
+⟨Modify ray for depth of field⟩≡
+  if (lensRadius > 0) {
+    ⟨Sample point on lens 374⟩
+    ⟨Compute point on plane of focus ⟨Update ray for effect of lens 375⟩
+  }
+#+end_export
+
+第 13 章中定义的 ConcentricSampleDisk() 函数，将 (u, v) 采样位置（取值范围为 [0, 1)²）映射到以原点
+(0, 0) 为中心的二维单位圆盘上。为了将该位置转换为透镜上的一个点，需将这些坐标按透镜半径进行缩放。
+CameraSample类通过 pLens 成员变量提供 (u, v) 透镜采样参数。
+
+#+begin_export ascii
+⟨Sample point on lens⟩≡ 374
+  Point2f pLens = lensRadius * ConcentricSampleDisk(sample.pLens);
+#+end_export
+
+该光线的起点是透镜上的这一点。现在需要确定新光线的正确方向。我们知道，从给定的图像样本出发穿过透镜的所
+有光线都必须在焦平面上汇聚于同一点。此外，我们知道穿过透镜中心的光线方向不会发生改变，因此要找到合适的
+汇聚点，只需让来自针孔模型的未受干扰光线与焦平面相交，然后将新光线的方向设定为从透镜上的该点到交点的向
+量即可。
+
+对于这个简单模型，焦平面垂直于 z 轴，且光线始于原点，因此通过透镜中心的光线与焦平面的交点很容易确定。
+该交点的 t 值由下式给出：
+
+$$ t=\frac{focalDistance}{\mathrm{d}_z}$$
+
+#+begin_export ascii
+⟨Compute point on plane of focus⟩≡
+  Float ft = focalDistance / ray->d.z;
+  Point3f pFocus = (*ray)(ft);
+#+end_export
+
+现在可以初始化光线了。将光线原点设置为透镜上的采样点，并将光线方向设置为使光线穿过焦平面上的点 pFocus。
+
+#+begin_export ascii
+⟨Update ray for effect of lens⟩≡
+  ray->o = Point3f(pLens.x, pLens.y, 0);
+  ray->d = Normalize(pFocus - ray->o);
+#+end_export
+
+为了计算薄透镜的光线微分，将片段⟨更新受透镜影响的光线⟩中采用的方法应用于在胶片平面上沿 x 和 y 方向偏移
+一个像素的光线。实现此功能的片段 ⟨计算考虑透镜影响的正交摄像机光线微分⟩ 和 ⟨计算考虑透镜影响的透视摄像
+机光线微分⟩ 未包含在此处。
+
+** 环境摄像头
+
+与基于扫描线或光栅化的渲染方法相比，光线追踪的一个优势在于，它很容易采用非标准的图像投影。我们在将图像
+采样位置映射到光线方向方面拥有极大的自由度，因为渲染算法并不依赖于诸如场景中的直线在图像中总是投影为直
+线之类的属性。
+
+在本节中，我们将介绍一种相机模型，该模型会沿场景中某一点周围的所有方向追踪光线，从而呈现从该点可见的所
+有物体的二维视图。考虑场景中相机位置周围的一个球面；选择该球面上的点即可确定追踪光线的方向。如果我们用
+球坐标系对该球体进行参数化，球体上的每个点都与一个 $(\theta, \phi)$ 对相关联，其中 $\theta \in [0, \pi]$ 且 $\phi \in [0, 2\pi]$。
+（关于球坐标系的更多细节，请参见第 5.5.2 节。）这种类型的图像特别有用，因为它表示了场景中某一点上接收
+到的所有入射光。（这种图像表示法的一个重要用途是环境光——一种利用场景中光的基于图像的表示进行的渲染技
+术。）图6.15展示了该摄像机在San Miguel模型上的应用。$\phi$ 值从图像顶部的0到图像底部的$\pi$，$\phi$ 值从0到 $2\pi$ ，随着
+图像从左向右延伸而变化。
+
+[[./images/FoAjJX.png]]
+
+#+begin_export ascii
+⟨EnvironmentCamera Declarations⟩≡
+  class EnvironmentCamera : public Camera {
+    public:
+      ⟨EnvironmentCamera Public Methods 376⟩
+  };
+#+end_export
+
+EnvironmentCamera 直接继承自 Camera 类，而非 ProjectiveCamera类。这是因为环境投影是非线性的，无法通过
+单个 4×4 矩阵来表示。该相机在文件 cameras/environment.h 和cameras/environment.cpp 中进行了定义。
+
+#+begin_export ascii
+⟨EnvironmentCamera Public Methods⟩≡ 376
+  EnvironmentCamera(const AnimatedTransform &CameraToWorld,
+      Float shutterOpen, Float shutterClose, Film *film,
+      const Medium *medium)
+    : Camera(CameraToWorld, shutterOpen, shutterClose, film, medium) {
+  }
+#+end_export
+
+#+begin_export ascii
+⟨EnvironmentCamera Method Definitions⟩≡
+  Float EnvironmentCamera::GenerateRay(const CameraSample &sample,
+    Ray *ray) const {
+    ⟨Compute environment camera ray direction 377⟩
+    *ray = Ray(Point3f(0, 0, 0), dir, Infinity,
+               Lerp(sample.time, shutterOpen, shutterClose));
+    ray->medium = medium;
+    *ray = CameraToWorld(*ray);
+    return 1;
+  }
+#+end_export
+
+为了计算该光线的 $(\theta, \phi)$ 坐标，首先根据栅格图像采样位置计算 NDC 坐标，然后对其进行缩放以覆盖 $(\theta, \phi)$ 范
+围。接下来，使用球面坐标公式计算光线方向，最后将该方向转换到世界坐标系。（请注意，由于在相机坐标系中 y
+方向为“向上”，因此与系统中其他地方的使用方式相比，此处球面坐标公式中的 y 和 z 坐标位置发生了对调。）
+
+#+begin_export ascii
+⟨Compute environment camera ray direction⟩≡
+  Float theta = Pi * sample.pFilm.y / film->fullResolution.y;
+  Float phi=2*Pi*sample.pFilm.x / film->fullResolution.x;
+  Vector3f dir(std::sin(theta) * std::cos(phi), std::cos(theta),
+               std::sin(theta) * std::sin(phi));
+#+end_export
+
+** 逼真的相机
+
+薄透镜模型使得能够呈现因景深而产生的模糊图像，但它对实际相机镜头系统的近似程度相当粗略，因为实际镜头系
+统由一系列多个透镜元件组成，每个元件都会改变穿过它的辐射通量的分布。（图6.16展示了一枚焦距为22毫米、由
+八片镜片组成的广角镜头的横截面。）即使是基本的手机摄像头，通常也拥有大约五片独立镜片，而数码单反相机的
+镜头可能拥有十片或更多。一般而言，镜片数量更多、结构更复杂的镜头系统，能够生成比简单镜头系统更高质量的
+图像。
+
+本节讨论 RealisticCamera 的实现，该类模拟了光线通过如图 6.16 所示的透镜系统进行聚焦的过程，以渲染如图
+图 6.17 所示的图像。其实现基于光线追踪技术，相机沿光线路径穿过各透镜元件，同时考虑不同折射率介质（空气、
+不同类型的玻璃）之间的界面折射现象，直至光线路径离开光学系统，或被光圈光阑或镜头外壳吸收。从前组透镜射
+出的光线代表了相机响应曲线的采样点，可与用于估算任意光线沿途入射辐射度的积分器（如 SamplerIntegrator）
+配合使用。RealisticCamera 的实现位于文件 cameras/realistic.h 和 cameras/realistic.cpp 中。
+
+[[./images/cPmEUm.png]]
+
+[[./images/CYLcRC.png]]
+
+#+begin_export ascii
+⟨RealisticCamera Declarations⟩≡
+  class RealisticCamera : public Camera {
+    public:
+      ⟨RealisticCamera Public Methods⟩
+    private:
+      ⟨RealisticCamera Private Declarations 381⟩
+      ⟨RealisticCamera Private Data 379⟩
+      ⟨RealisticCamera Private Methods 381⟩
+  };
+#+end_export
+
+除了将摄像机置于场景中的常规变换、胶片以及快门开启和关闭时间外，RealisticCamera 构造函数还接受一个镜头
+系统描述文件的文件名、到目标焦平面的距离，以及光圈叶片的直径。关于 simpleWeighting 参数的作用，将在第
+13.6.6 节中进行说明，该节位于第 13 章中关于蒙特卡洛积分的初步内容以及第 6.4.7 节中关于成像辐射测量的内
+容之后。
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩≡
+  RealisticCamera::RealisticCamera(const AnimatedTransform &CameraToWorld,
+        Float shutterOpen, Float shutterClose, Float apertureDiameter,
+        Float focusDistance, bool simpleWeighting, const char *lensFile,
+        Film *film, const Medium *medium)
+    : Camera(CameraToWorld, shutterOpen, shutterClose, film, medium),
+      simpleWeighting(simpleWeighting) {
+    ⟨Load element data from lens description file⟩
+    ⟨Compute lens–film distance for given focus distance 389⟩
+    ⟨Compute exit pupil bounds at sampled points on the film 390⟩
+  }
+#+end_export
+
+#+begin_export ascii
+⟨RealisticCamera Private Data⟩≡ 378
+  const bool simpleWeighting;
+#+end_export
+
+从磁盘加载透镜描述文件后，构造函数会调整透镜与胶片之间的间距，使焦平面位于所需的深度（focusDistance），
+然后预先计算一些信息：从胶片平面上的不同点观察时，透镜元件中哪些最靠近胶片的区域会将场景的光线传导至胶
+片。在介绍完背景知识后，第6.4.4节和第6.4.5节将分别定义⟨根据给定的焦距计算透镜与胶片之间的距离⟩和⟨计算
+胶片上采样点处的出瞳边界⟩这两个片段。
+
+*** 透镜系统的表示
+
+镜头系统由一系列镜片组成，其中每片镜片通常都是某种形式的玻璃。镜头系统设计师面临的挑战在于，在空间（例
+如，为了保持手机的纤薄，手机摄像头的厚度受到严格限制）、成本以及制造难度的限制下，设计出一组能够在胶片
+或传感器上形成高质量图像的镜片。
+
+制造横截面为球面的透镜最为简单，且透镜系统通常以光轴为中心呈对称分布，该光轴通常用 z 表示。在本节的剩
+余部分中，我们将假设这两种特性均成立。与第 6.2.3 节一样，透镜系统采用这样的坐标系来定义：感光片与 z =
+0平面对齐，而透镜位于感光片左侧，沿 −z 轴方向。
+
+透镜系统通常通过各透镜元件（或空气）之间的界面序列来表示，而非对每个元件进行显式描述。表 6.1 列出了定
+义每个界面的物理量。该表中的最后一项定义了最右侧的界面，如图 6.18 所示：它是一个半径等于曲率半径的球体
+截面。一个透镜元件的厚度是指沿 z 轴方向到其右侧下一个元件（或到膜平面）的距离，而折射率则指界面右侧介
+质的折射率。该元件在 z 轴上方和下方的延伸范围由光圈直径决定。
+
+[[./images/Zg5XEE.png]]
+
+[[./images/GL3ydh.png]]
+
+LensElementInterface 结构表示一个单个透镜元件接口。
+
+#+begin_export ascii
+⟨RealisticCamera Private Declarations⟩≡ 378
+  struct LensElementInterface {
+    Float curvatureRadius;
+    Float thickness;
+    Float eta;
+    Float apertureRadius;
+  };
+#+end_export
+
+此处未包含的代码片段⟨从镜头描述文件加载元素数据⟩会读取镜头元素并初始化
+RealisticCamera::elementInterfaces 数组。有关文件格式的详细信息，请参阅源代码中的注释，该格式与表 6.1
+的结构一致；此外，请参阅 pbrt 发行版中的 scenes/lenses 目录，其中包含若干镜头描述示例。
+
+对从文件中读取的数值进行了两项调整：首先，透镜系统通常以毫米为单位描述，但 pbrt 假设场景以米为单位进行
+测量。因此，除折射率以外的各项数值均按 1/1000 进行缩放。其次，透镜元件的直径除以二；在后续代码中，半径
+是一个更方便使用的量。
+
+#+begin_export ascii
+⟨RealisticCamera Private Data⟩+≡ 378
+  std::vector<LensElementInterface> elementInterfaces;
+#+end_export
+
+加载完透镜元件接口描述后，最好能随时查阅一些与透镜系统相关的参数。LensRearZ() 和 LensFrontZ() 分别返回
+透镜系统后组和前组的 z 深度。请注意，返回的 z 深度是在相机坐标系中，而非透镜坐标系中，因此取正值。
+
+#+begin_export ascii
+⟨RealisticCamera Private Methods⟩≡ 378
+  Float LensRearZ() const {
+    return elementInterfaces.back().thickness;
+  }
+#+end_export
+
+要计算前元素的 z 位置，需要将所有元素的厚度相加（参见图 6.19）。在系统中任何对性能要求较高的部分，代码
+都不需要这个值，因此在需要时重新计算即可。如果担心此方法的性能问题，最好将该值缓存到 RealisticCamera
+中。
+
+#+begin_export ascii
+⟨RealisticCamera Private Methods⟩+≡ 378
+  Float LensFrontZ() const {
+    Float zSum = 0;
+    for (const LensElementInterface &element : elementInterfaces)
+      zSum += element.thickness;
+    return zSum;
+  }
+#+end_export
+
+[[./images/6QPU7o.png]]
+
+RearElementRadius() 返回后组镜片的孔径半径（单位：米）。
+
+#+begin_export ascii
+⟨RealisticCamera Private Methods⟩+≡ 378
+  Float RearElementRadius() const {
+    return elementInterfaces.back().apertureRadius;
+  }
+#+end_export
+
+*** 透镜中的光线追踪
+
+对于一条从透镜系统的胶片侧发出的光线，TraceLensesFromFilm() 会依次计算其与每个透镜元件的交点；如果光线
+在穿过透镜系统的过程中路径受阻，则终止该光线并返回 false；否则返回 true，并将 *rOut 初始化为相机坐标系
+中出射的光线。在遍历过程中，elementZ跟踪当前透镜元件的 z 截距。由于光线是从胶片侧发出的，因此遍历透镜
+的顺序与elementInterfaces 中存储的顺序相反。
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩+≡
+  bool RealisticCamera::TraceLensesFromFilm(const Ray &rCamera,
+      Ray *rOut) const {
+    Float elementZ = 0;
+    ⟨Transform rCamera from camera to lens system space 383⟩
+    for (int i = elementInterfaces.size() - 1; i >= 0; --i) {
+      const LensElementInterface &element = elementInterfaces[i];
+      ⟨Update ray from film accounting for interaction with element 383⟩
+    }
+    ⟨Transform rLens from lens system space back to camera space return true;
+  }
+#+end_export
+
+由于在 pbrt 的摄像机坐标系中，摄像机沿 +z 轴方向指向，但透镜沿−z 轴方向，因此光线原点和方向的 z 分量需
+要取反。虽然这是一个足够简单的变换，可以直接应用，但我们更倾向于使用显式的Transform 来明确表达这一意图。
+
+#+begin_export ascii
+⟨Transform rCamera from camera to lens system space⟩≡
+  static const Transform CameraToLens = Scale(1, 1, -1);
+  Ray rLens = CameraToLens(rCamera);
+#+end_export
+
+回顾图6.19中元素的z截距是如何计算的：由于我们是从后往前遍历元素的，因此在考虑元素相互作用之前，必须从
+elementZ中减去该元素的厚度，以计算其z截距。
+
+#+begin_export ascii
+⟨Update ray from film accounting for interaction with element⟩≡
+  elementZ -= element.thickness;
+  ⟨Compute intersection of ray with lens element 384⟩
+  ⟨Test intersection point against element aperture 383⟩
+  ⟨Update ray path for element interface interaction 385⟩
+#+end_export
+
+已知单元在 z 轴上的截距，下一步是计算光线与单元界面（或光阑平面）相交处沿该光线方向的参数 t 值。对于光
+阑，采用光线-平面测试（参照第 3.1.2 节）。对于球面界面，IntersectSphericalElement() 函数会执行此测试，
+并在检测到相交时返回曲面法线；该法线将用于计算折射光线的方向。
+
+#+begin_export ascii
+⟨Compute intersection of ray with lens element⟩≡ Float t;
+  Normal3f n;
+  bool isStop = (element.curvatureRadius == 0);
+  if (isStop)
+    t = (elementZ - rLens.o.z) / rLens.d.z;
+  else {
+    Float radius = element.curvatureRadius;
+    Float zCenter = elementZ + element.curvatureRadius;
+    if (!IntersectSphericalElement(radius, zCenter, rLens, &t, &n))
+      return false;
+  }
+#+end_export
+
+IntersectSphericalElement() 方法总体上与 Sphere::Intersect() 类似，不过它针对元素中心位于 z轴上的情况
+进行了专门处理（因此，该中心的 x 和 y 分量均为零）。片段 ⟨计算光线与元素交点的 t0 和 t1⟩ 以及 ⟨计算光
+线交点处元素的表面法线⟩由于与 Sphere::Intersect()的实现相似，因此未包含在此文本中。
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩+≡
+  bool RealisticCamera::IntersectSphericalElement(Float radius,
+          Float zCenter, const Ray &ray, Float *t, Normal3f *n) {
+    ⟨Compute t0 and t1 for ray–element intersection⟩
+    ⟨Select intersection t based on ray direction and element curvature 384⟩
+    ⟨Compute surface normal of element at ray intersection point⟩
+    return true;
+  }
+#+end_export
+
+[[./images/NWsu5Z.png]]
+
+然而，在选择返回哪个交点时存在一个细节问题：t>0 时距离最近的交点并不一定位于元素界面上；参见图 6.20。
+例如，对于从场景中射入并与凹透镜（具有负曲率半径）相交的光线，无论较近的交点是否满足 t>0，都应返回两个
+交点中较远的那一个。幸运的是，基于光线方向和曲率半径的简单逻辑可以确定应使用哪个 t 值。
+
+#+begin_export ascii
+⟨Select intersection t based on ray direction and element curvature⟩≡
+  bool useCloserT = (ray.d.z > 0) ^ (radius < 0);
+  *t = useCloserT ? std::min(t0, t1) : std::max(t0, t1);
+  if (*t < 0)
+    return false;
+#+end_export
+
+每个透镜元件在光轴周围延伸出一定半径的范围；如果光线与该元件的交点位于该半径之外，则该光线实际上会与透
+镜外壳相交并终止。同样地，如果光线与光圈光阑相交，它也会终止。因此，在此我们根据当前元件的相应限制对交
+点进行检验：若光线终止，则直接终止该光线；若光线未终止，则将其起点更新为当前交点。
+
+#+begin_export ascii
+⟨Test intersection point against element aperture⟩≡
+  Point3f pHit = rLens(t);
+  Float r2 = pHit.x * pHit.x + pHit.y * pHit.y;
+  if (r2 > element.apertureRadius * element.apertureRadius)
+    return false;
+  rLens.o = pHit;
+#+end_export
+
+如果当前介质是光阑，则光线在穿过该介质的界面时，其路径不会受到影响。对于玻璃（或，天哪，塑料）透镜元件，
+当光线从一种折射率的介质进入另一种折射率的介质时，其方向会在界面处发生变化。（光线可能从空气进入玻璃，
+从玻璃进入空气，或者从一种折射率的玻璃进入另一种折射率的玻璃。）
+
+第 8.2 节讨论了两个介质之间的边界处折射率的变化如何改变光线的方向以及该光线所携带的辐射通量。（在这种
+情况下，我们可以忽略辐射通量的变化，因为如果光线进入透镜系统时所在的介质与离开时相同——这里两者均为空
+气——则该变化会相互抵消。）Refract() 函数在第 8.2.3 节中定义；请注意，该函数假设入射方向指向远离表面的
+方向，因此在将光线方向传递给该函数之前，需先取反。当发生全内反射时，该函数返回 false，此时光线路径终止。
+否则，折射方向将通过 w 返回。
+
+通常情况下，穿过此类介面的光部分会被透射，部分会被反射。在此我们忽略反射，假设光线完全透射。虽然这是一
+种近似处理，但还是合理的：透镜在制造时通常会涂覆特殊涂层，旨在将反射量降低至光线所携带辐射度的约0.25%。
+（不过，对这微量的反射进行建模，对于捕捉透镜眩光等效果可能至关重要。）
+
+#+begin_export ascii
+⟨Update ray path for element interface interaction⟩≡ if (!isStop) {
+    Vector3f w;
+    Float etaI = element.eta;
+    Float etaT = (i>0&&elementInterfaces[i - 1].eta != 0) ?
+      elementInterfaces[i - 1].eta : 1;
+    if (!Refract(Normalize(-rLens.d), n, etaI / etaT, &w))
+      return false;
+    rLens.d = w;
+  }
+#+end_export
+
+如果光线已成功穿过前透镜，只需将其从透镜坐标系转换到相机坐标系即可。
+
+#+begin_export ascii
+⟨Transform rLens from lens system space back to camera space⟩≡
+  if (rOut != nullptr) {
+    static const Transform LensToCamera = Scale(1, 1, -1);
+    *rOut = LensToCamera(rLens);
+  }
+#+end_export
+
+TraceLensesFromScene() 方法与 TraceLensesFromFilm() 非常相似，因此此处不再赘述。两者的主要区别在于，前
+者是从前到后遍历元素，而非从后到前。请注意，该方法假设传入的光线已处于摄像机坐标系中；如果光线始于世界
+坐标系，则调用方需负责执行变换。返回的光线位于摄像机坐标系中，此时后部透镜元件朝向胶片。
+
+#+begin_export ascii
+⟨RealisticCamera Private Methods⟩+≡ 378
+  bool TraceLensesFromScene(const Ray &rCamera, Ray *rOut) const;
+#+end_export
+
+[[./images/4MZ3ZL.png]]
+
+*** 厚透镜近似法
+
+第6.2.3节中使用的薄透镜近似基于一个简化假设，即透镜系统沿光轴方向的厚度为零。透镜系统的厚透镜近似则略
+为精确一些，因为它考虑了透镜系统的z方向尺寸。在此介绍厚透镜的基本概念后，我们将在第6.4.4节中使用厚透镜
+近似法，确定透镜系统应距胶片多远，才能在所需的焦深处实现聚焦。
+
+厚透镜近似法通过沿光轴的两组距离——焦点和主平面深度——来描述透镜系统；这是透镜系统的两个基本点。如果追踪
+平行于光轴的光线穿过一个理想透镜系统，所有光线都将在光轴上的同一点相交——这就是焦点。（实际上，真实的透
+镜系统并非完全理想，位于不同高度的入射光线会在 z 值的小范围内与光轴相交——这就是球面像差。）对于给定的
+透镜系统，我们可以从两侧追踪平行于光轴的光线穿过该系统，并计算它们与 z 轴的交点，从而确定焦点。（参见
+图 6.21。）
+
+每个主平面是通过将入射光线沿光轴方向延长并与出透镜光线延长线延长至相交点来确定的；交点的z方向深度即为
+相应主平面的深度。图6.21展示了一个透镜系统，其焦点为 $f_z$ 和$f^\prime_z$，主平面位于z值为 $p_z$ 和 $p^\prime_z$ 的位置。
+（与第6.2.3节一样，带撇号的变量表示透镜系统胶片侧的点，不带撇号的变量表示被成像场景中的点。）
+
+对于离开透镜的光线，要确定焦点，首先需要计算使光线的 x 和 y 分量均为零的 tf值。如果入射光线仅沿 x 方向
+偏离光轴，那么我们需要找到满足 $o_x + t_f\mathrm{d}x = 0$ 的 $t_f$ 值。因此，
+
+$$ t_f=-o_x/\mathrm{d}_x$$
+
+同样地，要求出主平面的焦距$t_p$，使得从透镜射出的光线在x轴上的高度与原光线相同，我们有 $ox + t_pdx =
+x$，因此
+
+$t_p=(x-o_x)/\mathrm{d}_x$
+
+计算出这两个 t 值后，即可利用光线方程求出相应点的 z 坐标。
+
+ComputeCardinalPoints() 方法用于计算给定光线在焦点的 z 深度以及主平面的 z 深度。请注意，该方法假设光线
+位于相机坐标系中，但返回的是透镜坐标系中沿光轴方向的 z 值。
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩+≡
+  void RealisticCamera::ComputeCardinalPoints(const Ray &rIn,
+         const Ray &rOut, Float *pz, Float *fz) {
+    Float tf = -rOut.o.x / rOut.d.x;
+    *fz = -rOut(tf).z;
+    Float tp = (rIn.o.x - rOut.o.x) / rOut.d.x;
+    *pz = -rOut(tp).z;
+  }
+#+end_export
+
+ComputeThickLensApproximation() 方法计算透镜系统的两组主点。
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩+≡
+  void RealisticCamera::ComputeThickLensApproximation(Float pz[2],
+          Float fz[2]) const {
+    ⟨Find height x from optical axis for parallel rays 387⟩
+    ⟨Compute cardinal points for film side of lens system 387⟩
+    ⟨Compute cardinal points for scene side of lens system 388⟩
+  }
+#+end_export
+
+首先，我们必须沿x轴选择一个高度来追踪光线。该高度应与x = 0相距足够远，以确保有足够的数值精度来准确计算
+离开透镜系统的光线与z轴的交点位置；但也不应沿x轴选择过高的位置，以免光线在穿过透镜系统时撞上光阑。在此，
+我们采用胶片对角线长度的一小部分作为高度；除非光阑极其微小，否则这种方法效果良好。
+
+#+begin_export ascii
+⟨Find height x from optical axis for parallel rays⟩≡
+  Float x = .001 * film->diagonal;
+#+end_export
+
+为了构造从场景进入透镜系统 rScene 的光线，我们从透镜前端稍微偏移一点。（请注意，传递给
+TraceLensesFromScene() 的光线应位于摄像机坐标系中。）
+
+#+begin_export ascii
+⟨Compute cardinal points for film side of lens system⟩≡
+  Ray rScene(Point3f(x, 0, LensFrontZ() + 1), Vector3f(0, 0, -1));
+  Ray rFilm;
+  TraceLensesFromScene(rScene, &rFilm);
+  ComputeCardinalPoints(rScene, rFilm, &pz[0], &fz[0]);
+#+end_export
+
+从透镜系统的膜面开始进行一个等效的计算过程，即可得到另外两个基点。
+
+#+begin_export ascii
+⟨Compute cardinal points for scene side of lens system⟩≡
+  rFilm = Ray(Point3f(x, 0, LensRearZ() - 1), Vector3f(0, 0, 1));
+  TraceLensesFromFilm(rFilm, &rScene);
+  ComputeCardinalPoints(rFilm, rScene, &pz[1], &fz[1]);
+#+end_export
+
+*** 对焦
+
+通过调整透镜系统相对于胶片的相对位置，使其使场景中给定深度的物体成像于胶片平面上，从而实现对焦。高斯透
+镜方程（6.3）给出了一个可求解的关系式，我们据此可对厚透镜进行对焦。
+
+对于厚透镜，高斯透镜方程将场景中位于z处的某一点到其焦点的距离与到 $z^\prime$ 处的距离的关系表示为：
+
+
+$$ \frac{1}{z^\prime-p^\prime_z}-\frac{1}{z-p_z}=\frac{1}{f} $$
+
+对于薄透镜，$p_z = p^\prime_z= 0$ ，由此可得式（6.1）。
+
+如果我们已知主平面的位置 $p_z$ 和 $p^\prime_z$以及透镜的焦距 f，并且希望沿光轴在某深度 z 处聚焦，那么我们需要确定
+应将系统平移多远 δ，以便
+
+
+$$ \frac{1}{z^\prime-p^\prime_z+\delta}-\frac{1}{z-p_z+\delta}=\frac{1}{f}$$
+
+在胶片侧，焦点应位于胶片上，因此 $z^\prime=0$ ，且 z = zf，即给定的焦深。唯一未知量是 δ，经过一些代数运算，
+可得
+
+$$\delta=\frac{1}{2}\left(p_z-z_f+p^\prime_z-\sqrt{(p_z-z_f-z^\prime)(z-z_f-4f-p^\prime_z)}\right)$$
+
+（实际上有两种解决方案，但这一种——即两者中更接近正确答案的那种——对镜头位置做了一点微调，因此是更合适
+的。）
+
+FocusThickLens() 函数利用该近似方法对透镜组进行对焦。计算出 δ 之后，该函数会返回透镜组相对于胶片在 z
+轴方向上的偏移量，即透镜组应放置的位置。
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩+≡
+  Float RealisticCamera::FocusThickLens(Float focusDistance) {
+    Float pz[2], fz[2];
+    ComputeThickLensApproximation(pz, fz);
+    ⟨Compute translation of lens, delta, to focus at focusDistance 389⟩
+    return elementInterfaces.back().thickness + delta;
+  }
+#+end_export
+
+式（6.4）给出了偏移量 δ。透镜的焦距 f 是主点 $f^\prime_z$ 和 $p^\prime_z$ 之间的距离。另请注意，这里对 z 采用了焦距的
+负值，因为光轴沿负 z 方向延伸。
+
+#+begin_export ascii
+⟨Compute translation of lens, delta, to focus at focusDistance⟩≡
+  Float f = fz[0] - pz[0];
+  Float z = -focusDistance;
+  Float delta = 0.5f * (pz[1]-z+pz[0] -
+     std::sqrt((pz[1]-z-pz[0]) * (pz[1]-z-4*f-pz[0])));
+#+end_export
+
+现在，我们终于可以在 RealisticCamera 的构造函数中实现那个用于对焦透镜系统的代码片段了。（请记住，最靠
+后的透镜界面厚度即为该界面到胶片的距离。）
+
+#+begin_export ascii
+⟨Compute lens–film distance for given focus distance⟩≡
+  elementInterfaces.back().thickness = FocusThickLens(focusDistance);
+#+end_export
+
+*** 出射瞳
+
+从胶片平面上给定的一点出发，并非所有朝向后组镜片的射线都能成功地从镜头系统中射出；有些会被光圈挡板阻挡，
+有些则会与镜头系统外壳相交。反过来说，后组镜片上的并非所有点都能将辐射通量传输到胶片上的该点。后镜片上
+那组能够将光线传导通过镜头系统的点被称为出瞳；其大小和位置会随着胶片平面上视点的不同而变化。（类比而言，
+入瞳是指前镜片上方那个区域，来自场景中某一点的光线将到达该区域并投射到胶片上。）
+
+图6.22展示了使用广角镜头时，从胶片平面上两个点观察到的出瞳。越靠近胶片边缘的点，出瞳就越小。这种缩小现
+象会导致暗角。
+
+在从胶片开始追踪光线时，我们希望避免追踪过多无法穿过透镜系统的光线；因此，将采样范围限制在出瞳本身及其
+周围的小区域内是值得的，而不是例如浪费地对整个后透镜元件区域进行采样。
+
+在追踪光线之前，计算胶片平面上每个点的出瞳尺寸计算成本将高得难以承受；因此，RealisticCamera 的实现方案
+会预先计算胶片平面上某条直线各段上的出瞳边界。由于我们假设透镜系统围绕光轴呈径向对称，因此出瞳边界也将
+呈径向对称，而通过适当旋转这些线段边界，即可求得胶片平面上任意点的出瞳边界（图 6.23）。随后利用这些边
+界，可以高效地求得特定胶片采样位置的出瞳边界。
+
+需要注意的一个重要细节是：由于透镜系统的对焦是通过沿光轴平移来实现的，因此当调整透镜系统的焦距时，出瞳
+的形状和位置也会发生变化。因此，必须在完成对焦后计算这些边界值，这一点至关重要。
+
+[[./images/VnXqVX.png]]
+
+#+begin_export ascii
+⟨Compute exit pupil bounds at sampled points on the film⟩≡
+  int nSamples = 64;
+  exitPupilBounds.resize(nSamples);
+  ParallelFor(
+    [&](int i) {
+      Float r0 = (Float)i / nSamples * film->diagonal / 2;
+      Float r1 = (Float)(i + 1) / nSamples * film->diagonal / 2;
+      exitPupilBounds[i] = BoundExitPupil(r0, r1);
+    }, nSamples);
+#+end_export
+
+#+begin_export ascii
+⟨RealisticCamera Private Data⟩+≡ 378
+  std::vector<Bounds2f> exitPupilBounds;
+#+end_export
+
+BoundExitPupil() 方法计算从胶片平面上某线段上的一个点所看到的出瞳的二维边界框。该边界框的计算方法是：
+尝试从与后透镜元件相切的平面上的一组点出发，追踪穿过透镜系统的光线。成功穿过透镜系统的光线所形成的边界
+框，可为出瞳提供一个近似边界——参见图 6.24。
+
+[[./images/jdTXoJ.png]]
+
+[[./images/vbwWDp.png]]
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩+≡
+  Bounds2f RealisticCamera::BoundExitPupil(Float pFilmX0,
+         Float pFilmX1) const {
+    Bounds2f pupilBounds;
+    ⟨Sample a collection of points on the rear lens to find exit pupil 392⟩
+    ⟨Return entire element bounds if no rays made it through the lens system 393⟩
+    ⟨Expand bounds to account for sample spacing 393⟩
+    return pupilBounds;
+  }
+#+end_export
+
+该实现对出瞳进行了相当密集的采样——每个分段共计 $1024^2$ 个采样点。我们发现，在实际应用中，这种采样率能
+够提供良好的出瞳边界。
+
+#+begin_export ascii
+⟨Sample a collection of points on the rear lens to find exit pupil⟩≡
+  const int nSamples = 1024 * 1024;
+  int nExitingRays = 0;
+  ⟨Compute bounding box of projection of rear element on sampling plane 392⟩
+  for(inti=0;i<nSamples; ++i) {
+    ⟨Find location of sample points on x segment and rear lens element 392⟩
+    ⟨Expand pupil bounds if ray makes it through the lens system 392⟩
+  }
+#+end_export
+
+后组镜片在垂直于该平面的平面上的边界框，不足以作为出瞳在该平面上的投影的保守上限；因为该镜片通常是弯曲
+的，穿过该平面且位于该边界框之外的光线本身可能会与后组镜片的有效范围相交。与其计算精确的上限，我们不如
+将边界大幅扩大。其结果是，用于计算出瞳投影界限的许多采样将被浪费；但在实际应用中，这只是微不足道的代价，
+因为这些采样通常会在透镜光线追踪阶段被迅速终止。
+
+#+begin_export ascii
+⟨Compute bounding box of projection of rear element on sampling plane⟩≡
+  Float rearRadius = RearElementRadius();
+  Bounds2f projRearBounds(Point2f(-1.5f * rearRadius, -1.5f * rearRadius),
+                          Point2f( 1.5f * rearRadius, 1.5f * rearRadius));
+#+end_export
+
+通过在x间隔的端点之间进行线性插值，可确定薄膜上的x采样点。用于计算出瞳边界框内采样点插值偏移量的
+RadicalInverse()函数将在后文第7.4.1节中定义。届时我们将看到，此处实现的采样策略相当于在三维空间中使用
+哈默斯利点；所得点集将整体三维域的覆盖间隙降至最低，从而确保对出瞳边界的估计准确无误。
+
+#+begin_export ascii
+⟨Find location of sample points on x segment and rear lens element⟩≡
+  Point3f pFilm(Lerp((i + 0.5f) / nSamples, pFilmX0, pFilmX1), 0, 0);
+  Float u[2] = { RadicalInverse(0, i), RadicalInverse(1, i) };
+  Point3f pRear(Lerp(u[0], projRearBounds.pMin.x, projRearBounds.pMax.x),
+                Lerp(u[1], projRearBounds.pMin.y, projRearBounds.pMax.y),
+                LensRearZ());
+#+end_export
+
+现在，我们可以从 pFilm 到 pRear 构造一条光线，并通过检查该光线是否能穿过透镜系统的前端，来判断它是否位
+于出瞳范围内。如果是，则将出瞳边界扩展以包含该点。如果采样点已经位于迄今计算出的出瞳边界框内，那么我们
+可以跳过透镜光线追踪步骤，从而节省一些不必要的工作。
+
+#+begin_export ascii
+⟨Expand pupil bounds if ray makes it through the lens system⟩≡
+  if (Inside(Point2f(pRear.x, pRear.y), pupilBounds) ||
+    TraceLensesFromFilm(Ray(pFilm, pRear - pFilm), nullptr)) {
+    pupilBounds = Union(pupilBounds, Point2f(pRear.x, pRear.y));
+    ++nExitingRays;
+  }
+#+end_export
+
+可能没有任何一束样本光线能穿过整个透镜系统；这种情况在某些超广角镜头中确实可能发生，例如当出瞳在胶片边
+缘处消失时。在这种情况下，边界并不重要，BoundExitPupil() 函数将返回一个包含整个后组镜片的边界。
+
+#+begin_export ascii
+⟨Return entire element bounds if no rays made it through the lens system⟩≡
+  if (nExitingRays == 0)
+    return projRearBounds;
+#+end_export
+
+虽然一个样本可能穿过了透镜系统，而其相邻的一个样本却未能穿过，但很有可能另一个紧邻该相邻样本的样本实际
+上本可以穿过去。因此，为了考虑这种不确定性，最终的边界范围会向每个方向扩展大约样本之间的间距。
+
+#+begin_export ascii
+⟨Expand bounds to account for sample spacing⟩≡
+pupilBounds = Expand(pupilBounds,
+                     2 * projRearBounds.Diagonal().Length() /
+                     std::sqrt(nSamples));
+#+end_export
+
+基于存储在 RealisticCamera::exitPupilBounds 中的预计算边界，SampleExitPupil() 方法能够相当高效地确定胶
+片平面上给定点的出瞳边界。随后，它会从该边界框内采样一个点，供来自胶片的光线穿过。为了准确建模成像过程
+的辐射测量，以下代码需要知道该边界框的面积，因此该面积通过 sampleBoundsArea 返回。
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩+≡
+  Point3f RealisticCamera::SampleExitPupil(const Point2f &pFilm,
+          const Point2f &lensSample, Float *sampleBoundsArea) const {
+    ⟨Find exit pupil bound for sample distance from film center 393⟩
+    ⟨Generate sample point inside exit pupil bound 393⟩
+    ⟨Return sample point rotated by angle of pFilm with +x axis 394⟩
+  }
+#+end_export
+
+#+begin_export ascii
+⟨Find exit pupil bound for sample distance from film center⟩≡
+  Float rFilm = std::sqrt(pFilm.x * pFilm.x + pFilm.y * pFilm.y);
+  int rIndex = rFilm / (film->diagonal / 2) * exitPupilBounds.size();
+  rIndex = std::min((int)exitPupilBounds.size() - 1, rIndex);
+  Bounds2f pupilBounds = exitPupilBounds[rIndex];
+  if (sampleBoundsArea) *sampleBoundsArea = pupilBounds.Area();
+#+end_export
+
+给定瞳孔的边界框后，会通过线性插值并结合提供的 lensSample 值（该值位于 $[0, 1)^2$范围内）来采样边界框内
+的一个点。
+
+#+begin_export ascii
+⟨Generate sample point inside exit pupil bound⟩≡
+  Point2f pLens = pupilBounds.Lerp(lensSample);
+#+end_export
+
+由于出瞳边界是根据胶片上沿+x轴方向的一个点计算得出的，但点pFilm是胶片上的任意一点，因此出瞳边界中的采
+样点必须旋转一个与点pFilm与+x轴所成角度相同的角。
+
+#+begin_export ascii
+⟨Return sample point rotated by angle of pFilm with +x axis⟩≡
+  Float sinTheta = (rFilm != 0) ? pFilm.y / rFilm : 0;
+  Float cosTheta = (rFilm != 0) ? pFilm.x / rFilm : 1;
+  return Point3f(cosTheta * pLens.x - sinTheta * pLens.y,
+                 sinTheta * pLens.x + cosTheta * pLens.y,
+                 LensRearZ());
+#+end_export
+
+*** 生成光线
+
+既然我们已经具备了追踪穿过透镜系统光线以及从胶片平面上的点采样出瞳边界内点的位置的机制，将一个
+CameraSample 转换为一条离开相机的光线就相当简单了：我们需要计算该采样点在胶片平面上的位置，并从该点生
+成一条通向后透镜元件的光线，然后追踪该光线穿过透镜系统。
+
+#+begin_export ascii
+⟨RealisticCamera Method Definitions⟩+≡
+  Float RealisticCamera::GenerateRay(const CameraSample &sample,
+           Ray *ray) const {
+    ⟨Find point on film, pFilm, corresponding to sample.pFilm 394⟩
+    ⟨Trace ray from pFilm through lens system 394⟩
+    ⟨Finish initialization of RealisticCamera ray ⟨Return weighting for RealisticCamera ray 395⟩
+  }
+#+end_export
+
+CameraSample::pFilm 的值是基于图像的整体分辨率（以像素为单位）给出的。这里，我们使用的是传感器的物理模
+型，因此首先将其转换回 [0, 1)2 范围内的采样值。接下来，通过在胶片区域内对该采样值进行线性插值，来确定
+胶片上的对应点。
+
+#+begin_export ascii
+⟨Find point on film, pFilm, corresponding to sample.pFilm⟩≡
+  Point2f s(sample.pFilm.x / film->fullResolution.x,
+            sample.pFilm.y / film->fullResolution.y);
+  Point2f pFilm2 = film->GetPhysicalExtent().Lerp(s);
+  Point3f pFilm(-pFilm2.x, pFilm2.y, 0);
+#+end_export
+
+SampleExitPupil() 随后会返回后透镜表面切平面上的一个点，从而使我们能够确定光线的方向。接着，我们可以追
+踪该光线穿过整个透镜系统。如果光线被光阑阻挡，或者因其他原因未能穿过透镜系统，GenerateRay() 将返回
+a0weight。（调用方应确保检查此情况。）
+
+#+begin_export ascii
+⟨Trace ray from pFilm through lens system⟩≡
+  Float exitPupilBoundsArea;
+  Point3f pRear = SampleExitPupil(Point2f(pFilm.x, pFilm.y), sample.pLens,
+                                  &exitPupilBoundsArea);
+  Ray rFilm(pFilm, pRear - pFilm, Infinity,
+            Lerp(sample.time, shutterOpen, shutterClose));
+  if (!TraceLensesFromFilm(rFilm, ray))
+    return 0;
+#+end_export
+
+[[./images/wRNhYX.png]]
+
+如果光线成功地从透镜系统中射出，则必须处理常规细节以完成其初始化。
+
+#+begin_export ascii
+⟨Finish initialization of RealisticCamera ray⟩≡
+  *ray = CameraToWorld(*ray);
+  ray->d = Normalize(ray->d);
+  ray->medium = medium;
+#+end_export
+
+⟨RealisticCamera 光线返回权重⟩这一片段将在稍后第13.6.6 节中定义，届时将先介绍一些关于蒙特卡洛积分的必
+要背景知识。
+
+*** 相机测量方程
+
+鉴于对真实成像过程的模拟更加精确，因此也有必要更仔细地定义胶片或相机传感器所进行测量的辐射计量学。从出
+瞳射向胶片的光线携带着来自场景的辐射度；从胶片平面上的一点来看，因此存在一组入射方向，辐射度正是从这些
+方向入射的。离开出瞳的辐射度分布受胶片上该点所见离焦模糊程度的影响——图6.25展示了从胶片上两个点观察到的
+出瞳辐射度的两种渲染效果。
+
+根据入射辐射度函数，我们可以定义胶片平面上某一点的辐照度。如果我们从基于辐射度的辐照度定义（即式（5.4））
+出发，则可以利用以下公式，将立体角积分转换为面积积分（在此情况下，即与后透镜元件相切且界定出瞳的平面面
+积 Ae）：
+
+[[./images/JdY5nT.png]]
+
+
+$$ E(p)=\int_{A_e}Li(p, p^\prime)\frac{|cos \theta\  cos \theta^\prime|}{||p^\prime-p||^2}\mathrm{d}A_e$$
+
+图6.26展示了该情况的几何结构。由于膜面与出瞳面垂直，因此θ=θ′。我们还可以利用以下事实：p与p′之间的距离
+等于从膜面到出瞳的轴向距离（此处记为z）乘以cos θ。综合以上内容，我们得到
+
+$$ E(p)=\frac{1}{z^2}\int_{A_e}Li(p, p^\prime)|cos^4 \theta|\mathrm{d}A_e$$
+
+对于那些相对于距离z 而言胶片范围较大的相机，$cos^4 \theta$ 项可以显著降低入射辐照度——该因子也会导致暗角。大多
+数现代数码相机通过预设的校正系数来校正这一效应，这些系数会使传感器边缘处的像素值增大。
+
+对胶片上某一点在快门开启期间的辐照度进行积分，可得通量，这是能量除以面积的辐射计量单位，单位为 J/m²。
+
+$$ H(p)=\frac{1}{z^2}\int^{t_1}_{t_0}\int_{A_e}Li(p, p^\prime, t^\prime)|cos^4\theta|\mathrm{d}A_e\mathrm{d}t^\prime $$
+
+通过测量某一点的通量密度，可以反映出胶片平面上接收到的能量与相机快门开启时间长短之间存在一定关联。
+
+照相胶片（或数码相机中的CCD或CMOS传感器）实际上是测量小面积范围内的辐射能。 根据式（6.6），并对传感器
+像素面积 $A_p$ 进行积分，即可得到到达该像素的焦耳数。
+
+$$ J=\frac{1}{z^2}\int_{A_p}\int^{t_1}_{t_0}\int_{A_e}Li(p,p^\prime,t^\prime)|cos^4 \theta|\mathrm{d}A_e\mathrm{d}t^\prime\mathrm{d}A_p $$
+
+在第 13.2 节中，我们将探讨如何应用蒙特卡洛方法来估计这些各种积分的值。然后在第 13.6.6 节中，我们将定义
+RealisticCamera::GenerateRay() 中的片段 ⟨RealisticCamera 光线的返回权重⟩；通过各种计算权重的方法，我们
+可以计算出这些量中的每一个。第 16.1.1 节定义了相机模型的重要性函数，该函数描述了相机对沿不同光线到达的
+入射光照的敏感性。
+
+
+** 延伸阅读
+
+在开创性的“Sketchpad”系统中，萨瑟兰（1963）首次将投影矩阵应用于计算机图形学。阿肯宁-穆勒、海恩斯和霍夫
+曼（2008）给出了关于正投影和透视投影矩阵的推导，其论述尤为精辟。关于投影的其他优秀参考文献包括罗杰斯和
+亚当斯的《计算机图形学数学基础》（1990），以及埃伯利关于游戏引擎设计的著作（2001）。
+
+格林和赫克伯特（1986）采用了一种非同寻常的投影方法来生成Omnimax®影院的图像。本章中的“环境摄像
+机”（EnvironmentCamera）与马斯格雷夫（1992）所描述的摄像机模型相似。
+
+Potmesil 和 Chakravarty（1981、1982、1983）在计算机图形学中就景深和运动模糊进行了早期研究。Cook 及其合
+作者基于薄透镜模型开发了一个更精确的模型来描述这些效应；第 6.2.3 节中的景深计算正是采用了这一方法
+（Cook、Porter 和 Carpenter 1984； Cook 1986）。关于使用非针孔光圈的相机所能进行的辐射度测量类型的广泛
+分析，请参见 Adams和 Levoy（2007）。
+
+Kolb、Mitchell 和 Hanrahan（1995）展示了如何利用光线追踪技术模拟复杂的相机镜头系统，以建模真实相机的成
+像效应；第 6.4 节中的RealisticCamera 便是基于他们的方法开发的。Steinert 等人（2011）改进了该模拟中的诸
+多细节，纳入了与波长相关的效应，并同时考虑了衍射和眩光。我们在第6.4.5节中用于近似出瞳的方法与他们的方
+法相似。关于光学和透镜系统的优秀入门读物，可参阅赫克特（2002）和史密斯（2007）的著作。
+
+Hullin 等（2012）利用多项式来建模透镜对穿过透镜的光线的影响；他们能够通过对单个透镜的多项式逼近，构建
+出能够近似整个透镜系统的多项式。这种方法节省了追踪光线穿过透镜所需的计算开销，尽管对于复杂的场景而言，
+与渲染计算的其他部分相比，这一开销通常可以忽略不计。Hanika 和 Dachsbacher（2014）提高了该方法的精度，
+并展示了如何将该方法与双向光线追踪相结合。
+
+Chen等人（2009）描述了一种相当完整的数码相机模拟实现，其中包括模数转换以及该过程中固有的、体现在测量像
+素值中的噪声。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 * 采样与重建
 
 * 反射模型
